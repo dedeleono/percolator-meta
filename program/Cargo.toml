@@ -16,10 +16,11 @@ test-sbf = []
 [dependencies]
 solana-program = { workspace = true }
 spl-token = { workspace = true }
-percolator-prog = { workspace = true }
 governance-adapter = { path = "../governance", features = ["no-entrypoint"] }
 
 [dev-dependencies]
 solana-sdk = { workspace = true }
+solana-program-runtime = "1.18"
 litesvm = { workspace = true }
 spl-token = { version = "4.0", features = ["no-entrypoint"] }
+percolator-prog = { workspace = true }

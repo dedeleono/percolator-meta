@@ -58,6 +58,10 @@ COIN mint requirements:
 - Decimals are fixed at creation and committed in the proposal hash.
 - A single COIN mint is shared across all markets. The `CoinConfig` PDA (§10) gates which authority can register new markets.
 
+`CoinConfig` also records the COIN instance bootstrap phase. `init_coin_config` takes a `bootstrap_delay_slots: u64`; a zero delay marks the instance live immediately, and a nonzero delay requires a governed `activate_live` instruction after `bootstrap_start_slot + bootstrap_delay_slots`.
+
+**Genesis base unit** — SPL token deposited during bootstrap. One deposited base unit gives one genesis vote unit. Genesis deposits are intentionally risk-bearing: the pooled base units can be deployed into the first Percolator market as 50% insurance and 50% backing, and users later withdraw up to their deposited principal from recovered funds.
+
 -----
 
 ## 4. Epoch
@@ -95,42 +99,52 @@ The vault is an SPL token account whose authority is the MRC PDA. Users deposit 
 
 -----
 
-## 7. Market creation (one atomic transaction, permissionless caller)
+## 7. Market creation and lifecycle
 
 Bootstrap prerequisite: before the first governed call for a `(rewards_program, coin_mint)` pair, the DAO-controlled client initializes the governance authority path for that pair. The current repo assumes this binding is established during instance creation and then reused for all governed CPIs.
 
-The caller assembles the following instructions in a single transaction after `proposal.executed == true`:
+The current implementation uses a rewards-program market-admin PDA:
 
 ```
-[0]  meta_dao::execute_and_create_market(proposal, market_config, N, epoch_slots, coin_mint)
-       — verifies proposal.executed == true
-       — verifies sha256(market_config, N, epoch_slots, coin_mint, collateral_mint)
-                 == proposal.market_config_hash
-
-[1]  percolator::InitMarket(
-           admin           = seed_escrow_pda,    // temporary; burned in [3]
-           collateral_mint = ...,
-           ... market_config fields ...
-     )
-     // §2.1: percolator writes market_start_slot = clock.slot into slab
-
-[2]  percolator::TopUpInsurance(amount = proposal.seed_sol_raised)
-     // lamports: seed_escrow_pda → percolator insurance_vault
-
-[3]  percolator::UpdateAdmin(new_admin = Pubkey::default())
-     // admin is now [0u8;32]; percolator::require_admin permanently rejects all-zeros
-     // all admin instructions on this market are disabled forever
-
-[4]  rewards::init_market_rewards(
-           market_slab, N, epoch_slots, coin_mint, collateral_mint
-     )
-     // signer: CoinConfig.authority (the preconfigured governance authority path)
-     // creates MarketRewardsCfg PDA (init guard — fails if already exists)
-     // creates stake_vault SPL token account PDA
-     // reads and stores market_start_slot from slab (never trusts caller-supplied value)
+market_admin = PDA(rewards, [b"percolator_market_admin", coin_mint])
 ```
 
-After instruction [3], Percolator's `require_admin` check (`admin != [0u8;32]`) permanently rejects every admin instruction on this slab.
+Any user may call `rewards::init_percolator_market` after the COIN instance exists. The caller supplies the Percolator market account and raw Percolator `InitMarket` payload; `rewards` CPIs into Percolator with `market_admin` as the signer, so the user can fund/create a market but cannot become its admin. This permits the first genesis market to run during the bootstrap delay and permits additional permissionless creation after live activation.
+
+Futarchy controls subsequent Percolator lifecycle/admin actions through `governance_adapter::percolator_admin`, which CPIs into `rewards::percolator_admin`. The rewards program verifies `CoinConfig.authority`, signs as `market_admin`, and forwards only lifecycle/admin Percolator tags:
+
+- `UpdateMarketInitFeePolicy`, allowing permissionless user activation of additional asset slots when the fee is nonzero.
+- `UpdateAssetLifecycle`, including admin drain, shutdown, retire, and governed activation paths.
+- `ConfigurePermissionlessResolve`, oracle configuration, fee policies, authority updates, `ResolveMarket`, and `CloseSlab`.
+
+Cranks are intentionally not owned by futarchy in this design. Permissionless refresh/liquidation/settlement, forced close pairing after shutdown delay, resolved payout claims/topups, and portfolio close flows are triggered externally through Percolator.
+
+### 7.1 Genesis bootstrap
+
+`rewards::init_genesis_bootstrap` creates:
+
+```
+genesis_cfg   = PDA(rewards, [b"genesis_cfg", coin_mint])
+genesis_vault = PDA(rewards, [b"genesis_vault", coin_mint])
+```
+
+`genesis_vault` is a base-token account owned by `market_admin`. During bootstrap, `genesis_deposit(amount)` transfers base units into the vault and records `vote_units += amount`. The config tracks the intended 50/50 principal split in x2 units so odd base-unit totals are accounted for exactly.
+
+`kickstart_genesis_market(domain, expiry_slot)` can deploy the pooled base units into a PDA-admin Percolator market. `floor(total_deposited / 2)` is topped up as insurance and the remainder is topped up as backing for the selected domain. Deposits close once this kickstart happens.
+
+At the end of the bootstrap market run, `recover_genesis_market(kind, domain, amount)` is the only governed recovery path from Percolator back into the genesis ledger. It signs as `market_admin`, requires the Percolator market authorities to still be that PDA, and forces the destination to be `genesis_vault`. It supports Percolator insurance, backing, and backing-earnings withdrawals, but cannot send recovered funds to an arbitrary DAO account.
+
+After `activate_live`, users can create `GenesisDistribution` allocation items and genesis depositors can vote on them using their recorded base-unit vote weight. Futarchy calls `genesis_mint_reward` against a majority-approved item; the item is marked executed and `minted_supply` is capped by `reward_supply`. Only after the bootstrap market has been kickstarted and `minted_supply == reward_supply` can `finalize_genesis` complete. After finalization, `genesis_withdraw` burns a user's vote weight and returns up to that user's deposited principal, pro-rated by recovered vault balance if the bootstrap market lost capital. Underfunded withdrawals retire only actually paid principal, so later recoveries remain reserved for unpaid genesis principal before DAO surplus. `draw_genesis_surplus` can transfer only `genesis_vault_balance - outstanding_genesis_principal` to futarchy.
+
+### 7.2 Builder approval registry
+
+`approve_builder(code_hash, terms_hash, enabled)` creates or updates:
+
+```
+builder_approval = PDA(rewards, [b"builder_approval", coin_mint, builder_program, code_hash])
+```
+
+This is a local governance registry boundary for external builder/oracle integrations. The approval stores the builder program id, immutable code hash, terms hash, approval slot, and enabled flag. The builder target must be an executable BPF-loader-owned program account. The approval does not give the builder custody over insurance or backing principal.
 
 -----
 
@@ -186,11 +200,19 @@ reward_per_token_paid = reward_per_token_stored
 
 The DAO can vote to mint COIN to any destination (e.g., rewarding best-performing LPs identified off-chain).
 
+**Instruction:** `rewards::activate_live()`
+
+- Signer must be `CoinConfig.authority`.
+- Requires `current_slot >= bootstrap_start_slot + bootstrap_delay_slots`.
+- Sets the COIN instance phase to live.
+- Idempotent after live activation.
+
 **Instruction:** `rewards::mint_reward(amount)`
 
 - Signer must be `CoinConfig.authority` (the preconfigured governance authority path for this COIN).
 - Mints `amount` COIN to any provided SPL token destination account.
 - Amount must be non-zero.
+- Requires the COIN instance to be live.
 
 This replaces on-chain LP fee tracking. LP performance identification is an off-chain process; the DAO votes to reward whichever LPs perform best.
 
@@ -212,11 +234,15 @@ On full unstake (amount == staked balance), the StakePosition PDA is closed and 
 
 PDA seeds: `[b"coin_cfg", coin_mint_key]`
 
-Created once per COIN token via `init_coin_config`. The authority is the preconfigured governance PDA path established by the DAO-controlled init ceremony for this COIN. It is the only key that can register new markets for this COIN and call `mint_reward`.
+Created once per COIN token via `init_coin_config`. The authority is the preconfigured governance PDA path established by the DAO-controlled init ceremony for this COIN. It is the only key that can activate live phase, register new markets for this COIN, and call `mint_reward`.
 
-|Field             |Type  |Description                                     |
-|------------------|------|-------------------------------------------------|
-|`authority`       |Pubkey|Who can call `init_market_rewards` and `mint_reward` for this COIN |
+|Field                    |Type  |Description                                      |
+|-------------------------|------|--------------------------------------------------|
+|`authority`              |Pubkey|Who can call live-phase governance instructions for this COIN |
+|`bootstrap_start_slot`   |u64   |Slot when `init_coin_config` created the phase record |
+|`bootstrap_delay_slots`  |u64   |Configured bootstrap delay before live activation |
+|`live_slot`              |u64   |Slot where live phase was activated; zero while still bootstrapping |
+|`phase`                  |u8    |`0 = bootstrap`, `1 = live`                       |
 
 ### MarketRewardsCfg
 
@@ -257,13 +283,14 @@ No instruction in MetaDAO, Percolator, or `rewards` may:
 - Freeze user token accounts.
 - Set or change the COIN mint freeze authority (must remain `None`).
 - Modify any reward parameter (`N`, `epoch_slots`, `coin_mint`) after `init_market_rewards` is called.
-- Invoke any Percolator admin instruction on a market whose admin has been burned.
+- Invoke arbitrary Percolator funding or withdrawal instructions through the generic futarchy admin proxy.
+- Invoke raw Percolator `UpdateAuthority` through the generic futarchy admin proxy; custody authority changes must use explicit meta-program paths.
 
 -----
 
 ## 12. Explicit assumptions
 
-- `SlabHeader._reserved[8..16]` is currently zero-initialized and not written by any Percolator instruction at market-creation time. For markets created through this flow, `write_market_start_slot` takes ownership of those bytes at `InitMarket`. Existing markets have `0` there and are incompatible with this spec.
+- Reward accounting starts at `init_market_rewards`; Percolator market creation can happen earlier during bootstrap, but staker COIN emissions begin only once the market is registered with the rewards program.
 - The `rewards` program is deployed non-upgradeable. The COIN mint `freeze_authority` is `None` at creation and cannot be set afterward.
 - Integer truncation in the Synthetix accumulator may cause up to 1 COIN per claim to be deferred. The sub-coin remainder is never lost; it becomes claimable as the accumulator advances.
 
@@ -271,15 +298,19 @@ No instruction in MetaDAO, Percolator, or `rewards` may:
 
 ## 13. Audit checklist
 
-- [ ] `InitMarket` sets `admin = seed_escrow_pda`; `UpdateAdmin(zeros)` is called in the same transaction before any other instruction can exercise that admin authority.
+- [ ] `init_percolator_market` sets Percolator admin/authority fields to `market_admin = PDA(rewards, [b"percolator_market_admin", coin_mint])`.
 - [ ] `rewards::init_market_rewards` creates `MarketRewardsCfg` with an init guard; a second call on the same slab fails.
 - [ ] `market_start_slot` is read from the slab by the `rewards` program; it is not accepted as an instruction argument.
 - [ ] Staker reward accumulator update is serialized to MRC before any CPI, preventing double-accumulation.
 - [ ] Staker collateral can only be withdrawn by the depositor, after lockup elapses, to their own token account.
 - [ ] For all stakers combined: total claimable per slot ≤ `N / epoch_slots`. No single staker can claim more than their `amount / total_staked` fraction.
 - [ ] `mint_reward` requires `CoinConfig.authority` as signer; unauthorized callers are rejected.
+- [ ] `init_coin_config` records the configured bootstrap delay, and nonzero-delay instances cannot enter live-governance paths until `activate_live` succeeds after the delay.
 - [ ] COIN mint `freeze_authority = None`; `rewards` program is non-upgradeable at deploy.
-- [ ] After admin burn: `UpdateConfig`, `SetRiskThreshold`, `SetOracleAuthority`, `ResolveMarket`, `WithdrawInsurance`, `SetMaintenanceFee`, `AdminForceCloseAccount`, and `CloseSlab` all fail on this market.
+- [ ] Genesis deposits mint one vote unit per base unit, close after kickstart, and withdraw up to principal only after kickstart and full reward-supply distribution are finalized.
+- [ ] `recover_genesis_market` can recover bootstrap capital only to `genesis_vault`, and it is disabled after genesis finalization.
+- [ ] Genesis reward minting executes only majority-approved `GenesisDistribution` items and cannot exceed `reward_supply`.
+- [ ] Builder/oracle code approvals are keyed by `(coin_mint, builder_program, code_hash)`, require an executable BPF-loader-owned program account, and carry a visible terms hash.
 - [ ] `CoinConfig.authority` is the only key that can register new markets for a given COIN; unauthorized callers are rejected.
 - [ ] Stake vault PDA authority is the MRC PDA; only `unstake` can transfer collateral out.
 - [ ] Deployment/init docs specify how the DAO-controlled client bootstraps the governance authority path for this rewards instance.

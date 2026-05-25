@@ -13,6 +13,7 @@ use governance_adapter::{
     authority_address as governance_authority_address, id as governance_program_id,
 };
 use litesvm::LiteSVM;
+use solana_program_runtime::compute_budget::ComputeBudget;
 use solana_sdk::{
     account::Account,
     clock::Clock,
@@ -148,6 +149,62 @@ fn make_pyth_data(
     data[82..90].copy_from_slice(&conf.to_le_bytes());
     data[90..94].copy_from_slice(&expo.to_le_bytes());
     data[94..102].copy_from_slice(&publish_time.to_le_bytes());
+    data
+}
+
+fn make_percolator_market_data(
+    market_slab: &Pubkey,
+    collateral_mint: &Pubkey,
+    admin: &Pubkey,
+    init_slot: u64,
+) -> Vec<u8> {
+    let initial_price = 1_000_000;
+    let mut wrapper = percolator_prog::state::WrapperConfigV16::default();
+    wrapper.admin = admin.to_bytes();
+    wrapper.collateral_mint = collateral_mint.to_bytes();
+    wrapper.base_unit_authority = admin.to_bytes();
+    wrapper.last_good_oracle_slot = init_slot;
+    wrapper.insurance_authority = admin.to_bytes();
+    wrapper.insurance_operator = admin.to_bytes();
+    wrapper.backing_bucket_authority = admin.to_bytes();
+    wrapper.asset_authority = admin.to_bytes();
+    wrapper.mark_authority = admin.to_bytes();
+    wrapper.insurance_withdraw_max_bps = 10_000;
+    wrapper.insurance_withdraw_deposits_only = 1;
+    wrapper.insurance_withdraw_cooldown_slots = 1;
+    wrapper.permissionless_resolve_stale_slots = 2_000;
+    wrapper.force_close_delay_slots = 100;
+    wrapper.oracle_mode = percolator_prog::constants::ORACLE_MODE_MANUAL;
+    wrapper.mark_ewma_e6 = initial_price;
+    wrapper.mark_ewma_last_slot = init_slot;
+    wrapper.mark_ewma_halflife_slots = percolator_prog::constants::DEFAULT_MARK_EWMA_HALFLIFE_SLOTS;
+    wrapper.oracle_target_price_e6 = initial_price;
+
+    let mut data = vec![0u8; SLAB_LEN];
+    percolator_prog::state::init_market_account_zero_copy(
+        &mut data,
+        &wrapper,
+        {
+            let mut cfg = percolator_prog::risk::V16Config::public_user_fund(1, 0, 10);
+            cfg.min_nonzero_mm_req = 1;
+            cfg.min_nonzero_im_req = 2;
+            cfg.maintenance_margin_bps = 10_000;
+            cfg.initial_margin_bps = 10_000;
+            cfg.max_trading_fee_bps = 10_000;
+            cfg.max_accrual_dt_slots = 1;
+            cfg.min_funding_lifetime_slots = 1;
+            cfg.max_price_move_bps_per_slot = 10_000;
+            cfg.max_account_b_settlement_chunks = 1;
+            cfg.max_bankrupt_close_chunks = 1;
+            cfg.max_bankrupt_close_lifetime_slots = 1;
+            cfg.public_b_chunk_atoms = 1;
+            cfg
+        },
+        market_slab.to_bytes(),
+        initial_price,
+        init_slot,
+    )
+    .expect("manual percolator market init");
     data
 }
 
@@ -317,8 +374,10 @@ fn encode_topup_insurance(amount: u64) -> Vec<u8> {
 // Rewards instruction encoders
 // ============================================================================
 
-fn encode_init_coin_config() -> Vec<u8> {
-    vec![3u8] // tag = IX_INIT_COIN_CONFIG
+fn encode_init_coin_config(bootstrap_delay_slots: u64) -> Vec<u8> {
+    let mut data = vec![3u8]; // tag = IX_INIT_COIN_CONFIG
+    data.extend_from_slice(&bootstrap_delay_slots.to_le_bytes());
+    data
 }
 
 fn encode_init_market_rewards(n: u64, epoch_slots: u64) -> Vec<u8> {
@@ -348,8 +407,10 @@ fn encode_governance_init_authority() -> Vec<u8> {
     vec![0u8]
 }
 
-fn encode_governance_init_coin_config() -> Vec<u8> {
-    vec![1u8]
+fn encode_governance_init_coin_config(bootstrap_delay_slots: u64) -> Vec<u8> {
+    let mut data = vec![1u8];
+    data.extend_from_slice(&bootstrap_delay_slots.to_le_bytes());
+    data
 }
 
 fn encode_governance_init_market_rewards(n: u64, epoch_slots: u64) -> Vec<u8> {
@@ -374,6 +435,102 @@ fn encode_governance_set_market_rewards(n: u64, epoch_slots: u64) -> Vec<u8> {
 
 fn encode_governance_transfer_mint_authority() -> Vec<u8> {
     vec![6u8]
+}
+
+fn encode_governance_activate_live() -> Vec<u8> {
+    vec![7u8]
+}
+
+fn encode_governance_init_risk_vault(
+    kind: u8,
+    domain: u8,
+    lockup_slots: u64,
+    withdraw_delay_slots: u64,
+    dao_fee_bps: u16,
+) -> Vec<u8> {
+    let mut data = vec![8u8];
+    data.push(kind);
+    data.push(domain);
+    data.extend_from_slice(&lockup_slots.to_le_bytes());
+    data.extend_from_slice(&withdraw_delay_slots.to_le_bytes());
+    data.extend_from_slice(&dao_fee_bps.to_le_bytes());
+    data
+}
+
+fn encode_init_percolator_market(percolator_init_data: Vec<u8>) -> Vec<u8> {
+    let mut data = vec![19u8];
+    data.extend_from_slice(&percolator_init_data);
+    data
+}
+
+fn encode_genesis_deposit(amount: u64) -> Vec<u8> {
+    let mut data = vec![22u8];
+    data.extend_from_slice(&amount.to_le_bytes());
+    data
+}
+
+fn encode_genesis_withdraw() -> Vec<u8> {
+    vec![23u8]
+}
+
+fn encode_governance_init_genesis_bootstrap(reward_supply: u64) -> Vec<u8> {
+    let mut data = vec![10u8];
+    data.extend_from_slice(&reward_supply.to_le_bytes());
+    data
+}
+
+fn encode_governance_genesis_mint_reward(amount: u64) -> Vec<u8> {
+    let mut data = vec![11u8];
+    data.extend_from_slice(&amount.to_le_bytes());
+    data
+}
+
+fn encode_governance_finalize_genesis() -> Vec<u8> {
+    vec![12u8]
+}
+
+fn encode_governance_draw_genesis_surplus(amount: u64) -> Vec<u8> {
+    let mut data = vec![13u8];
+    data.extend_from_slice(&amount.to_le_bytes());
+    data
+}
+
+fn encode_governance_kickstart_genesis_market(domain: u8, expiry_slot: u64) -> Vec<u8> {
+    let mut data = vec![14u8];
+    data.push(domain);
+    data.extend_from_slice(&expiry_slot.to_le_bytes());
+    data
+}
+
+fn encode_governance_recover_genesis_market(kind: u8, domain: u8, amount: u64) -> Vec<u8> {
+    let mut data = vec![15u8];
+    data.push(kind);
+    data.push(domain);
+    data.extend_from_slice(&amount.to_le_bytes());
+    data
+}
+
+fn encode_init_genesis_distribution(proposal_id: u64, amount: u64) -> Vec<u8> {
+    let mut data = vec![29u8];
+    data.extend_from_slice(&proposal_id.to_le_bytes());
+    data.extend_from_slice(&amount.to_le_bytes());
+    data
+}
+
+fn encode_vote_genesis_distribution(support: bool) -> Vec<u8> {
+    vec![30u8, support as u8]
+}
+
+fn encode_governance_approve_builder(
+    code_hash: [u8; 32],
+    terms_hash: [u8; 32],
+    enabled: bool,
+) -> Vec<u8> {
+    let mut data = vec![16u8];
+    data.extend_from_slice(&code_hash);
+    data.extend_from_slice(&terms_hash);
+    data.push(enabled as u8);
+    data
 }
 
 // ============================================================================
@@ -407,8 +564,20 @@ impl TestEnv {
         Self::new_with_governance_bootstrap(false)
     }
 
+    fn new_meta_only() -> Self {
+        Self::new_with_options(true, false)
+    }
+
     fn new_with_governance_bootstrap(bootstrap_governance: bool) -> Self {
-        let mut svm = LiteSVM::new();
+        Self::new_with_options(bootstrap_governance, true)
+    }
+
+    fn new_with_options(bootstrap_governance: bool, init_percolator: bool) -> Self {
+        let mut svm = LiteSVM::new().with_compute_budget(ComputeBudget {
+            compute_unit_limit: 1_400_000,
+            heap_size: 256 * 1024,
+            ..ComputeBudget::default()
+        });
 
         let percolator_id = percolator_prog::id();
         let perc_bytes = std::fs::read(percolator_path()).expect("read percolator BPF");
@@ -568,82 +737,12 @@ impl TestEnv {
                 .expect("mint authority handoff failed");
         }
 
-        // Init percolator market
-        let dummy_ata = Pubkey::new_unique();
-        svm.set_account(
-            dummy_ata,
-            Account {
-                lamports: 1_000_000,
-                data: vec![0u8; TokenAccount::LEN],
-                owner: spl_token::ID,
-                executable: false,
-                rent_epoch: 0,
-            },
-        )
-        .unwrap();
-
-        let ix = Instruction {
-            program_id: percolator_id,
-            accounts: vec![
-                AccountMeta::new(payer.pubkey(), true),
-                AccountMeta::new(slab, false),
-                AccountMeta::new_readonly(collateral_mint, false),
-                AccountMeta::new(vault, false),
-                AccountMeta::new_readonly(spl_token::ID, false),
-                AccountMeta::new_readonly(sysvar::clock::ID, false),
-                AccountMeta::new_readonly(sysvar::rent::ID, false),
-                AccountMeta::new_readonly(dummy_ata, false),
-                AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
-            ],
-            data: encode_init_market(
-                &payer.pubkey(),
-                &collateral_mint,
-                &TEST_FEED_ID,
-                0, // trading_fee_bps
-            ),
-        };
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(1_400_000);
-        let tx = Transaction::new_signed_with_payer(
-            &[cu_ix, ix],
-            Some(&payer.pubkey()),
-            &[&payer],
-            svm.latest_blockhash(),
-        );
-        svm.send_transaction(tx).expect("init_market failed");
-
-        let ix = Instruction {
-            program_id: percolator_id,
-            accounts: vec![
-                AccountMeta::new(payer.pubkey(), true),
-                AccountMeta::new(slab, false),
-            ],
-            data: encode_set_insurance_withdraw_policy(&payer.pubkey(), 0, 10_000, 1),
-        };
-        let tx = Transaction::new_signed_with_payer(
-            &[ix],
-            Some(&payer.pubkey()),
-            &[&payer],
-            svm.latest_blockhash(),
-        );
-        svm.send_transaction(tx)
-            .expect("set insurance withdraw policy failed");
-
-        let ix = Instruction {
-            program_id: percolator_id,
-            accounts: vec![
-                AccountMeta::new(payer.pubkey(), true),
-                AccountMeta::new(slab, false),
-            ],
-            data: encode_configure_permissionless_resolve(2_000, 100),
-        };
-        let tx = Transaction::new_signed_with_payer(
-            &[ix],
-            Some(&payer.pubkey()),
-            &[&payer],
-            svm.latest_blockhash(),
-        );
-        svm.send_transaction(tx)
-            .expect("configure permissionless resolve failed");
+        if init_percolator {
+            let mut slab_account = svm.get_account(&slab).expect("slab account missing");
+            slab_account.data =
+                make_percolator_market_data(&slab, &collateral_mint, &payer.pubkey(), 100);
+            svm.set_account(slab, slab_account).unwrap();
+        }
 
         TestEnv {
             svm,
@@ -712,8 +811,12 @@ impl TestEnv {
     }
 
     fn init_coin_config(&mut self) {
+        self.init_coin_config_with_delay(0);
+    }
+
+    fn init_coin_config_with_delay(&mut self, bootstrap_delay_slots: u64) {
         let coin_mint = self.coin_mint;
-        self.try_init_coin_config_with_mint(&coin_mint)
+        self.try_init_coin_config_with_mint_and_delay(&coin_mint, bootstrap_delay_slots)
             .expect("init_coin_config failed");
     }
 
@@ -722,6 +825,16 @@ impl TestEnv {
         payer: &Keypair,
         authority: &Keypair,
         coin_mint: &Pubkey,
+    ) -> Result<(), String> {
+        self.try_init_coin_config_direct_with_signers_and_delay(payer, authority, coin_mint, 0)
+    }
+
+    fn try_init_coin_config_direct_with_signers_and_delay(
+        &mut self,
+        payer: &Keypair,
+        authority: &Keypair,
+        coin_mint: &Pubkey,
+        bootstrap_delay_slots: u64,
     ) -> Result<(), String> {
         let (coin_cfg_pda, _) =
             Pubkey::find_program_address(&[b"coin_cfg", coin_mint.as_ref()], &self.rewards_id);
@@ -735,7 +848,7 @@ impl TestEnv {
                 AccountMeta::new(coin_cfg_pda, false),
                 AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
             ],
-            data: encode_init_coin_config(),
+            data: encode_init_coin_config(bootstrap_delay_slots),
         };
         let tx = Transaction::new_signed_with_payer(
             &[ix],
@@ -750,6 +863,14 @@ impl TestEnv {
     }
 
     fn try_init_coin_config_with_mint(&mut self, coin_mint: &Pubkey) -> Result<(), String> {
+        self.try_init_coin_config_with_mint_and_delay(coin_mint, 0)
+    }
+
+    fn try_init_coin_config_with_mint_and_delay(
+        &mut self,
+        coin_mint: &Pubkey,
+        bootstrap_delay_slots: u64,
+    ) -> Result<(), String> {
         let (coin_cfg_pda, _) =
             Pubkey::find_program_address(&[b"coin_cfg", coin_mint.as_ref()], &self.rewards_id);
 
@@ -763,12 +884,851 @@ impl TestEnv {
                 AccountMeta::new(coin_cfg_pda, false),
                 AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
             ],
-            data: encode_governance_init_coin_config(),
+            data: encode_governance_init_coin_config(bootstrap_delay_slots),
         };
         let tx = Transaction::new_signed_with_payer(
             &[ix],
             Some(&self.dao_authority.pubkey()),
             &[&self.dao_authority],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn coin_cfg_pda(&self) -> Pubkey {
+        Pubkey::find_program_address(&[b"coin_cfg", self.coin_mint.as_ref()], &self.rewards_id).0
+    }
+
+    fn try_activate_live(&mut self, signer: &Keypair) -> Result<(), String> {
+        let coin_cfg_pda = self.coin_cfg_pda();
+        let ix = Instruction {
+            program_id: self.governance_id,
+            accounts: vec![
+                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new(self.governance_authority_pda, false),
+                AccountMeta::new_readonly(self.rewards_id, false),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new(coin_cfg_pda, false),
+                AccountMeta::new_readonly(sysvar::clock::ID, false),
+            ],
+            data: encode_governance_activate_live(),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&signer.pubkey()),
+            &[signer],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn activate_live(&mut self) {
+        let signer = Keypair::from_bytes(&self.dao_authority.to_bytes()).unwrap();
+        self.try_activate_live(&signer)
+            .expect("activate_live failed");
+    }
+
+    fn try_init_risk_vault(
+        &mut self,
+        slab: &Pubkey,
+        kind: u8,
+        domain: u8,
+        dao_fee_bps: u16,
+        fee_destination: Option<Pubkey>,
+    ) -> Result<(), String> {
+        let signer = Keypair::from_bytes(&self.dao_authority.to_bytes()).unwrap();
+        let risk_vault = self.risk_vault_pda_for(slab, kind, domain);
+        let token_vault = self.risk_token_vault_pda_for(slab, kind, domain);
+        let engine_ledger = self.risk_ledger_pda_for(slab, kind, domain);
+        let mut accounts = vec![
+            AccountMeta::new(signer.pubkey(), true),
+            AccountMeta::new(self.governance_authority_pda, false),
+            AccountMeta::new_readonly(self.rewards_id, false),
+            AccountMeta::new_readonly(*slab, false),
+            AccountMeta::new(risk_vault, false),
+            AccountMeta::new_readonly(self.coin_mint, false),
+            AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+            AccountMeta::new_readonly(self.collateral_mint, false),
+            AccountMeta::new(token_vault, false),
+            AccountMeta::new(engine_ledger, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(self.percolator_id, false),
+        ];
+        if let Some(fee_destination) = fee_destination {
+            accounts.push(AccountMeta::new_readonly(fee_destination, false));
+        }
+        let ix = Instruction {
+            program_id: self.governance_id,
+            accounts,
+            data: encode_governance_init_risk_vault(kind, domain, 5, 7, dao_fee_bps),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&signer.pubkey()),
+            &[&signer],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn init_risk_vault(
+        &mut self,
+        slab: &Pubkey,
+        kind: u8,
+        domain: u8,
+        dao_fee_bps: u16,
+        fee_destination: Option<Pubkey>,
+    ) {
+        self.try_init_risk_vault(slab, kind, domain, dao_fee_bps, fee_destination)
+            .expect("init_risk_vault failed");
+    }
+
+    fn market_admin_pda(&self) -> Pubkey {
+        Pubkey::find_program_address(
+            &[b"percolator_market_admin", self.coin_mint.as_ref()],
+            &self.rewards_id,
+        )
+        .0
+    }
+
+    fn genesis_cfg_pda(&self) -> Pubkey {
+        Pubkey::find_program_address(&[b"genesis_cfg", self.coin_mint.as_ref()], &self.rewards_id).0
+    }
+
+    fn genesis_vault_pda(&self) -> Pubkey {
+        Pubkey::find_program_address(
+            &[b"genesis_vault", self.coin_mint.as_ref()],
+            &self.rewards_id,
+        )
+        .0
+    }
+
+    fn genesis_position_pda(&self, user: &Pubkey) -> Pubkey {
+        let genesis_cfg = self.genesis_cfg_pda();
+        Pubkey::find_program_address(
+            &[b"genesis_position", genesis_cfg.as_ref(), user.as_ref()],
+            &self.rewards_id,
+        )
+        .0
+    }
+
+    fn genesis_distribution_pda(&self, proposal_id: u64) -> Pubkey {
+        let genesis_cfg = self.genesis_cfg_pda();
+        Pubkey::find_program_address(
+            &[
+                b"genesis_distribution",
+                genesis_cfg.as_ref(),
+                &proposal_id.to_le_bytes(),
+            ],
+            &self.rewards_id,
+        )
+        .0
+    }
+
+    fn genesis_distribution_vote_pda(&self, proposal: &Pubkey, voter: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(
+            &[
+                b"genesis_distribution_vote",
+                proposal.as_ref(),
+                voter.as_ref(),
+            ],
+            &self.rewards_id,
+        )
+        .0
+    }
+
+    fn builder_approval_pda(&self, builder_program: &Pubkey, code_hash: &[u8; 32]) -> Pubkey {
+        Pubkey::find_program_address(
+            &[
+                b"builder_approval",
+                self.coin_mint.as_ref(),
+                builder_program.as_ref(),
+                code_hash,
+            ],
+            &self.rewards_id,
+        )
+        .0
+    }
+
+    fn risk_vault_pda_for(&self, slab: &Pubkey, kind: u8, domain: u8) -> Pubkey {
+        Pubkey::find_program_address(
+            &[b"risk_vault", slab.as_ref(), &[kind, domain]],
+            &self.rewards_id,
+        )
+        .0
+    }
+
+    fn risk_token_vault_pda_for(&self, slab: &Pubkey, kind: u8, domain: u8) -> Pubkey {
+        Pubkey::find_program_address(
+            &[b"risk_token_vault", slab.as_ref(), &[kind, domain]],
+            &self.rewards_id,
+        )
+        .0
+    }
+
+    fn risk_ledger_pda_for(&self, slab: &Pubkey, kind: u8, domain: u8) -> Pubkey {
+        Pubkey::find_program_address(
+            &[b"risk_ledger", slab.as_ref(), &[kind, domain]],
+            &self.rewards_id,
+        )
+        .0
+    }
+
+    fn init_genesis_bootstrap(&mut self, reward_supply: u64) {
+        self.try_init_genesis_bootstrap(reward_supply)
+            .expect("init_genesis_bootstrap failed");
+    }
+
+    fn try_init_genesis_bootstrap(&mut self, reward_supply: u64) -> Result<(), String> {
+        let signer = Keypair::from_bytes(&self.dao_authority.to_bytes()).unwrap();
+        self.try_init_genesis_bootstrap_with_signer(&signer, reward_supply)
+    }
+
+    fn try_init_genesis_bootstrap_with_signer(
+        &mut self,
+        signer: &Keypair,
+        reward_supply: u64,
+    ) -> Result<(), String> {
+        let coin_cfg = self.coin_cfg_pda();
+        let genesis_cfg = self.genesis_cfg_pda();
+        let genesis_vault = self.genesis_vault_pda();
+        let market_admin = self.market_admin_pda();
+        let ix = Instruction {
+            program_id: self.governance_id,
+            accounts: vec![
+                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new(self.governance_authority_pda, false),
+                AccountMeta::new_readonly(self.rewards_id, false),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(coin_cfg, false),
+                AccountMeta::new_readonly(self.collateral_mint, false),
+                AccountMeta::new(genesis_cfg, false),
+                AccountMeta::new(genesis_vault, false),
+                AccountMeta::new(market_admin, false),
+                AccountMeta::new_readonly(spl_token::ID, false),
+                AccountMeta::new_readonly(sysvar::rent::ID, false),
+                AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            ],
+            data: encode_governance_init_genesis_bootstrap(reward_supply),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&signer.pubkey()),
+            &[signer],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn genesis_deposit(&mut self, user: &Keypair, amount: u64) {
+        self.try_genesis_deposit(user, amount)
+            .expect("genesis_deposit failed");
+    }
+
+    fn try_genesis_deposit(&mut self, user: &Keypair, amount: u64) -> Result<(), String> {
+        let collateral_mint = self.collateral_mint;
+        let user_ata = self.create_ata(&collateral_mint, &user.pubkey(), amount);
+        let ix = Instruction {
+            program_id: self.rewards_id,
+            accounts: vec![
+                AccountMeta::new(user.pubkey(), true),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new(self.genesis_cfg_pda(), false),
+                AccountMeta::new(self.genesis_position_pda(&user.pubkey()), false),
+                AccountMeta::new(user_ata, false),
+                AccountMeta::new(self.genesis_vault_pda(), false),
+                AccountMeta::new_readonly(spl_token::ID, false),
+                AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            ],
+            data: encode_genesis_deposit(amount),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&user.pubkey()),
+            &[user],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn init_genesis_distribution(&mut self, proposal_id: u64, amount: u64, destination: &Pubkey) {
+        self.try_init_genesis_distribution(proposal_id, amount, destination)
+            .expect("init genesis distribution failed");
+    }
+
+    fn try_init_genesis_distribution(
+        &mut self,
+        proposal_id: u64,
+        amount: u64,
+        destination: &Pubkey,
+    ) -> Result<(), String> {
+        let payer = Keypair::from_bytes(&self.dao_authority.to_bytes()).unwrap();
+        self.try_init_genesis_distribution_with_payer(&payer, proposal_id, amount, destination)
+    }
+
+    fn try_init_genesis_distribution_with_payer(
+        &mut self,
+        payer: &Keypair,
+        proposal_id: u64,
+        amount: u64,
+        destination: &Pubkey,
+    ) -> Result<(), String> {
+        let ix = Instruction {
+            program_id: self.rewards_id,
+            accounts: vec![
+                AccountMeta::new(payer.pubkey(), true),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new_readonly(self.genesis_cfg_pda(), false),
+                AccountMeta::new(self.genesis_distribution_pda(proposal_id), false),
+                AccountMeta::new_readonly(*destination, false),
+                AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            ],
+            data: encode_init_genesis_distribution(proposal_id, amount),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&payer.pubkey()),
+            &[payer],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn vote_genesis_distribution(&mut self, voter: &Keypair, proposal_id: u64, support: bool) {
+        self.try_vote_genesis_distribution(voter, proposal_id, support)
+            .expect("vote genesis distribution failed");
+    }
+
+    fn try_vote_genesis_distribution(
+        &mut self,
+        voter: &Keypair,
+        proposal_id: u64,
+        support: bool,
+    ) -> Result<(), String> {
+        let proposal = self.genesis_distribution_pda(proposal_id);
+        let ix = Instruction {
+            program_id: self.rewards_id,
+            accounts: vec![
+                AccountMeta::new(voter.pubkey(), true),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new_readonly(self.genesis_cfg_pda(), false),
+                AccountMeta::new_readonly(self.genesis_position_pda(&voter.pubkey()), false),
+                AccountMeta::new(proposal, false),
+                AccountMeta::new(
+                    self.genesis_distribution_vote_pda(&proposal, &voter.pubkey()),
+                    false,
+                ),
+                AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            ],
+            data: encode_vote_genesis_distribution(support),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&voter.pubkey()),
+            &[voter],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn governance_genesis_mint_reward(
+        &mut self,
+        proposal_id: u64,
+        amount: u64,
+        destination: &Pubkey,
+    ) {
+        self.try_governance_genesis_mint_reward(proposal_id, amount, destination)
+            .expect("genesis mint failed");
+    }
+
+    fn try_governance_genesis_mint_reward(
+        &mut self,
+        proposal_id: u64,
+        amount: u64,
+        destination: &Pubkey,
+    ) -> Result<(), String> {
+        let signer = Keypair::from_bytes(&self.dao_authority.to_bytes()).unwrap();
+        self.try_governance_genesis_mint_reward_with_signer(
+            &signer,
+            proposal_id,
+            amount,
+            destination,
+        )
+    }
+
+    fn try_governance_genesis_mint_reward_with_signer(
+        &mut self,
+        signer: &Keypair,
+        proposal_id: u64,
+        amount: u64,
+        destination: &Pubkey,
+    ) -> Result<(), String> {
+        let ix = Instruction {
+            program_id: self.governance_id,
+            accounts: vec![
+                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new(self.governance_authority_pda, false),
+                AccountMeta::new_readonly(self.rewards_id, false),
+                AccountMeta::new(self.genesis_cfg_pda(), false),
+                AccountMeta::new(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new(*destination, false),
+                AccountMeta::new_readonly(self.mint_authority_pda, false),
+                AccountMeta::new(self.genesis_distribution_pda(proposal_id), false),
+                AccountMeta::new_readonly(spl_token::ID, false),
+            ],
+            data: encode_governance_genesis_mint_reward(amount),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&signer.pubkey()),
+            &[signer],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn finalize_genesis(&mut self) {
+        self.try_finalize_genesis()
+            .expect("finalize genesis failed");
+    }
+
+    fn try_finalize_genesis(&mut self) -> Result<(), String> {
+        let signer = Keypair::from_bytes(&self.dao_authority.to_bytes()).unwrap();
+        self.try_finalize_genesis_with_signer(&signer)
+    }
+
+    fn try_finalize_genesis_with_signer(&mut self, signer: &Keypair) -> Result<(), String> {
+        let ix = Instruction {
+            program_id: self.governance_id,
+            accounts: vec![
+                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new(self.governance_authority_pda, false),
+                AccountMeta::new_readonly(self.rewards_id, false),
+                AccountMeta::new(self.genesis_cfg_pda(), false),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+            ],
+            data: encode_governance_finalize_genesis(),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&signer.pubkey()),
+            &[signer],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn genesis_withdraw(&mut self, user: &Keypair) -> Pubkey {
+        self.try_genesis_withdraw(user)
+            .expect("genesis_withdraw failed")
+    }
+
+    fn try_genesis_withdraw(&mut self, user: &Keypair) -> Result<Pubkey, String> {
+        let collateral_mint = self.collateral_mint;
+        let user_ata = self.create_ata(&collateral_mint, &user.pubkey(), 0);
+        let ix = Instruction {
+            program_id: self.rewards_id,
+            accounts: vec![
+                AccountMeta::new(user.pubkey(), true),
+                AccountMeta::new(self.genesis_cfg_pda(), false),
+                AccountMeta::new(self.genesis_position_pda(&user.pubkey()), false),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new(user_ata, false),
+                AccountMeta::new(self.genesis_vault_pda(), false),
+                AccountMeta::new_readonly(self.market_admin_pda(), false),
+                AccountMeta::new_readonly(spl_token::ID, false),
+            ],
+            data: encode_genesis_withdraw(),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&user.pubkey()),
+            &[user],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| user_ata)
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn draw_genesis_surplus(&mut self, amount: u64, destination: &Pubkey) {
+        let signer = Keypair::from_bytes(&self.dao_authority.to_bytes()).unwrap();
+        self.try_draw_genesis_surplus_with_signer(&signer, amount, destination)
+            .expect("draw_genesis_surplus failed");
+    }
+
+    fn try_draw_genesis_surplus_with_signer(
+        &mut self,
+        signer: &Keypair,
+        amount: u64,
+        destination: &Pubkey,
+    ) -> Result<(), String> {
+        let ix = Instruction {
+            program_id: self.governance_id,
+            accounts: vec![
+                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new(self.governance_authority_pda, false),
+                AccountMeta::new_readonly(self.rewards_id, false),
+                AccountMeta::new_readonly(self.genesis_cfg_pda(), false),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new(*destination, false),
+                AccountMeta::new(self.genesis_vault_pda(), false),
+                AccountMeta::new_readonly(self.market_admin_pda(), false),
+                AccountMeta::new_readonly(spl_token::ID, false),
+            ],
+            data: encode_governance_draw_genesis_surplus(amount),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&signer.pubkey()),
+            &[signer],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn init_futarchy_percolator_market(&mut self) -> (Pubkey, Pubkey) {
+        let slab = Pubkey::new_unique();
+        self.svm
+            .set_account(
+                slab,
+                Account {
+                    lamports: 1_000_000_000,
+                    data: vec![0u8; SLAB_LEN],
+                    owner: self.percolator_id,
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .unwrap();
+        let (vault_authority, _) =
+            Pubkey::find_program_address(&[b"vault", slab.as_ref()], &self.percolator_id);
+        self.svm
+            .set_account(
+                vault_authority,
+                Account {
+                    lamports: 1_000_000,
+                    data: vec![],
+                    owner: solana_sdk::system_program::ID,
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .unwrap();
+        let vault = Pubkey::new_unique();
+        self.svm
+            .set_account(
+                vault,
+                Account {
+                    lamports: 1_000_000,
+                    data: make_token_account_data(&self.collateral_mint, &vault_authority, 0),
+                    owner: spl_token::ID,
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .unwrap();
+        let ix = Instruction {
+            program_id: self.rewards_id,
+            accounts: vec![
+                AccountMeta::new(self.payer.pubkey(), true),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new(self.market_admin_pda(), false),
+                AccountMeta::new(slab, false),
+                AccountMeta::new_readonly(self.collateral_mint, false),
+                AccountMeta::new_readonly(self.percolator_id, false),
+                AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            ],
+            data: encode_init_percolator_market(encode_init_market(
+                &self.market_admin_pda(),
+                &self.collateral_mint,
+                &TEST_FEED_ID,
+                0,
+            )),
+        };
+        let tx = Transaction::new_signed_with_payer(
+            &[
+                ComputeBudgetInstruction::set_compute_unit_limit(1_400_000),
+                ix,
+            ],
+            Some(&self.payer.pubkey()),
+            &[&self.payer],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .expect("init futarchy percolator market failed");
+        (slab, vault)
+    }
+
+    fn install_manual_futarchy_market_for_test(&mut self) -> (Pubkey, Pubkey) {
+        let slab = Pubkey::new_unique();
+        self.svm
+            .set_account(
+                slab,
+                Account {
+                    lamports: 1_000_000_000,
+                    data: make_percolator_market_data(
+                        &slab,
+                        &self.collateral_mint,
+                        &self.market_admin_pda(),
+                        100,
+                    ),
+                    owner: self.percolator_id,
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .unwrap();
+        let (vault_authority, _) =
+            Pubkey::find_program_address(&[b"vault", slab.as_ref()], &self.percolator_id);
+        let vault = Pubkey::new_unique();
+        self.svm
+            .set_account(
+                vault,
+                Account {
+                    lamports: 1_000_000,
+                    data: make_token_account_data(&self.collateral_mint, &vault_authority, 0),
+                    owner: spl_token::ID,
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .unwrap();
+        (slab, vault)
+    }
+
+    fn kickstart_genesis_market(&mut self, slab: &Pubkey, percolator_vault: &Pubkey) {
+        let (percolator_vault_pda, _) =
+            Pubkey::find_program_address(&[b"vault", slab.as_ref()], &self.percolator_id);
+        let ix = Instruction {
+            program_id: self.governance_id,
+            accounts: vec![
+                AccountMeta::new(self.dao_authority.pubkey(), true),
+                AccountMeta::new(self.governance_authority_pda, false),
+                AccountMeta::new_readonly(self.rewards_id, false),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new(self.genesis_cfg_pda(), false),
+                AccountMeta::new_readonly(self.market_admin_pda(), false),
+                AccountMeta::new(*slab, false),
+                AccountMeta::new(self.genesis_vault_pda(), false),
+                AccountMeta::new(*percolator_vault, false),
+                AccountMeta::new_readonly(percolator_vault_pda, false),
+                AccountMeta::new_readonly(self.percolator_id, false),
+                AccountMeta::new_readonly(spl_token::ID, false),
+            ],
+            data: encode_governance_kickstart_genesis_market(0, 10_000),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[
+                ComputeBudgetInstruction::set_compute_unit_limit(1_400_000),
+                ix,
+            ],
+            Some(&self.dao_authority.pubkey()),
+            &[&self.dao_authority],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .expect("kickstart genesis market failed");
+    }
+
+    fn recover_genesis_market(
+        &mut self,
+        slab: &Pubkey,
+        percolator_vault: &Pubkey,
+        kind: u8,
+        domain: u8,
+        amount: u64,
+    ) -> Result<(), String> {
+        let (percolator_vault_pda, _) =
+            Pubkey::find_program_address(&[b"vault", slab.as_ref()], &self.percolator_id);
+        let ix = Instruction {
+            program_id: self.governance_id,
+            accounts: vec![
+                AccountMeta::new(self.dao_authority.pubkey(), true),
+                AccountMeta::new(self.governance_authority_pda, false),
+                AccountMeta::new_readonly(self.rewards_id, false),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new_readonly(self.genesis_cfg_pda(), false),
+                AccountMeta::new_readonly(self.market_admin_pda(), false),
+                AccountMeta::new(*slab, false),
+                AccountMeta::new(self.genesis_vault_pda(), false),
+                AccountMeta::new(*percolator_vault, false),
+                AccountMeta::new_readonly(percolator_vault_pda, false),
+                AccountMeta::new_readonly(self.percolator_id, false),
+                AccountMeta::new_readonly(spl_token::ID, false),
+            ],
+            data: encode_governance_recover_genesis_market(kind, domain, amount),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[
+                ComputeBudgetInstruction::set_compute_unit_limit(1_400_000),
+                ix,
+            ],
+            Some(&self.dao_authority.pubkey()),
+            &[&self.dao_authority],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn approve_builder(
+        &mut self,
+        builder_program: &Pubkey,
+        code_hash: [u8; 32],
+        terms_hash: [u8; 32],
+        enabled: bool,
+    ) {
+        let signer = Keypair::from_bytes(&self.dao_authority.to_bytes()).unwrap();
+        self.try_approve_builder_with_signer(
+            &signer,
+            builder_program,
+            code_hash,
+            terms_hash,
+            enabled,
+        )
+        .expect("approve builder failed");
+    }
+
+    fn try_approve_builder_with_signer(
+        &mut self,
+        signer: &Keypair,
+        builder_program: &Pubkey,
+        code_hash: [u8; 32],
+        terms_hash: [u8; 32],
+        enabled: bool,
+    ) -> Result<(), String> {
+        let approval = self.builder_approval_pda(builder_program, &code_hash);
+        let ix = Instruction {
+            program_id: self.governance_id,
+            accounts: vec![
+                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new(self.governance_authority_pda, false),
+                AccountMeta::new_readonly(self.rewards_id, false),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new_readonly(*builder_program, false),
+                AccountMeta::new(approval, false),
+                AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+                AccountMeta::new_readonly(sysvar::clock::ID, false),
+            ],
+            data: encode_governance_approve_builder(code_hash, terms_hash, enabled),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&signer.pubkey()),
+            &[signer],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn try_governance_unknown_tag(&mut self, signer: &Keypair, tag: u8) -> Result<(), String> {
+        let ix = Instruction {
+            program_id: self.governance_id,
+            accounts: vec![AccountMeta::new(signer.pubkey(), true)],
+            data: vec![tag],
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&signer.pubkey()),
+            &[signer],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn try_governance_percolator_admin_raw(
+        &mut self,
+        signer: &Keypair,
+        percolator_ix_data: Vec<u8>,
+    ) -> Result<(), String> {
+        let mut data = vec![9u8];
+        data.extend_from_slice(&percolator_ix_data);
+        let ix = Instruction {
+            program_id: self.governance_id,
+            accounts: vec![
+                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new(self.governance_authority_pda, false),
+                AccountMeta::new_readonly(self.rewards_id, false),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new_readonly(self.market_admin_pda(), false),
+                AccountMeta::new_readonly(self.percolator_id, false),
+            ],
+            data,
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&signer.pubkey()),
+            &[signer],
             self.svm.latest_blockhash(),
         );
         self.svm
@@ -1284,6 +2244,32 @@ impl TestEnv {
     fn create_coin_ata(&mut self, owner: &Pubkey, amount: u64) -> Pubkey {
         let mint = self.coin_mint;
         self.create_ata(&mint, owner, amount)
+    }
+
+    fn set_token_balance_for_test(&mut self, account: &Pubkey, amount: u64) {
+        let mut account_data = self
+            .svm
+            .get_account(account)
+            .expect("token account missing");
+        let mut token = TokenAccount::unpack(&account_data.data).unwrap();
+        token.amount = amount;
+        TokenAccount::pack(token, &mut account_data.data).unwrap();
+        self.svm.set_account(*account, account_data).unwrap();
+    }
+
+    fn force_genesis_kicked_for_test(&mut self) {
+        let genesis_cfg = self.genesis_cfg_pda();
+        let mut account = self
+            .svm
+            .get_account(&genesis_cfg)
+            .expect("genesis cfg missing");
+        account.data[169] = 1;
+        self.svm.set_account(genesis_cfg, account).unwrap();
+    }
+
+    fn install_executable_builder_for_test(&mut self, builder_program: Pubkey) {
+        let bytes = std::fs::read(governance_path()).expect("read governance BPF for builder");
+        self.svm.add_program(builder_program, &bytes);
     }
 
     fn set_clock(&mut self, slot: u64) {
@@ -1945,11 +2931,36 @@ fn test_init_coin_config_happy_path() {
         Pubkey::find_program_address(&[b"coin_cfg", env.coin_mint.as_ref()], &env.rewards_id);
     let cfg_account = env.svm.get_account(&coin_cfg_pda).unwrap();
     assert_eq!(cfg_account.owner, env.rewards_id);
-    assert_eq!(cfg_account.data.len(), 40); // COIN_CFG_SIZE = 8 + 32
+    assert_eq!(cfg_account.data.len(), 72); // COIN_CFG_SIZE
 
-    assert_eq!(&cfg_account.data[..8], b"CCFG_INI");
+    assert_eq!(&cfg_account.data[..8], b"CCFGV002");
     let stored_auth = Pubkey::new_from_array(cfg_account.data[8..40].try_into().unwrap());
     assert_eq!(stored_auth, env.governance_authority_pda);
+    let stored_start = u64::from_le_bytes(cfg_account.data[40..48].try_into().unwrap());
+    assert_eq!(stored_start, 100);
+    let stored_delay = u64::from_le_bytes(cfg_account.data[48..56].try_into().unwrap());
+    assert_eq!(stored_delay, 0);
+    let stored_live_slot = u64::from_le_bytes(cfg_account.data[56..64].try_into().unwrap());
+    assert_eq!(stored_live_slot, 100);
+    assert_eq!(cfg_account.data[64], 1); // live phase
+}
+
+#[test]
+fn test_init_coin_config_records_configurable_bootstrap_delay() {
+    let mut env = TestEnv::new();
+    env.init_coin_config_with_delay(50);
+
+    let cfg_account = env.svm.get_account(&env.coin_cfg_pda()).unwrap();
+    assert_eq!(&cfg_account.data[..8], b"CCFGV002");
+    let stored_auth = Pubkey::new_from_array(cfg_account.data[8..40].try_into().unwrap());
+    assert_eq!(stored_auth, env.governance_authority_pda);
+    let stored_start = u64::from_le_bytes(cfg_account.data[40..48].try_into().unwrap());
+    let stored_delay = u64::from_le_bytes(cfg_account.data[48..56].try_into().unwrap());
+    let stored_live_slot = u64::from_le_bytes(cfg_account.data[56..64].try_into().unwrap());
+    assert_eq!(stored_start, 100);
+    assert_eq!(stored_delay, 50);
+    assert_eq!(stored_live_slot, 0);
+    assert_eq!(cfg_account.data[64], 0); // bootstrap phase
 }
 
 #[test]
@@ -2156,6 +3167,688 @@ fn test_trusted_bootstrap_ceremony_flow() {
     assert_eq!(mrc.owner, env.rewards_id);
     let stored_start = u64::from_le_bytes(mrc.data[120..128].try_into().unwrap());
     assert_eq!(stored_start, 100);
+}
+
+#[test]
+fn test_configurable_bootstrap_delay_blocks_market_init_until_live() {
+    let mut env = TestEnv::new();
+    env.init_coin_config_with_delay(50);
+    env.register_insurance_operator_for_slab(&env.slab.clone());
+    env.burn_market_admin();
+
+    let result = env.try_init_market_rewards(1000, 216_000);
+    assert!(
+        result.is_err(),
+        "market reward init should be blocked while bootstrap phase is active"
+    );
+
+    env.set_clock(149);
+    let dao = Keypair::from_bytes(&env.dao_authority.to_bytes()).unwrap();
+    let result = env.try_activate_live(&dao);
+    assert!(
+        result.is_err(),
+        "bootstrap activation should fail before configured delay elapses"
+    );
+
+    env.set_clock(150);
+    env.activate_live();
+    let cfg_account = env.svm.get_account(&env.coin_cfg_pda()).unwrap();
+    let live_slot = u64::from_le_bytes(cfg_account.data[56..64].try_into().unwrap());
+    assert_eq!(live_slot, 150);
+    assert_eq!(cfg_account.data[64], 1);
+
+    let slab = env.slab;
+    env.try_init_market_rewards_for_slab(&slab, 1000, 216_000)
+        .expect("market reward init should succeed after live activation");
+}
+
+#[test]
+fn test_bootstrap_live_activation_requires_controller() {
+    let mut env = TestEnv::new();
+    env.init_coin_config_with_delay(10);
+    env.set_clock(110);
+
+    let attacker = Keypair::new();
+    env.svm.airdrop(&attacker.pubkey(), 10_000_000_000).unwrap();
+    let result = env.try_activate_live(&attacker);
+    assert!(
+        result.is_err(),
+        "non-controller must not be able to activate live phase"
+    );
+
+    let cfg_account = env.svm.get_account(&env.coin_cfg_pda()).unwrap();
+    assert_eq!(cfg_account.data[64], 0);
+}
+
+#[test]
+fn test_genesis_bootstrap_votes_distribution_withdrawal_and_surplus() {
+    let mut env = TestEnv::new_meta_only();
+    env.init_coin_config_with_delay(50);
+    env.init_genesis_bootstrap(100);
+
+    let alice = Keypair::new();
+    let bob = Keypair::new();
+    env.svm.airdrop(&alice.pubkey(), 10_000_000_000).unwrap();
+    env.svm.airdrop(&bob.pubkey(), 10_000_000_000).unwrap();
+
+    env.genesis_deposit(&alice, 1);
+    env.genesis_deposit(&bob, 3);
+    assert_eq!(env.read_token_balance(&env.genesis_vault_pda()), 4);
+
+    let cfg_account = env.svm.get_account(&env.genesis_cfg_pda()).unwrap();
+    assert_eq!(
+        u64::from_le_bytes(cfg_account.data[104..112].try_into().unwrap()),
+        4
+    );
+    assert_eq!(
+        u128::from_le_bytes(cfg_account.data[136..152].try_into().unwrap()),
+        4,
+        "insurance principal is tracked as exactly half in x2 units"
+    );
+    assert_eq!(
+        u128::from_le_bytes(cfg_account.data[152..168].try_into().unwrap()),
+        4,
+        "backing principal is tracked as exactly half in x2 units"
+    );
+    let alice_pos = env
+        .svm
+        .get_account(&env.genesis_position_pda(&alice.pubkey()))
+        .unwrap();
+    assert_eq!(
+        u64::from_le_bytes(alice_pos.data[56..64].try_into().unwrap()),
+        1,
+        "one base unit gives one vote"
+    );
+
+    let alice_coin = env.create_coin_ata(&alice.pubkey(), 0);
+    let early = env.try_governance_genesis_mint_reward(1, 1, &alice_coin);
+    assert!(
+        early.is_err(),
+        "distribution is blocked before genesis ends"
+    );
+
+    env.set_clock(150);
+    env.activate_live();
+    let bob_coin = env.create_coin_ata(&bob.pubkey(), 0);
+    env.init_genesis_distribution(1, 40, &alice_coin);
+    let unapproved = env.try_governance_genesis_mint_reward(1, 40, &alice_coin);
+    assert!(
+        unapproved.is_err(),
+        "minting requires a majority-approved genesis distribution proposal"
+    );
+    env.init_genesis_distribution(2, 60, &bob_coin);
+    env.vote_genesis_distribution(&alice, 1, true);
+    env.vote_genesis_distribution(&bob, 1, true);
+    env.vote_genesis_distribution(&alice, 2, true);
+    env.vote_genesis_distribution(&bob, 2, true);
+    env.governance_genesis_mint_reward(1, 40, &alice_coin);
+    env.governance_genesis_mint_reward(2, 60, &bob_coin);
+    assert_eq!(env.read_token_balance(&alice_coin), 40);
+    assert_eq!(env.read_token_balance(&bob_coin), 60);
+    let overmint = env.try_governance_genesis_mint_reward(2, 60, &bob_coin);
+    assert!(
+        overmint.is_err(),
+        "genesis distribution proposals execute only once"
+    );
+    env.force_genesis_kicked_for_test();
+    env.finalize_genesis();
+
+    let collateral_mint = env.collateral_mint;
+    let donor_ata = env.create_ata(&collateral_mint, &env.dao_authority.pubkey(), 2);
+    let xfer = spl_token::instruction::transfer(
+        &spl_token::ID,
+        &donor_ata,
+        &env.genesis_vault_pda(),
+        &env.dao_authority.pubkey(),
+        &[],
+        2,
+    )
+    .unwrap();
+    env.svm.expire_blockhash();
+    let tx = Transaction::new_signed_with_payer(
+        &[xfer],
+        Some(&env.dao_authority.pubkey()),
+        &[&env.dao_authority],
+        env.svm.latest_blockhash(),
+    );
+    env.svm
+        .send_transaction(tx)
+        .expect("inject genesis surplus");
+
+    let alice_base = env.genesis_withdraw(&alice);
+    let bob_base = env.genesis_withdraw(&bob);
+    assert_eq!(env.read_token_balance(&alice_base), 1);
+    assert_eq!(env.read_token_balance(&bob_base), 3);
+    let alice_pos = env
+        .svm
+        .get_account(&env.genesis_position_pda(&alice.pubkey()))
+        .unwrap();
+    assert_eq!(
+        u64::from_le_bytes(alice_pos.data[56..64].try_into().unwrap()),
+        0,
+        "votes are worthless after principal claim"
+    );
+
+    let collateral_mint = env.collateral_mint;
+    let dao_base = env.create_ata(&collateral_mint, &env.dao_authority.pubkey(), 0);
+    env.draw_genesis_surplus(2, &dao_base);
+    assert_eq!(env.read_token_balance(&dao_base), 2);
+    assert_eq!(env.read_token_balance(&env.genesis_vault_pda()), 0);
+}
+
+#[test]
+fn test_genesis_distribution_creation_is_permissionless_but_bounded() {
+    let mut env = TestEnv::new_meta_only();
+    env.init_coin_config_with_delay(50);
+    env.init_genesis_bootstrap(100);
+
+    let proposer = Keypair::new();
+    env.svm.airdrop(&proposer.pubkey(), 10_000_000_000).unwrap();
+    let destination = env.create_coin_ata(&proposer.pubkey(), 0);
+
+    let early = env.try_init_genesis_distribution_with_payer(&proposer, 1, 100, &destination);
+    assert!(
+        early.is_err(),
+        "genesis allocation proposals are blocked until the COIN instance is live"
+    );
+
+    env.set_clock(150);
+    env.activate_live();
+
+    let collateral_mint = env.collateral_mint;
+    let wrong_mint_destination = env.create_ata(&collateral_mint, &proposer.pubkey(), 0);
+    let wrong_mint =
+        env.try_init_genesis_distribution_with_payer(&proposer, 1, 1, &wrong_mint_destination);
+    assert!(
+        wrong_mint.is_err(),
+        "allocation destination must be a COIN token account"
+    );
+
+    let over_cap = env.try_init_genesis_distribution_with_payer(&proposer, 1, 101, &destination);
+    assert!(
+        over_cap.is_err(),
+        "single allocation proposal cannot exceed the fixed reward supply"
+    );
+
+    env.try_init_genesis_distribution_with_payer(&proposer, 1, 100, &destination)
+        .expect("permissionless proposer should be able to create a bounded allocation");
+
+    let duplicate = env.try_init_genesis_distribution_with_payer(&proposer, 1, 100, &destination);
+    assert!(duplicate.is_err(), "proposal ids are one-shot PDAs");
+}
+
+#[test]
+fn test_genesis_finalize_requires_market_kickstart() {
+    let mut env = TestEnv::new_meta_only();
+    env.init_coin_config_with_delay(1);
+    env.init_genesis_bootstrap(100);
+
+    let voter = Keypair::new();
+    env.svm.airdrop(&voter.pubkey(), 10_000_000_000).unwrap();
+    env.genesis_deposit(&voter, 1);
+    env.set_clock(101);
+    env.activate_live();
+
+    let destination = env.create_coin_ata(&voter.pubkey(), 0);
+    env.init_genesis_distribution(1, 100, &destination);
+    env.vote_genesis_distribution(&voter, 1, true);
+    env.governance_genesis_mint_reward(1, 100, &destination);
+
+    let finalize_without_kick = env.try_finalize_genesis();
+    assert!(
+        finalize_without_kick.is_err(),
+        "full reward distribution alone does not finalize genesis before pooled risk is deployed"
+    );
+
+    env.force_genesis_kicked_for_test();
+    env.finalize_genesis();
+}
+
+#[test]
+fn test_underfunded_genesis_withdrawal_keeps_unpaid_principal_claim() {
+    let mut env = TestEnv::new_meta_only();
+    env.init_coin_config_with_delay(1);
+    env.init_genesis_bootstrap(100);
+
+    let alice = Keypair::new();
+    let bob = Keypair::new();
+    env.svm.airdrop(&alice.pubkey(), 10_000_000_000).unwrap();
+    env.svm.airdrop(&bob.pubkey(), 10_000_000_000).unwrap();
+    env.genesis_deposit(&alice, 2);
+    env.genesis_deposit(&bob, 2);
+    env.set_clock(101);
+    env.activate_live();
+
+    let destination = env.create_coin_ata(&alice.pubkey(), 0);
+    env.init_genesis_distribution(1, 100, &destination);
+    env.vote_genesis_distribution(&alice, 1, true);
+    env.vote_genesis_distribution(&bob, 1, true);
+    env.governance_genesis_mint_reward(1, 100, &destination);
+    env.force_genesis_kicked_for_test();
+    env.finalize_genesis();
+
+    let genesis_vault = env.genesis_vault_pda();
+    env.set_token_balance_for_test(&genesis_vault, 2);
+    let alice_first = env.genesis_withdraw(&alice);
+    assert_eq!(env.read_token_balance(&alice_first), 1);
+    let alice_pos = env
+        .svm
+        .get_account(&env.genesis_position_pda(&alice.pubkey()))
+        .unwrap();
+    assert_eq!(
+        u64::from_le_bytes(alice_pos.data[48..56].try_into().unwrap()),
+        1,
+        "only actually paid principal is retired"
+    );
+    assert_eq!(
+        u64::from_le_bytes(alice_pos.data[56..64].try_into().unwrap()),
+        0,
+        "underfunded withdrawals still burn the vote weight"
+    );
+
+    env.set_token_balance_for_test(&genesis_vault, 3);
+    let alice_second = env.genesis_withdraw(&alice);
+    assert_eq!(env.read_token_balance(&alice_second), 1);
+
+    let collateral_mint = env.collateral_mint;
+    let dao_base = env.create_ata(&collateral_mint, &env.dao_authority.pubkey(), 0);
+    let dao = Keypair::from_bytes(&env.dao_authority.to_bytes()).unwrap();
+    let surplus_before_bob = env.try_draw_genesis_surplus_with_signer(&dao, 1, &dao_base);
+    assert!(
+        surplus_before_bob.is_err(),
+        "later topups remain reserved for unpaid genesis principal before DAO surplus"
+    );
+
+    let bob_base = env.genesis_withdraw(&bob);
+    assert_eq!(env.read_token_balance(&bob_base), 2);
+}
+
+#[test]
+fn test_genesis_vote_records_are_nontransferable_and_strict_majority() {
+    let mut env = TestEnv::new_meta_only();
+    env.init_coin_config_with_delay(10);
+    env.init_genesis_bootstrap(100);
+
+    let alice = Keypair::new();
+    let bob = Keypair::new();
+    let outsider = Keypair::new();
+    for user in [&alice, &bob, &outsider] {
+        env.svm.airdrop(&user.pubkey(), 10_000_000_000).unwrap();
+    }
+
+    env.genesis_deposit(&alice, 1);
+    env.genesis_deposit(&bob, 1);
+    env.set_clock(120);
+    env.activate_live();
+
+    let destination = env.create_coin_ata(&alice.pubkey(), 0);
+    env.init_genesis_distribution(1, 100, &destination);
+
+    let outsider_vote = env.try_vote_genesis_distribution(&outsider, 1, true);
+    assert!(
+        outsider_vote.is_err(),
+        "only genesis depositors with recorded vote units can vote"
+    );
+
+    env.vote_genesis_distribution(&alice, 1, true);
+    let one_yes = env.try_governance_genesis_mint_reward(1, 100, &destination);
+    assert!(
+        one_yes.is_err(),
+        "exactly half of deposited vote units is not a strict majority"
+    );
+
+    env.vote_genesis_distribution(&bob, 1, false);
+    let proposal = env
+        .svm
+        .get_account(&env.genesis_distribution_pda(1))
+        .unwrap();
+    assert_eq!(
+        u64::from_le_bytes(proposal.data[88..96].try_into().unwrap()),
+        1
+    );
+    assert_eq!(
+        u64::from_le_bytes(proposal.data[96..104].try_into().unwrap()),
+        1
+    );
+
+    env.vote_genesis_distribution(&bob, 1, true);
+    let proposal = env
+        .svm
+        .get_account(&env.genesis_distribution_pda(1))
+        .unwrap();
+    assert_eq!(
+        u64::from_le_bytes(proposal.data[88..96].try_into().unwrap()),
+        2,
+        "revoting removes the old ballot before adding the new one"
+    );
+    assert_eq!(
+        u64::from_le_bytes(proposal.data[96..104].try_into().unwrap()),
+        0
+    );
+
+    let vote = env
+        .svm
+        .get_account(
+            &env.genesis_distribution_vote_pda(&env.genesis_distribution_pda(1), &bob.pubkey()),
+        )
+        .unwrap();
+    assert_eq!(u64::from_le_bytes(vote.data[72..80].try_into().unwrap()), 1);
+    assert_eq!(vote.data[80], 1);
+
+    env.governance_genesis_mint_reward(1, 100, &destination);
+    assert_eq!(env.read_token_balance(&destination), 100);
+
+    let post_execute_vote = env.try_vote_genesis_distribution(&alice, 1, false);
+    assert!(
+        post_execute_vote.is_err(),
+        "executed allocations cannot be re-voted"
+    );
+
+    let early_withdraw = env.try_genesis_withdraw(&alice);
+    assert!(
+        early_withdraw.is_err(),
+        "genesis principal cannot be withdrawn before finalization"
+    );
+
+    env.force_genesis_kicked_for_test();
+    env.finalize_genesis();
+    let post_finalize_vote = env.try_vote_genesis_distribution(&alice, 1, true);
+    assert!(
+        post_finalize_vote.is_err(),
+        "finalized genesis vote units are not reusable"
+    );
+}
+
+#[test]
+fn test_genesis_governance_surface_is_fixed_and_controller_gated() {
+    let mut env = TestEnv::new_meta_only();
+    env.init_coin_config_with_delay(10);
+
+    let dao = Keypair::from_bytes(&env.dao_authority.to_bytes()).unwrap();
+    let attacker = Keypair::new();
+    env.svm.airdrop(&attacker.pubkey(), 10_000_000_000).unwrap();
+
+    let unknown = env.try_governance_unknown_tag(&dao, 250);
+    assert!(
+        unknown.is_err(),
+        "governance adapter has no catch-all executor"
+    );
+
+    let attacker_bootstrap = env.try_init_genesis_bootstrap_with_signer(&attacker, 100);
+    assert!(
+        attacker_bootstrap.is_err(),
+        "non-controller cannot initialize genesis bootstrap"
+    );
+
+    env.init_genesis_bootstrap(100);
+    let voter = Keypair::new();
+    env.svm.airdrop(&voter.pubkey(), 10_000_000_000).unwrap();
+    env.genesis_deposit(&voter, 1);
+    env.set_clock(120);
+    env.activate_live();
+    let destination = env.create_coin_ata(&voter.pubkey(), 0);
+    env.init_genesis_distribution(1, 100, &destination);
+    env.vote_genesis_distribution(&voter, 1, true);
+
+    let attacker_mint =
+        env.try_governance_genesis_mint_reward_with_signer(&attacker, 1, 100, &destination);
+    assert!(
+        attacker_mint.is_err(),
+        "non-controller cannot execute approved genesis minting"
+    );
+
+    let attacker_finalize = env.try_finalize_genesis_with_signer(&attacker);
+    assert!(
+        attacker_finalize.is_err(),
+        "non-controller cannot finalize genesis"
+    );
+
+    let collateral_mint = env.collateral_mint;
+    let attacker_base = env.create_ata(&collateral_mint, &attacker.pubkey(), 0);
+    let attacker_draw = env.try_draw_genesis_surplus_with_signer(&attacker, 1, &attacker_base);
+    assert!(
+        attacker_draw.is_err(),
+        "non-controller cannot draw genesis surplus"
+    );
+
+    let builder_program = Pubkey::new_unique();
+    let attacker_approval = env.try_approve_builder_with_signer(
+        &attacker,
+        &builder_program,
+        [1u8; 32],
+        [2u8; 32],
+        true,
+    );
+    assert!(
+        attacker_approval.is_err(),
+        "non-controller cannot approve builder code"
+    );
+
+    let funding_tag = env.try_governance_percolator_admin_raw(&dao, vec![9u8]);
+    assert!(
+        funding_tag.is_err(),
+        "governance percolator proxy rejects funding/withdrawal-style tags"
+    );
+    let custody_update =
+        env.try_governance_percolator_admin_raw(&dao, encode_update_admin(&attacker.pubkey()));
+    assert!(
+        custody_update.is_err(),
+        "generic futarchy admin cannot move Percolator custody authorities"
+    );
+}
+
+#[test]
+fn test_builder_code_approval_registry_is_governed_and_versioned() {
+    let mut env = TestEnv::new_meta_only();
+    env.init_coin_config();
+    let non_executable = Pubkey::new_unique();
+    env.svm
+        .set_account(
+            non_executable,
+            Account {
+                lamports: 1_000_000,
+                data: vec![],
+                owner: solana_sdk::system_program::ID,
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
+
+    let code_hash = [7u8; 32];
+    let terms_hash = [9u8; 32];
+    let dao = Keypair::from_bytes(&env.dao_authority.to_bytes()).unwrap();
+    let rejected =
+        env.try_approve_builder_with_signer(&dao, &non_executable, code_hash, terms_hash, true);
+    assert!(
+        rejected.is_err(),
+        "builder approvals are only for executable BPF program accounts"
+    );
+
+    let builder_program = Pubkey::new_unique();
+    env.install_executable_builder_for_test(builder_program);
+    env.approve_builder(&builder_program, code_hash, terms_hash, true);
+
+    let approval = env.builder_approval_pda(&builder_program, &code_hash);
+    let account = env.svm.get_account(&approval).unwrap();
+    assert_eq!(&account.data[..8], b"BLDAPP01");
+    assert_eq!(
+        Pubkey::new_from_array(account.data[8..40].try_into().unwrap()),
+        env.coin_mint
+    );
+    assert_eq!(
+        Pubkey::new_from_array(account.data[40..72].try_into().unwrap()),
+        builder_program
+    );
+    assert_eq!(&account.data[72..104], &code_hash);
+    assert_eq!(&account.data[104..136], &terms_hash);
+    assert_eq!(account.data[144], 1);
+
+    let new_terms_hash = [10u8; 32];
+    env.approve_builder(&builder_program, code_hash, new_terms_hash, false);
+    let account = env.svm.get_account(&approval).unwrap();
+    assert_eq!(&account.data[104..136], &new_terms_hash);
+    assert_eq!(account.data[144], 0);
+}
+
+#[test]
+fn test_risk_vault_setup_is_live_gated_and_fees_route_to_main_insurance() {
+    let mut env = TestEnv::new();
+    env.init_coin_config_with_delay(10);
+    let slab = env.slab;
+
+    let early = env.try_init_risk_vault(&slab, 0, 0, 0, None);
+    assert!(
+        early.is_err(),
+        "risk vault setup is only allowed after the COIN instance is live"
+    );
+
+    env.set_clock(110);
+    env.activate_live();
+    env.init_risk_vault(&slab, 0, 0, 0, None);
+
+    let collateral_mint = env.collateral_mint;
+    let dao_authority = env.dao_authority.pubkey();
+    let arbitrary_fee_destination = env.create_ata(&collateral_mint, &dao_authority, 0);
+    let bad_fee = env.try_init_risk_vault(&slab, 1, 2, 250, Some(arbitrary_fee_destination));
+    assert!(
+        bad_fee.is_err(),
+        "external backing fees must be routed to the main insurance token vault"
+    );
+
+    let insurance_fee_destination = env.risk_token_vault_pda_for(&slab, 0, 0);
+    env.init_risk_vault(&slab, 1, 2, 250, Some(insurance_fee_destination));
+    let backing_cfg = env
+        .svm
+        .get_account(&env.risk_vault_pda_for(&slab, 1, 2))
+        .unwrap();
+    assert_eq!(
+        Pubkey::new_from_array(backing_cfg.data[320..352].try_into().unwrap()),
+        insurance_fee_destination
+    );
+}
+
+#[test]
+fn test_genesis_recovery_rejects_unneeded_ledger_accounts() {
+    let mut env = TestEnv::new_meta_only();
+    env.init_coin_config_with_delay(1);
+    env.init_genesis_bootstrap(100);
+    let depositor = Keypair::new();
+    env.svm
+        .airdrop(&depositor.pubkey(), 10_000_000_000)
+        .unwrap();
+    env.genesis_deposit(&depositor, 1);
+    env.set_clock(101);
+    env.activate_live();
+    env.force_genesis_kicked_for_test();
+
+    let (slab, percolator_vault) = env.install_manual_futarchy_market_for_test();
+    let (percolator_vault_pda, _) =
+        Pubkey::find_program_address(&[b"vault", slab.as_ref()], &env.percolator_id);
+    let extra_ledger = Pubkey::new_unique();
+    env.svm
+        .set_account(
+            extra_ledger,
+            Account {
+                lamports: 1_000_000,
+                data: vec![0u8; 8],
+                owner: env.percolator_id,
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
+
+    let ix = Instruction {
+        program_id: env.governance_id,
+        accounts: vec![
+            AccountMeta::new(env.dao_authority.pubkey(), true),
+            AccountMeta::new(env.governance_authority_pda, false),
+            AccountMeta::new_readonly(env.rewards_id, false),
+            AccountMeta::new_readonly(env.coin_mint, false),
+            AccountMeta::new_readonly(env.coin_cfg_pda(), false),
+            AccountMeta::new_readonly(env.genesis_cfg_pda(), false),
+            AccountMeta::new_readonly(env.market_admin_pda(), false),
+            AccountMeta::new(slab, false),
+            AccountMeta::new(env.genesis_vault_pda(), false),
+            AccountMeta::new(percolator_vault, false),
+            AccountMeta::new_readonly(percolator_vault_pda, false),
+            AccountMeta::new_readonly(env.percolator_id, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new(extra_ledger, false),
+        ],
+        data: encode_governance_recover_genesis_market(0, 0, 1),
+    };
+    env.svm.expire_blockhash();
+    let tx = Transaction::new_signed_with_payer(
+        &[
+            ComputeBudgetInstruction::set_compute_unit_limit(1_400_000),
+            ix,
+        ],
+        Some(&env.dao_authority.pubkey()),
+        &[&env.dao_authority],
+        env.svm.latest_blockhash(),
+    );
+    let result = env.svm.send_transaction(tx);
+    assert!(
+        result.is_err(),
+        "only backing-earnings recovery may include an engine ledger account"
+    );
+}
+
+#[test]
+fn test_genesis_bootstrap_kickstarts_market_50_50() {
+    let mut env = TestEnv::new();
+    env.init_coin_config_with_delay(50);
+    env.init_genesis_bootstrap(100);
+
+    let alice = Keypair::new();
+    let bob = Keypair::new();
+    env.svm.airdrop(&alice.pubkey(), 10_000_000_000).unwrap();
+    env.svm.airdrop(&bob.pubkey(), 10_000_000_000).unwrap();
+    env.genesis_deposit(&alice, 2);
+    env.genesis_deposit(&bob, 2);
+
+    let (slab, percolator_vault) = env.init_futarchy_percolator_market();
+    let header = read_percolator_config(&env.svm.get_account(&slab).unwrap().data);
+    assert_eq!(
+        Pubkey::new_from_array(header.admin),
+        env.market_admin_pda(),
+        "market admin is the futarchy PDA from creation"
+    );
+
+    env.kickstart_genesis_market(&slab, &percolator_vault);
+    assert_eq!(env.read_token_balance(&env.genesis_vault_pda()), 0);
+    assert_eq!(env.read_token_balance(&percolator_vault), 4);
+    assert_eq!(
+        env.percolator_insurance_balance(&slab),
+        2,
+        "half of genesis principal goes to insurance"
+    );
+
+    let cfg_account = env.svm.get_account(&env.genesis_cfg_pda()).unwrap();
+    assert_eq!(cfg_account.data[169], 1, "genesis market was kicked");
+    let late = Keypair::new();
+    env.svm.airdrop(&late.pubkey(), 10_000_000_000).unwrap();
+    let late_deposit = env.try_genesis_deposit(&late, 1);
+    assert!(
+        late_deposit.is_err(),
+        "genesis deposits close once pooled capital is deployed"
+    );
+
+    env.set_clock(150);
+    env.activate_live();
+    let slab_for_rewards = slab;
+    let dao = Keypair::from_bytes(&env.dao_authority.to_bytes()).unwrap();
+    let collateral_mint = env.collateral_mint;
+    env.try_init_market_rewards_for_slab_with_signer(
+        &slab_for_rewards,
+        1000,
+        216_000,
+        &dao,
+        &collateral_mint,
+    )
+    .expect("PDA-admin market can enter reward lifecycle after genesis");
 }
 
 #[test]
@@ -2386,6 +4079,27 @@ fn test_governance_reward_lifecycle_mint_and_transfer_authority() {
         result.is_err(),
         "rewards PDA must stop minting after authority is transferred away"
     );
+}
+
+#[test]
+fn test_bootstrap_phase_blocks_governed_reward_mint_until_live() {
+    let mut env = TestEnv::new();
+    env.init_coin_config_with_delay(10);
+
+    let dao = Keypair::from_bytes(&env.dao_authority.to_bytes()).unwrap();
+    let dao_dest = env.create_coin_ata(&env.dao_authority.pubkey(), 0);
+    let result = env.try_governance_mint_reward(&dao, 1, &dao_dest);
+    assert!(
+        result.is_err(),
+        "bootstrap phase must block governed reward minting"
+    );
+    assert_eq!(env.read_token_balance(&dao_dest), 0);
+
+    env.set_clock(110);
+    env.activate_live();
+    env.try_governance_mint_reward(&dao, 1, &dao_dest)
+        .expect("governed reward mint should succeed after live activation");
+    assert_eq!(env.read_token_balance(&dao_dest), 1);
 }
 
 #[test]
