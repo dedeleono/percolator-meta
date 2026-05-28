@@ -185,9 +185,9 @@ const GENESIS_RECOVER_INSURANCE_DOMAIN: u8 = 4;
 /// CoinConfig: 8 + 32 + 8 + 8 + 8 + 1 + 7 = 72
 const COIN_CFG_SIZE: usize = 8 + 32 + 8 + 8 + 8 + 1 + 7;
 /// GenesisConfig: base-token bootstrap deposits, vote units, and fixed supply.
-const GENESIS_CFG_SIZE: usize = 184;
+const GENESIS_CFG_SIZE: usize = 144;
 /// GenesisPosition: per-user base-unit deposit and voting weight.
-const GENESIS_POSITION_SIZE: usize = 72;
+const GENESIS_POSITION_SIZE: usize = 64;
 /// GenesisDistribution: vote-approved mint allocation item.
 const GENESIS_DISTRIBUTION_SIZE: usize = 120;
 /// GenesisDistributionVote: one voter's weight on one allocation item.
@@ -207,7 +207,6 @@ const PHASE_BOOTSTRAP: u8 = 0;
 const PHASE_LIVE: u8 = 1;
 
 /// Default genesis deposit window: roughly one week at 400ms slots.
-const DEFAULT_GENESIS_DEPOSIT_WINDOW_SLOTS: u64 = 1_512_000;
 
 // ============================================================================
 // PDA seeds
@@ -418,11 +417,8 @@ struct GenesisConfig {
     total_withdrawn: u64,
     reward_supply: u64,
     minted_supply: u64,
-    insurance_principal_x2: u128,
-    backing_principal_x2: u128,
     finalized: u8,
     kicked: u8,
-    deposit_end_slot: u64,
 }
 
 impl GenesisConfig {
@@ -430,8 +426,8 @@ impl GenesisConfig {
         if data.len() < GENESIS_CFG_SIZE || data[..8] != GENESIS_CFG_DISC {
             return Err(ProgramError::InvalidAccountData);
         }
-        let finalized = data[168];
-        let kicked = data[169];
+        let finalized = data[136];
+        let kicked = data[137];
         if finalized > 1 || kicked > 1 {
             return Err(ProgramError::InvalidAccountData);
         }
@@ -443,11 +439,8 @@ impl GenesisConfig {
             total_withdrawn: u64::from_le_bytes(data[112..120].try_into().unwrap()),
             reward_supply: u64::from_le_bytes(data[120..128].try_into().unwrap()),
             minted_supply: u64::from_le_bytes(data[128..136].try_into().unwrap()),
-            insurance_principal_x2: u128::from_le_bytes(data[136..152].try_into().unwrap()),
-            backing_principal_x2: u128::from_le_bytes(data[152..168].try_into().unwrap()),
             finalized,
             kicked,
-            deposit_end_slot: u64::from_le_bytes(data[176..184].try_into().unwrap()),
         })
     }
 
@@ -460,12 +453,9 @@ impl GenesisConfig {
         data[112..120].copy_from_slice(&self.total_withdrawn.to_le_bytes());
         data[120..128].copy_from_slice(&self.reward_supply.to_le_bytes());
         data[128..136].copy_from_slice(&self.minted_supply.to_le_bytes());
-        data[136..152].copy_from_slice(&self.insurance_principal_x2.to_le_bytes());
-        data[152..168].copy_from_slice(&self.backing_principal_x2.to_le_bytes());
-        data[168] = self.finalized;
-        data[169] = self.kicked;
-        data[170..176].fill(0);
-        data[176..184].copy_from_slice(&self.deposit_end_slot.to_le_bytes());
+        data[136] = self.finalized;
+        data[137] = self.kicked;
+        data[138..GENESIS_CFG_SIZE].fill(0);
     }
 
     fn is_finalized(&self) -> bool {
@@ -488,7 +478,6 @@ struct GenesisPosition {
     /// Slot of the depositor's most recent deposit (last-write-time). Vote weight
     /// is `floor(log2(vote_slot - start_slot)) * staked`. Cleared to 0 on exit.
     start_slot: u64,
-    reserved: u64,
 }
 
 impl GenesisPosition {
@@ -501,7 +490,6 @@ impl GenesisPosition {
             amount: u64::from_le_bytes(data[40..48].try_into().unwrap()),
             withdrawn: u64::from_le_bytes(data[48..56].try_into().unwrap()),
             start_slot: u64::from_le_bytes(data[56..64].try_into().unwrap()),
-            reserved: u64::from_le_bytes(data[64..72].try_into().unwrap()),
         })
     }
 
@@ -511,7 +499,6 @@ impl GenesisPosition {
         data[40..48].copy_from_slice(&self.amount.to_le_bytes());
         data[48..56].copy_from_slice(&self.withdrawn.to_le_bytes());
         data[56..64].copy_from_slice(&self.start_slot.to_le_bytes());
-        data[64..72].copy_from_slice(&self.reserved.to_le_bytes());
     }
 
     fn staked(&self) -> u64 {
@@ -1527,7 +1514,7 @@ fn process_percolator_admin<'a>(
 //   [9] rent sysvar
 //   [10] system_program
 //
-// Data: reward_supply (u64), optional deposit_window_slots (u64)
+// Data: reward_supply (u64)
 
 fn process_init_genesis_bootstrap<'a>(
     program_id: &Pubkey,
@@ -1548,11 +1535,6 @@ fn process_init_genesis_bootstrap<'a>(
     let system_program = next_account_info(iter)?;
 
     let reward_supply = read_u64(data)?;
-    let requested_deposit_window_slots = if data.is_empty() {
-        None
-    } else {
-        Some(read_u64(data)?)
-    };
     if reward_supply == 0 || !data.is_empty() {
         return Err(ProgramError::InvalidInstructionData);
     }
@@ -1582,21 +1564,6 @@ fn process_init_genesis_bootstrap<'a>(
         msg!("genesis bootstrap delay has elapsed");
         return Err(ProgramError::InvalidInstructionData);
     }
-    let remaining_bootstrap_slots = live_after_slot
-        .checked_sub(clock.slot)
-        .ok_or(ProgramError::InvalidAccountData)?;
-    let deposit_window_slots = match requested_deposit_window_slots {
-        Some(0) => return Err(ProgramError::InvalidInstructionData),
-        Some(window) if window > remaining_bootstrap_slots => {
-            return Err(ProgramError::InvalidInstructionData);
-        }
-        Some(window) => window,
-        None => DEFAULT_GENESIS_DEPOSIT_WINDOW_SLOTS.min(remaining_bootstrap_slots),
-    };
-    let deposit_end_slot = clock
-        .slot
-        .checked_add(deposit_window_slots)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
     if base_mint.owner != &spl_token::ID {
         return Err(ProgramError::IllegalOwner);
     }
@@ -1665,11 +1632,8 @@ fn process_init_genesis_bootstrap<'a>(
         total_withdrawn: 0,
         reward_supply,
         minted_supply: 0,
-        insurance_principal_x2: 0,
-        backing_principal_x2: 0,
         finalized: 0,
         kicked: 0,
-        deposit_end_slot,
     };
     let mut cfg_data = genesis_cfg.try_borrow_mut_data()?;
     cfg.serialize(&mut cfg_data);
@@ -1761,7 +1725,6 @@ fn process_genesis_deposit<'a>(
             amount: 0,
             withdrawn: 0,
             start_slot: 0,
-            reserved: 0,
         }
     } else {
         if genesis_position.owner != program_id {
@@ -1796,14 +1759,6 @@ fn process_genesis_deposit<'a>(
     genesis_cfg.total_deposited = genesis_cfg
         .total_deposited
         .checked_add(amount)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-    genesis_cfg.insurance_principal_x2 = genesis_cfg
-        .insurance_principal_x2
-        .checked_add(amount as u128)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-    genesis_cfg.backing_principal_x2 = genesis_cfg
-        .backing_principal_x2
-        .checked_add(amount as u128)
         .ok_or(ProgramError::ArithmeticOverflow)?;
     pos.amount = pos
         .amount
@@ -1895,7 +1850,6 @@ fn process_genesis_withdraw<'a>(
         .checked_add(actual)
         .ok_or(ProgramError::ArithmeticOverflow)?;
     pos.start_slot = 0;
-    pos.reserved = 0;
     let mut cfg_data = genesis_cfg_account.try_borrow_mut_data()?;
     cfg.serialize(&mut cfg_data);
     let mut pos_data = genesis_position.try_borrow_mut_data()?;
@@ -2102,9 +2056,6 @@ fn process_genesis_bootstrap_withdraw<'a>(
                 )?;
             }
             cfg.total_deposited = cfg.total_deposited.saturating_sub(actual);
-            cfg.insurance_principal_x2 =
-                cfg.insurance_principal_x2.saturating_sub(actual as u128);
-            cfg.backing_principal_x2 = cfg.backing_principal_x2.saturating_sub(actual as u128);
             pos.amount = pos.amount.saturating_sub(actual);
         }
     } else {
@@ -2211,7 +2162,6 @@ fn process_genesis_bootstrap_withdraw<'a>(
 
     // The exit forfeits all voting power regardless of how much was recovered.
     pos.start_slot = 0;
-    pos.reserved = 0;
 
     let mut cfg_data = genesis_cfg_account.try_borrow_mut_data()?;
     cfg.serialize(&mut cfg_data);
@@ -3319,11 +3269,8 @@ mod tests {
             total_withdrawn: 1,
             reward_supply: 1_000_000,
             minted_supply: 250_000,
-            insurance_principal_x2: 101,
-            backing_principal_x2: 101,
             finalized: 1,
             kicked: 1,
-            deposit_end_slot: 12345,
         };
 
         let mut bytes = [0u8; GENESIS_CFG_SIZE];
@@ -3337,9 +3284,6 @@ mod tests {
         assert_eq!(decoded.total_withdrawn, cfg.total_withdrawn);
         assert_eq!(decoded.reward_supply, cfg.reward_supply);
         assert_eq!(decoded.minted_supply, cfg.minted_supply);
-        assert_eq!(decoded.insurance_principal_x2, cfg.insurance_principal_x2);
-        assert_eq!(decoded.backing_principal_x2, cfg.backing_principal_x2);
-        assert_eq!(decoded.deposit_end_slot, cfg.deposit_end_slot);
         assert!(decoded.is_finalized());
         assert!(decoded.is_kicked());
         assert_eq!(decoded.outstanding_principal(), 100);

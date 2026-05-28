@@ -469,11 +469,6 @@ fn process_init_genesis_bootstrap<'a>(
     let system_program = next_account_info(iter)?;
 
     let reward_supply = read_u64(data)?;
-    let deposit_window_slots = if data.is_empty() {
-        None
-    } else {
-        Some(read_u64(data)?)
-    };
     if !data.is_empty() {
         return Err(ProgramError::InvalidInstructionData);
     }
@@ -487,12 +482,9 @@ fn process_init_genesis_bootstrap<'a>(
     let bump_bytes = [bump];
     let signer_seeds = authority_signer_seeds(rewards_program.key, coin_mint.key, &bump_bytes);
 
-    let mut ix_data = Vec::with_capacity(17);
+    let mut ix_data = Vec::with_capacity(9);
     ix_data.push(21u8);
     ix_data.extend_from_slice(&reward_supply.to_le_bytes());
-    if let Some(deposit_window_slots) = deposit_window_slots {
-        ix_data.extend_from_slice(&deposit_window_slots.to_le_bytes());
-    }
     let ix = Instruction {
         program_id: *rewards_program.key,
         accounts: vec![

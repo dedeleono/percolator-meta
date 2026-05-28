@@ -376,15 +376,9 @@ fn encode_genesis_withdraw() -> Vec<u8> {
     vec![23u8]
 }
 
-fn encode_governance_init_genesis_bootstrap(
-    reward_supply: u64,
-    deposit_window_slots: Option<u64>,
-) -> Vec<u8> {
+fn encode_governance_init_genesis_bootstrap(reward_supply: u64) -> Vec<u8> {
     let mut data = vec![10u8];
     data.extend_from_slice(&reward_supply.to_le_bytes());
-    if let Some(deposit_window_slots) = deposit_window_slots {
-        data.extend_from_slice(&deposit_window_slots.to_le_bytes());
-    }
     data
 }
 
@@ -914,38 +908,15 @@ impl TestEnv {
             .expect("init_genesis_bootstrap failed");
     }
 
-    fn init_genesis_bootstrap_with_deposit_window(
-        &mut self,
-        reward_supply: u64,
-        deposit_window_slots: u64,
-    ) {
-        self.try_init_genesis_bootstrap_with_deposit_window(reward_supply, deposit_window_slots)
-            .expect("init_genesis_bootstrap with deposit window failed");
-    }
-
     fn try_init_genesis_bootstrap(&mut self, reward_supply: u64) -> Result<(), String> {
         let signer = Keypair::from_bytes(&self.dao_authority.to_bytes()).unwrap();
-        self.try_init_genesis_bootstrap_with_signer(&signer, reward_supply, None)
-    }
-
-    fn try_init_genesis_bootstrap_with_deposit_window(
-        &mut self,
-        reward_supply: u64,
-        deposit_window_slots: u64,
-    ) -> Result<(), String> {
-        let signer = Keypair::from_bytes(&self.dao_authority.to_bytes()).unwrap();
-        self.try_init_genesis_bootstrap_with_signer(
-            &signer,
-            reward_supply,
-            Some(deposit_window_slots),
-        )
+        self.try_init_genesis_bootstrap_with_signer(&signer, reward_supply)
     }
 
     fn try_init_genesis_bootstrap_with_signer(
         &mut self,
         signer: &Keypair,
         reward_supply: u64,
-        deposit_window_slots: Option<u64>,
     ) -> Result<(), String> {
         let coin_cfg = self.coin_cfg_pda();
         let genesis_cfg = self.genesis_cfg_pda();
@@ -967,7 +938,7 @@ impl TestEnv {
                 AccountMeta::new_readonly(sysvar::rent::ID, false),
                 AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
             ],
-            data: encode_governance_init_genesis_bootstrap(reward_supply, deposit_window_slots),
+            data: encode_governance_init_genesis_bootstrap(reward_supply),
         };
         self.svm.expire_blockhash();
         let tx = Transaction::new_signed_with_payer(
@@ -1659,7 +1630,7 @@ impl TestEnv {
             .svm
             .get_account(&genesis_cfg)
             .expect("genesis cfg missing");
-        account.data[169] = 1;
+        account.data[137] = 1;
         self.svm.set_account(genesis_cfg, account).unwrap();
     }
 
@@ -2067,16 +2038,6 @@ fn test_genesis_bootstrap_votes_distribution_withdrawal_and_surplus() {
         u64::from_le_bytes(cfg_account.data[104..112].try_into().unwrap()),
         4
     );
-    assert_eq!(
-        u128::from_le_bytes(cfg_account.data[136..152].try_into().unwrap()),
-        4,
-        "insurance principal is tracked as exactly half in x2 units"
-    );
-    assert_eq!(
-        u128::from_le_bytes(cfg_account.data[152..168].try_into().unwrap()),
-        4,
-        "backing principal is tracked as exactly half in x2 units"
-    );
     let alice_pos = env
         .svm
         .get_account(&env.genesis_position_pda(&alice.pubkey()))
@@ -2166,7 +2127,7 @@ fn test_genesis_bootstrap_votes_distribution_withdrawal_and_surplus() {
 fn test_genesis_deposits_stay_open_until_voting_starts() {
     let mut env = TestEnv::new_meta_only();
     env.init_coin_config_with_delay(50);
-    env.init_genesis_bootstrap_with_deposit_window(100, 5);
+    env.init_genesis_bootstrap(100);
 
     let early = Keypair::new();
     let mid = Keypair::new();
@@ -2436,7 +2397,7 @@ fn test_genesis_governance_surface_is_fixed_and_controller_gated() {
         "governance adapter has no catch-all executor"
     );
 
-    let attacker_bootstrap = env.try_init_genesis_bootstrap_with_signer(&attacker, 100, None);
+    let attacker_bootstrap = env.try_init_genesis_bootstrap_with_signer(&attacker, 100);
     assert!(
         attacker_bootstrap.is_err(),
         "non-controller cannot initialize genesis bootstrap"
@@ -2652,7 +2613,7 @@ fn test_genesis_bootstrap_kickstarts_market_50_50() {
     );
 
     let cfg_account = env.svm.get_account(&env.genesis_cfg_pda()).unwrap();
-    assert_eq!(cfg_account.data[169], 1, "genesis market was kicked");
+    assert_eq!(cfg_account.data[137], 1, "genesis market was kicked");
     let late = Keypair::new();
     env.svm.airdrop(&late.pubkey(), 10_000_000_000).unwrap();
     let late_deposit = env.try_genesis_deposit(&late, 1);
@@ -3235,11 +3196,11 @@ fn test_genesis_squads_create_and_handover_through_governance() {
 
     // --- craft a finalized GenesisConfig so handover is permitted ---
     let genesis_cfg = env.genesis_cfg_pda();
-    let mut gdata = vec![0u8; 184];
+    let mut gdata = vec![0u8; 144];
     gdata[0..8].copy_from_slice(b"GENCFG01");
     gdata[8..40].copy_from_slice(env.coin_mint.as_ref()); // coin_mint
-    gdata[168] = 1; // finalized
-    gdata[169] = 1; // kicked
+    gdata[136] = 1; // finalized
+    gdata[137] = 1; // kicked
     env.svm
         .set_account(
             genesis_cfg,
@@ -3341,11 +3302,11 @@ fn test_genesis_squads_handover_requires_finalized_genesis() {
 
     // Finalized=0 GenesisConfig -> handover must fail.
     let genesis_cfg = env.genesis_cfg_pda();
-    let mut gdata = vec![0u8; 184];
+    let mut gdata = vec![0u8; 144];
     gdata[0..8].copy_from_slice(b"GENCFG01");
     gdata[8..40].copy_from_slice(env.coin_mint.as_ref());
-    gdata[168] = 0; // NOT finalized
-    gdata[169] = 1;
+    gdata[136] = 0; // NOT finalized
+    gdata[137] = 1;
     env.svm
         .set_account(
             genesis_cfg,
@@ -3759,7 +3720,7 @@ fn test_full_genesis_to_dao_lifecycle_end_to_end() {
     // --- 9. Finalize ---
     env.finalize_genesis();
     let cfg = env.svm.get_account(&env.genesis_cfg_pda()).unwrap();
-    assert_eq!(cfg.data[168], 1, "finalized");
+    assert_eq!(cfg.data[136], 1, "finalized");
 
     // --- 10. Hand the Squads config-authority to the winning DAO ---
     let winning_dao = Pubkey::new_unique();
