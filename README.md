@@ -2,7 +2,7 @@
 
 A Solana program that bootstraps a Percolator market and distributes the initial COIN supply through a **Sybil-resistant governance vote**.
 
-Depositing capital is purely a Sybil check, not an investment. Participants put principal **at risk** in the bootstrap market for one reason — to earn the right to vote on the COIN distribution. There is **no financial reward**: no yield, no profit share, and the program never takes custody of depositor principal. The capital at risk *is* the cost of voting, which is what makes votes expensive to Sybil.
+Depositing capital is purely a Sybil check, not an investment. Participants put principal **at risk** in the bootstrap market for one reason — to earn the right to vote on the COIN distribution. There is **no financial reward**: no yield and no profit share. The capital *is* custodied by the program — it is transferred into program-owned vaults and deployed into the market, and can only be withdrawn back out through the program — but the rules are fixed and non-discretionary: no party can divert depositor principal (governance may draw only genuine *surplus* above it), and depositors recover their principal (pro-rata against recoverable funds if the market lost money). The capital at risk *is* the cost of voting, which is what makes votes expensive to Sybil.
 
 The winning COIN distribution becomes the **MetaDAO**: the new COIN is its token, and it inherits the program's keys (via the Squads handover) along with any surplus.
 
@@ -42,7 +42,7 @@ Cranks and permissionless Percolator maintenance remain external.
 
 ## Capital Accounting
 
-There is **no yield-bearing deposit product** anywhere in this program. All deposited capital is a Sybil bond: at risk in the bootstrap market, recoverable on withdrawal (pro-rata under loss, since depositors bear the market risk), and earning only voting power — never a financial return. The program never gives any party custody over depositor principal; it pays out principal, and only genuine surplus (value above outstanding principal) is the MetaDAO's, drawn through the keys it inherits.
+There is **no yield-bearing deposit product** anywhere in this program. All deposited capital is a Sybil bond: at risk in the bootstrap market, recoverable on withdrawal (pro-rata under loss, since depositors bear the market risk), and earning only voting power — never a financial return. The program custodies the capital (it is transferred into program-owned vaults and deployed into the market, and is only withdrawable through the program), but no party can divert depositor principal: the program pays principal back, and only genuine surplus (value above outstanding principal) is the MetaDAO's, drawn through the keys it inherits.
 
 After genesis, ongoing insurance/backing capital for the market is the MetaDAO's responsibility — funded from its treasury and surplus through the keys it holds — not from external depositors earning yield.
 
