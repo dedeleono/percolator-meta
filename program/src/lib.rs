@@ -185,8 +185,8 @@ const GENESIS_RECOVER_INSURANCE_DOMAIN: u8 = 4;
 const COIN_CFG_SIZE: usize = 8 + 32 + 8 + 8 + 8 + 1 + 7;
 /// GenesisConfig: base-token bootstrap deposits, vote units, and fixed supply.
 const GENESIS_CFG_SIZE: usize = 144;
-/// GenesisPosition: per-user base-unit deposit and voting weight.
-const GENESIS_POSITION_SIZE: usize = 64;
+/// GenesisPosition: per-user base-unit deposit, voting weight, and live-ballot count.
+const GENESIS_POSITION_SIZE: usize = 72;
 /// GenesisDistribution: vote-approved mint allocation item.
 const GENESIS_DISTRIBUTION_SIZE: usize = 120;
 /// GenesisDistributionVote: one voter's weight on one allocation item.
@@ -477,6 +477,10 @@ struct GenesisPosition {
     /// Slot of the depositor's most recent deposit (last-write-time). Vote weight
     /// is `floor(log2(vote_slot - start_slot)) * staked`. Cleared to 0 on exit.
     start_slot: u64,
+    /// Number of distribution proposals this position currently has a live ballot
+    /// on. Withdrawal during voting requires this to be 0, so a voter must retract
+    /// (give up) every vote before exiting — see process_genesis_withdraw.
+    active_votes: u64,
 }
 
 impl GenesisPosition {
@@ -489,6 +493,7 @@ impl GenesisPosition {
             amount: u64::from_le_bytes(data[40..48].try_into().unwrap()),
             withdrawn: u64::from_le_bytes(data[48..56].try_into().unwrap()),
             start_slot: u64::from_le_bytes(data[56..64].try_into().unwrap()),
+            active_votes: u64::from_le_bytes(data[64..72].try_into().unwrap()),
         })
     }
 
@@ -498,6 +503,7 @@ impl GenesisPosition {
         data[40..48].copy_from_slice(&self.amount.to_le_bytes());
         data[48..56].copy_from_slice(&self.withdrawn.to_le_bytes());
         data[56..64].copy_from_slice(&self.start_slot.to_le_bytes());
+        data[64..72].copy_from_slice(&self.active_votes.to_le_bytes());
     }
 
     fn staked(&self) -> u64 {
@@ -574,6 +580,9 @@ struct GenesisDistributionVote {
     /// Log-weighted power this voter last contributed to the tally.
     weight: u64,
     support: u8,
+    /// 1 once the voter has retracted this ballot (its weight/principal have been
+    /// backed out of the tally). A retracted record is inert until re-voted.
+    retracted: u8,
     /// Raw staked principal counted once toward the proposal's quorum.
     principal: u64,
 }
@@ -586,7 +595,8 @@ impl GenesisDistributionVote {
             return Err(ProgramError::InvalidAccountData);
         }
         let support = data[80];
-        if support > 1 {
+        let retracted = data[81];
+        if support > 1 || retracted > 1 {
             return Err(ProgramError::InvalidAccountData);
         }
         Ok(Self {
@@ -594,6 +604,7 @@ impl GenesisDistributionVote {
             voter: Pubkey::new_from_array(data[40..72].try_into().unwrap()),
             weight: u64::from_le_bytes(data[72..80].try_into().unwrap()),
             support,
+            retracted,
             principal: u64::from_le_bytes(data[88..96].try_into().unwrap()),
         })
     }
@@ -604,8 +615,13 @@ impl GenesisDistributionVote {
         data[40..72].copy_from_slice(self.voter.as_ref());
         data[72..80].copy_from_slice(&self.weight.to_le_bytes());
         data[80] = self.support;
-        data[81..88].fill(0);
+        data[81] = self.retracted;
+        data[82..88].fill(0);
         data[88..96].copy_from_slice(&self.principal.to_le_bytes());
+    }
+
+    fn is_retracted(&self) -> bool {
+        self.retracted == 1
     }
 }
 
@@ -1721,6 +1737,7 @@ fn process_genesis_deposit<'a>(
             amount: 0,
             withdrawn: 0,
             start_slot: 0,
+            active_votes: 0,
         }
     } else {
         if genesis_position.owner != program_id {
@@ -1872,12 +1889,6 @@ fn process_genesis_withdraw<'a>(
     let admin_bump = verify_market_admin_pda(market_admin, coin_mint.key, program_id)?;
     let coin_cfg = load_coin_config(coin_cfg_account, coin_mint.key, program_id)?;
     let mut cfg = verify_genesis_config_pda(genesis_cfg_account, coin_mint.key, program_id)?;
-    // Withdrawals are locked only during voting (COIN live but genesis not yet
-    // finalized), so a vote counts only if held through finalization.
-    if coin_cfg.is_live() && !cfg.is_finalized() {
-        msg!("withdrawals are locked during voting");
-        return Err(ProgramError::InvalidInstructionData);
-    }
     verify_genesis_vault(genesis_vault, &cfg, market_admin.key, program_id)?;
     validate_token_account(user_base_ata, &cfg.base_mint, user.key)?;
 
@@ -1893,6 +1904,13 @@ fn process_genesis_withdraw<'a>(
     drop(pos_data);
     if pos.owner != *user.key {
         return Err(ProgramError::IllegalOwner);
+    }
+    // Exit is free at any time EXCEPT with live ballots during voting: a voter must
+    // first retract (give up) every vote, so a cast ballot can never outlive the
+    // capital that backed it. Non-voters can leave whenever they like.
+    if coin_cfg.is_live() && !cfg.is_finalized() && pos.active_votes != 0 {
+        msg!("retract your votes before exiting during voting");
+        return Err(ProgramError::InvalidInstructionData);
     }
     let remaining = pos.amount.saturating_sub(pos.withdrawn);
 
@@ -2224,8 +2242,9 @@ fn process_vote_genesis_distribution<'a>(
     let vote_account = next_account_info(iter)?;
     let system_program = next_account_info(iter)?;
 
-    let support = read_u8(data)?;
-    if support > 1 || !data.is_empty() {
+    let action = read_u8(data)?;
+    // 0 = vote no, 1 = vote yes, 2 = retract (give up the ballot before exiting).
+    if action > 2 || !data.is_empty() {
         return Err(ProgramError::InvalidInstructionData);
     }
     if !voter.is_signer {
@@ -2247,87 +2266,129 @@ fn process_vote_genesis_distribution<'a>(
     {
         return Err(ProgramError::InvalidSeeds);
     }
-    let current_slot = Clock::get()?.slot;
-    let pos_data = genesis_position.try_borrow_data()?;
-    let pos = GenesisPosition::deserialize(&pos_data)?;
+    let mut pos = GenesisPosition::deserialize(&genesis_position.try_borrow_data()?)?;
     if pos.owner != *voter.key {
-        return Err(ProgramError::InvalidAccountData);
-    }
-    let staked = pos.staked();
-    // Time-weighted power at vote time: floor(log2(age)) * staked. A cleared
-    // start slot (exited) or a too-young/empty position has no power.
-    let weight = if pos.start_slot == 0 {
-        0
-    } else {
-        genesis_vote_weight(staked, current_slot.saturating_sub(pos.start_slot))
-    };
-    drop(pos_data);
-    if weight == 0 {
-        msg!("position has no vote weight (exited, unfunded, or deposited too late)");
         return Err(ProgramError::InvalidAccountData);
     }
 
     if distribution_account.owner != program_id {
         return Err(ProgramError::IllegalOwner);
     }
-    let mut proposal_data = distribution_account.try_borrow_mut_data()?;
-    let mut proposal = GenesisDistribution::deserialize(&proposal_data)?;
+    let mut proposal =
+        GenesisDistribution::deserialize(&distribution_account.try_borrow_data()?)?;
     if proposal.genesis_cfg != *genesis_cfg_account.key || proposal.is_executed() {
         return Err(ProgramError::InvalidAccountData);
     }
 
     let vote_seeds = genesis_distribution_vote_seeds(distribution_account.key, voter.key);
-    let expected_vote = Pubkey::find_program_address(&vote_seeds, program_id).0;
-    if *vote_account.key != expected_vote {
+    if *vote_account.key != Pubkey::find_program_address(&vote_seeds, program_id).0 {
         return Err(ProgramError::InvalidSeeds);
     }
-    let vote = if vote_account.data_len() == 0 || vote_account.lamports() == 0 {
-        create_pda_account(
-            voter,
-            vote_account,
-            system_program,
-            program_id,
-            &vote_seeds,
-            GENESIS_DISTRIBUTION_VOTE_SIZE,
-        )?;
+    let existing = if vote_account.data_len() == 0 || vote_account.lamports() == 0 {
         None
     } else {
         if vote_account.owner != program_id {
             return Err(ProgramError::IllegalOwner);
         }
-        let vote_data = vote_account.try_borrow_data()?;
-        let vote = GenesisDistributionVote::deserialize(&vote_data)?;
+        let vote = GenesisDistributionVote::deserialize(&vote_account.try_borrow_data()?)?;
         if vote.proposal != *distribution_account.key || vote.voter != *voter.key {
             return Err(ProgramError::InvalidAccountData);
         }
         Some(vote)
     };
 
-    // Back out this voter's previous weighted contribution, if any.
-    if let Some(old_vote) = &vote {
-        if old_vote.support == 1 {
+    if action == 2 {
+        // Retract: back this voter's live ballot out of the tally so that exiting
+        // genuinely gives up the vote. A missing or already-retracted ballot is
+        // rejected (nothing to give up).
+        let old = existing.ok_or(ProgramError::InvalidAccountData)?;
+        if old.is_retracted() {
+            msg!("vote already retracted");
+            return Err(ProgramError::InvalidInstructionData);
+        }
+        if old.support == 1 {
             proposal.yes_votes = proposal
                 .yes_votes
-                .checked_sub(old_vote.weight)
+                .checked_sub(old.weight)
                 .ok_or(ProgramError::InvalidAccountData)?;
         } else {
             proposal.no_votes = proposal
                 .no_votes
-                .checked_sub(old_vote.weight)
+                .checked_sub(old.weight)
                 .ok_or(ProgramError::InvalidAccountData)?;
         }
+        proposal.voted_principal = proposal
+            .voted_principal
+            .checked_sub(old.principal)
+            .ok_or(ProgramError::InvalidAccountData)?;
+        pos.active_votes = pos
+            .active_votes
+            .checked_sub(1)
+            .ok_or(ProgramError::InvalidAccountData)?;
+        let cleared = GenesisDistributionVote {
+            proposal: *distribution_account.key,
+            voter: *voter.key,
+            weight: 0,
+            support: old.support,
+            retracted: 1,
+            principal: 0,
+        };
+        proposal.serialize(&mut distribution_account.try_borrow_mut_data()?);
+        cleared.serialize(&mut vote_account.try_borrow_mut_data()?);
+        pos.serialize(&mut genesis_position.try_borrow_mut_data()?);
+        return Ok(());
     }
-    // Quorum principal counts each distinct voter's staked principal once.
-    // (Staked is frozen during voting, so a re-vote nets to no change.)
-    let prev_principal = vote.as_ref().map(|v| v.principal).unwrap_or(0);
+
+    // Cast or change a vote at the current time-weighted power. A cleared start
+    // slot (exited) or a too-young/empty position has no power.
+    let current_slot = Clock::get()?.slot;
+    let staked = pos.staked();
+    let weight = if pos.start_slot == 0 {
+        0
+    } else {
+        genesis_vote_weight(staked, current_slot.saturating_sub(pos.start_slot))
+    };
+    if weight == 0 {
+        msg!("position has no vote weight (exited, unfunded, or deposited too late)");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    // Back out any prior LIVE contribution. A never-cast or previously-retracted
+    // ballot makes this a fresh active vote, bumping the live-ballot count.
+    let fresh = match &existing {
+        Some(old) if !old.is_retracted() => {
+            if old.support == 1 {
+                proposal.yes_votes = proposal
+                    .yes_votes
+                    .checked_sub(old.weight)
+                    .ok_or(ProgramError::InvalidAccountData)?;
+            } else {
+                proposal.no_votes = proposal
+                    .no_votes
+                    .checked_sub(old.weight)
+                    .ok_or(ProgramError::InvalidAccountData)?;
+            }
+            // Quorum principal counts each distinct voter once; back the old out
+            // before re-adding the (frozen) staked amount below.
+            proposal.voted_principal = proposal
+                .voted_principal
+                .checked_sub(old.principal)
+                .ok_or(ProgramError::InvalidAccountData)?;
+            false
+        }
+        _ => true,
+    };
+    if fresh {
+        pos.active_votes = pos
+            .active_votes
+            .checked_add(1)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
+    }
     proposal.voted_principal = proposal
         .voted_principal
-        .checked_sub(prev_principal)
-        .ok_or(ProgramError::InvalidAccountData)?
         .checked_add(staked)
         .ok_or(ProgramError::ArithmeticOverflow)?;
-    // Add the new contribution at the current time-weighted power.
-    if support == 1 {
+    if action == 1 {
         proposal.yes_votes = proposal
             .yes_votes
             .checked_add(weight)
@@ -2343,12 +2404,23 @@ fn process_vote_genesis_distribution<'a>(
         proposal: *distribution_account.key,
         voter: *voter.key,
         weight,
-        support,
+        support: action,
+        retracted: 0,
         principal: staked,
     };
-    proposal.serialize(&mut proposal_data);
-    let mut vote_data = vote_account.try_borrow_mut_data()?;
-    new_vote.serialize(&mut vote_data);
+    if existing.is_none() {
+        create_pda_account(
+            voter,
+            vote_account,
+            system_program,
+            program_id,
+            &vote_seeds,
+            GENESIS_DISTRIBUTION_VOTE_SIZE,
+        )?;
+    }
+    proposal.serialize(&mut distribution_account.try_borrow_mut_data()?);
+    new_vote.serialize(&mut vote_account.try_borrow_mut_data()?);
+    pos.serialize(&mut genesis_position.try_borrow_mut_data()?);
     Ok(())
 }
 

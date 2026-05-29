@@ -1057,7 +1057,7 @@ impl TestEnv {
                 AccountMeta::new_readonly(self.coin_mint, false),
                 AccountMeta::new_readonly(self.coin_cfg_pda(), false),
                 AccountMeta::new_readonly(self.genesis_cfg_pda(), false),
-                AccountMeta::new_readonly(self.genesis_position_pda(&voter.pubkey()), false),
+                AccountMeta::new(self.genesis_position_pda(&voter.pubkey()), false),
                 AccountMeta::new(proposal, false),
                 AccountMeta::new(
                     self.genesis_distribution_vote_pda(&proposal, &voter.pubkey()),
@@ -1066,6 +1066,38 @@ impl TestEnv {
                 AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
             ],
             data: encode_vote_genesis_distribution(support),
+        };
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&voter.pubkey()),
+            &[voter],
+            self.svm.latest_blockhash(),
+        );
+        self.svm
+            .send_transaction(tx)
+            .map(|_| ())
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn retract_genesis_vote(&mut self, voter: &Keypair, proposal_id: u64) -> Result<(), String> {
+        let proposal = self.genesis_distribution_pda(proposal_id);
+        let ix = Instruction {
+            program_id: self.rewards_id,
+            accounts: vec![
+                AccountMeta::new(voter.pubkey(), true),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new_readonly(self.genesis_cfg_pda(), false),
+                AccountMeta::new(self.genesis_position_pda(&voter.pubkey()), false),
+                AccountMeta::new(proposal, false),
+                AccountMeta::new(
+                    self.genesis_distribution_vote_pda(&proposal, &voter.pubkey()),
+                    false,
+                ),
+                AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            ],
+            data: vec![30u8, 2u8], // tag 30, action 2 = retract
         };
         self.svm.expire_blockhash();
         let tx = Transaction::new_signed_with_payer(
@@ -3518,9 +3550,11 @@ fn test_genesis_bootstrap_withdraw_after_kickstart_pulls_from_market() {
     assert_eq!(env.percolator_insurance_balance(&slab), 1, "insurance drawn down by 1");
 }
 
-/// Once voting starts (COIN live), the bootstrap exit is closed.
+/// A depositor who never voted may exit at any time, including during voting —
+/// there is no blanket lock. Their capital leaves the pool (the quorum electorate
+/// shrinks); only a *voter* must retract first (see the meta-only test below).
 #[test]
-fn test_genesis_bootstrap_withdraw_closed_after_voting_starts() {
+fn test_genesis_nonvoter_exits_freely_during_voting() {
     let mut env = TestEnv::new();
     env.init_coin_config_with_delay(50);
     env.init_genesis_bootstrap(100);
@@ -3562,17 +3596,79 @@ fn test_genesis_bootstrap_withdraw_closed_after_voting_starts() {
         env.svm.latest_blockhash(),
     );
     assert!(
-        env.svm.send_transaction(tx).is_err(),
-        "exit must be closed once voting starts"
+        env.svm.send_transaction(tx).is_ok(),
+        "a non-voter may exit during voting"
     );
     assert_eq!(
         read_genesis_position_amount(&env, &alice.pubkey()),
-        3,
-        "stake retained (exit rejected after voting starts)"
+        0,
+        "principal fully refunded on exit"
     );
+    assert_eq!(
+        env.read_token_balance(&user_ata),
+        3,
+        "got the full deposit back"
+    );
+}
+
+/// During voting a depositor who has voted must retract every ballot before
+/// exiting. Retraction backs their weight + principal out of the tally; once they
+/// withdraw, the quorum denominator shrinks too — quorum is recomputed as people
+/// leave, and a ballot can never outlive the capital that backed it.
+#[test]
+fn test_voter_retracts_then_exits_and_quorum_recomputes() {
+    let mut env = TestEnv::new_meta_only();
+    env.init_coin_config_with_delay(1);
+    env.init_genesis_bootstrap(100);
+
+    let alice = Keypair::new();
+    let bob = Keypair::new();
+    env.svm.airdrop(&alice.pubkey(), 10_000_000_000).unwrap();
+    env.svm.airdrop(&bob.pubkey(), 10_000_000_000).unwrap();
+    env.genesis_deposit(&alice, 3); // slot 100
+    env.genesis_deposit(&bob, 1);
+    env.set_clock(120); // live (delay 1), age >= 2 for nonzero weight
+    env.activate_live();
+
+    let dest = env.create_coin_ata(&alice.pubkey(), 0);
+    env.init_genesis_distribution(1, 100, &dest);
+    env.vote_genesis_distribution(&alice, 1, true);
+    env.vote_genesis_distribution(&bob, 1, true);
+
+    let voted_principal = |env: &TestEnv| {
+        let p = env.svm.get_account(&env.genesis_distribution_pda(1)).unwrap();
+        u64::from_le_bytes(p.data[112..120].try_into().unwrap())
+    };
+    assert_eq!(voted_principal(&env), 4, "both ballots counted (3 + 1)");
+
+    // Alice has a live ballot, so she cannot exit yet.
     assert!(
-        read_genesis_start_slot(&env, &alice.pubkey()) > 0,
-        "start slot intact (exit rejected)"
+        env.try_genesis_withdraw(&alice).is_err(),
+        "a voter cannot exit while a ballot is live"
+    );
+
+    // She retracts (gives up the vote): her principal leaves the quorum tally.
+    env.retract_genesis_vote(&alice, 1).expect("retract");
+    assert_eq!(
+        voted_principal(&env),
+        1,
+        "alice's principal is backed out of the quorum tally on retract"
+    );
+
+    // Double-retract is rejected (nothing left to give up).
+    assert!(
+        env.retract_genesis_vote(&alice, 1).is_err(),
+        "cannot retract an already-retracted ballot"
+    );
+
+    // Now she can exit; her capital leaves the pool (pre-kickstart full refund),
+    // so outstanding principal — and the quorum denominator — shrinks to bob's 1.
+    let alice_ata = env.genesis_withdraw(&alice);
+    assert_eq!(env.read_token_balance(&alice_ata), 3, "full refund on exit");
+    assert_eq!(
+        read_genesis_position_amount(&env, &alice.pubkey()),
+        0,
+        "position emptied"
     );
 }
 

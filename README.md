@@ -17,7 +17,7 @@ Experimental, **educational-use-only** software, provided **AS IS** with no warr
 3. Anyone may join at any time during the deposit phase — there is no fixed window — by depositing base units into `genesis_vault`; additional deposits are allowed. Each deposit (re)sets the position's `start_slot` to the current slot (last-write-time), so topping up late resets the clock. Deposits close when futarchy deploys the pool at kickstart.
 4. **Depositing is a Sybil check, not an investment.** The capital is put at risk in the bootstrap market for one purpose: to earn voting power over the COIN distribution. Depositors receive no yield and no profit share — committed capital-at-risk is simply the cost of a vote.
 5. Futarchy kickstarts the Percolator market with the pooled capital as a 50/50 split (`floor(total / 2)` to insurance, the remainder to backing), and sets a capital-protected withdraw policy (`max_bps=10000, deposits_only=1, cooldown=0`) so principal — never market profits — is recoverable.
-6. **Withdraw any time; holding is what counts.** A capital provider may withdraw their principal at any point. Withdrawal returns principal — pro-rata against recoverable funds if the market lost money, since they bear the market risk — and **forfeits the vote**. A vote is only counted if the depositor holds through the final slot and withdraws afterward.
+6. **Withdraw any time; holding is what counts.** A capital provider may withdraw their principal at any point — there is no lock-up. Withdrawal returns principal (pro-rata against recoverable funds if the market lost money, since they bear the market risk) and **forfeits the vote**. A non-voter exits freely whenever they like; a depositor who has cast ballots must first **retract** them (the retract action backs their weight and principal out of every proposal's tally) so a vote can never outlive the capital that backed it. As people leave, the quorum denominator (outstanding principal) shrinks with them — quorum is recomputed against whoever is still committed. So a vote counts only if held through the final slot.
 7. Vote weight is time-weighted: `floor(log2(hold_time)) × principal`, resolved at the final slot. Earlier/longer holders weigh more, and there is no weight without time committed at risk.
 8. Depositors vote on distribution items. An item is approved when its log-weighted yes total exceeds its no total **and** the raw principal that voted clears a quorum (more than half of outstanding principal). 100% of the fixed COIN supply must be minted to approved items before finalization. Both minting and finalization require a kickstarted market, so COIN can never be distributed on a genesis whose capital was never deployed.
 9. Finalization requires both a kicked bootstrap market and `minted_supply == reward_supply`.
@@ -25,7 +25,7 @@ Experimental, **educational-use-only** software, provided **AS IS** with no warr
 
 Any surplus (value in `genesis_vault` above outstanding principal) belongs to the MetaDAO, drawn through the keys it inherits — the program itself pays out only principal.
 
-**Operational invariant:** futarchy must `kickstart_genesis_market` before (or together with) `activate_live`. Going live without kickstarting strands deposits in the vault — withdrawals are locked during voting (so the quorum electorate is fixed), and minting/finalization both require a kicked market — until the market is kickstarted. This is enforced against accidental COIN issuance (mint requires kickstart) but the kickstart-before-live ordering itself is a governance responsibility.
+**Operational invariant:** futarchy must `kickstart_genesis_market` before (or together with) `activate_live`. Minting and finalization both require a kicked market, so going live without kickstarting can never issue COIN — and because there is no withdrawal lock, depositors can still exit (non-voters directly, voters after retracting), so capital is never stranded. The kickstart-before-live ordering itself remains a governance responsibility.
 
 ## Post-Genesis Lifecycle
 
@@ -52,7 +52,7 @@ The LiteSVM suite runs against the real percolator, governance, rewards, and Squ
 
 - Configurable bootstrap delay, open-ended deposit phase, and live activation.
 - Genesis deposit, vote, 100% supply mint, finalize, withdrawal, surplus, recovery, and 50/50 kickstart.
-- Withdraw at any time: principal back from the vault before kickstart and pulled pro-rata from the live market after; any withdrawal forfeits the vote, and a vote counts only if held through the final slot.
+- Withdraw at any time: principal back from the vault before kickstart and pulled pro-rata from the live market after; non-voters exit freely, voters must retract their ballots first, and the quorum denominator recomputes as people leave — so a vote counts only if held through the final slot.
 - Time-weighted votes: `floor(log2(hold_time)) × principal` rewards earlier/longer holders, last-write-time `start_slot` reset on re-deposit, and weighted-majority-plus-principal-quorum approval (exactly-half principal fails the quorum).
 - Permissionless market creation plus futarchy-controlled Percolator lifecycle/admin operations.
 - Builder approvals and executable-program validation.
@@ -88,7 +88,7 @@ The integration test also requires a built Percolator BPF binary at `../percolat
 | 27 | `kickstart_genesis_market` | Deploy genesis principal 50/50 to the market |
 | 28 | `recover_genesis_market` | Recover bootstrap market funds to `genesis_vault` |
 | 29 | `init_genesis_distribution` | Create a genesis allocation item |
-| 30 | `vote_genesis_distribution` | Vote on a genesis allocation item |
+| 30 | `vote_genesis_distribution` | Vote on a genesis allocation item (action: no / yes / retract) |
 | 31 | `approve_builder` | Governed builder-code and terms registry |
 | 32 | `init_genesis_squads` | Futarchy-gated CPI creating the per-coin Squads 1/1 multisig (48h timelock) |
 | 33 | `handover_genesis_squads` | Rotate the multisig `config_authority` to the winning DAO after finalization |
