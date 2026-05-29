@@ -32,7 +32,8 @@ const IX_TRANSFER_MINT_AUTHORITY: u8 = 6;
 const IX_ACTIVATE_LIVE: u8 = 7;
 const IX_PERCOLATOR_ADMIN: u8 = 9;
 const IX_INIT_GENESIS_BOOTSTRAP: u8 = 10;
-const IX_GENESIS_MINT_REWARD: u8 = 11;
+// tag 11 (genesis distribution mint) retired: triggering is now permissionless
+// on the rewards program — no governance wrapper.
 const IX_FINALIZE_GENESIS: u8 = 12;
 const IX_DRAW_GENESIS_SURPLUS: u8 = 13;
 const IX_KICKSTART_GENESIS_MARKET: u8 = 14;
@@ -179,7 +180,6 @@ pub fn process_instruction<'a>(
         IX_INIT_GENESIS_BOOTSTRAP => {
             process_init_genesis_bootstrap(program_id, accounts, &mut data)
         }
-        IX_GENESIS_MINT_REWARD => process_genesis_mint_reward(program_id, accounts, &mut data),
         IX_FINALIZE_GENESIS => process_finalize_genesis(program_id, accounts, &mut data),
         IX_DRAW_GENESIS_SURPLUS => process_draw_genesis_surplus(program_id, accounts, &mut data),
         IX_KICKSTART_GENESIS_MARKET => {
@@ -516,73 +516,6 @@ fn process_init_genesis_bootstrap<'a>(
             token_program.clone(),
             rent_sysvar.clone(),
             system_program.clone(),
-            rewards_program.clone(),
-        ],
-        &[&signer_seeds],
-    )
-}
-
-fn process_genesis_mint_reward<'a>(
-    program_id: &Pubkey,
-    accounts: &'a [AccountInfo<'a>],
-    data: &mut &[u8],
-) -> ProgramResult {
-    let iter = &mut accounts.iter();
-    let payer = next_account_info(iter)?;
-    let authority = next_account_info(iter)?;
-    let rewards_program = next_account_info(iter)?;
-    let genesis_cfg = next_account_info(iter)?;
-    let coin_mint = next_account_info(iter)?;
-    let coin_cfg = next_account_info(iter)?;
-    let destination = next_account_info(iter)?;
-    let mint_authority = next_account_info(iter)?;
-    let distribution = next_account_info(iter)?;
-    let token_program = next_account_info(iter)?;
-
-    let amount = read_u64(data)?;
-    if !data.is_empty() {
-        return Err(ProgramError::InvalidInstructionData);
-    }
-    let bump = verify_authority_controller(
-        program_id,
-        payer,
-        authority,
-        rewards_program.key,
-        coin_mint.key,
-    )?;
-    let bump_bytes = [bump];
-    let signer_seeds = authority_signer_seeds(rewards_program.key, coin_mint.key, &bump_bytes);
-
-    let mut ix_data = Vec::with_capacity(9);
-    ix_data.push(24u8);
-    ix_data.extend_from_slice(&amount.to_le_bytes());
-    let ix = Instruction {
-        program_id: *rewards_program.key,
-        accounts: vec![
-            AccountMeta::new(*payer.key, true),
-            AccountMeta::new_readonly(*authority.key, true),
-            AccountMeta::new(*genesis_cfg.key, false),
-            AccountMeta::new(*coin_mint.key, false),
-            AccountMeta::new_readonly(*coin_cfg.key, false),
-            AccountMeta::new(*destination.key, false),
-            AccountMeta::new_readonly(*mint_authority.key, false),
-            AccountMeta::new(*distribution.key, false),
-            AccountMeta::new_readonly(*token_program.key, false),
-        ],
-        data: ix_data,
-    };
-    invoke_signed(
-        &ix,
-        &[
-            payer.clone(),
-            authority.clone(),
-            genesis_cfg.clone(),
-            coin_mint.clone(),
-            coin_cfg.clone(),
-            destination.clone(),
-            mint_authority.clone(),
-            distribution.clone(),
-            token_program.clone(),
             rewards_program.clone(),
         ],
         &[&signer_seeds],
