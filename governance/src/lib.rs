@@ -395,6 +395,7 @@ fn process_percolator_admin<'a>(
     let rewards_program = next_account_info(iter)?;
     let coin_mint = next_account_info(iter)?;
     let coin_cfg = next_account_info(iter)?;
+    let genesis_cfg = next_account_info(iter)?;
     let market_admin = next_account_info(iter)?;
     let percolator_program = next_account_info(iter)?;
 
@@ -409,11 +410,12 @@ fn process_percolator_admin<'a>(
     let signer_seeds = authority_signer_seeds(rewards_program.key, coin_mint.key, &bump_bytes);
 
     let tail: Vec<AccountInfo<'a>> = iter.cloned().collect();
-    let mut ix_accounts = Vec::with_capacity(6 + tail.len());
+    let mut ix_accounts = Vec::with_capacity(7 + tail.len());
     ix_accounts.push(AccountMeta::new(*payer.key, true));
     ix_accounts.push(AccountMeta::new_readonly(*authority.key, true));
     ix_accounts.push(AccountMeta::new_readonly(*coin_mint.key, false));
     ix_accounts.push(AccountMeta::new_readonly(*coin_cfg.key, false));
+    ix_accounts.push(AccountMeta::new_readonly(*genesis_cfg.key, false));
     ix_accounts.push(if market_admin.is_writable {
         AccountMeta::new(*market_admin.key, false)
     } else {
@@ -437,11 +439,12 @@ fn process_percolator_admin<'a>(
         data: ix_data,
     };
 
-    let mut cpi_accounts = Vec::with_capacity(8 + tail.len());
+    let mut cpi_accounts = Vec::with_capacity(9 + tail.len());
     cpi_accounts.push(payer.clone());
     cpi_accounts.push(authority.clone());
     cpi_accounts.push(coin_mint.clone());
     cpi_accounts.push(coin_cfg.clone());
+    cpi_accounts.push(genesis_cfg.clone());
     cpi_accounts.push(market_admin.clone());
     cpi_accounts.push(percolator_program.clone());
     cpi_accounts.extend(tail);
@@ -1075,6 +1078,7 @@ fn process_transfer_mint_authority<'a>(
     let mint_authority = next_account_info(iter)?;
     let new_authority = next_account_info(iter)?;
     let token_program = next_account_info(iter)?;
+    let genesis_cfg = next_account_info(iter)?;
 
     let bump = verify_authority_controller(
         program_id,
@@ -1096,6 +1100,7 @@ fn process_transfer_mint_authority<'a>(
             AccountMeta::new_readonly(*mint_authority.key, false),
             AccountMeta::new_readonly(*new_authority.key, false),
             AccountMeta::new_readonly(*token_program.key, false),
+            AccountMeta::new_readonly(*genesis_cfg.key, false),
         ],
         data: vec![10u8],
     };
@@ -1110,6 +1115,7 @@ fn process_transfer_mint_authority<'a>(
             mint_authority.clone(),
             new_authority.clone(),
             token_program.clone(),
+            genesis_cfg.clone(),
             rewards_program.clone(),
         ],
         &[&signer_seeds],

@@ -1274,6 +1274,7 @@ fn process_transfer_mint_authority<'a>(
     let mint_authority = next_account_info(iter)?;
     let new_authority = next_account_info(iter)?;
     let token_program = next_account_info(iter)?;
+    let genesis_cfg_account = next_account_info(iter)?;
 
     if !payer.is_signer {
         return Err(ProgramError::MissingRequiredSignature);
@@ -1287,6 +1288,15 @@ fn process_transfer_mint_authority<'a>(
         return Err(ProgramError::MissingRequiredSignature);
     }
     require_live(&coin_cfg)?;
+    // Locked until genesis is finalized — otherwise the controller could rotate the
+    // mint authority to itself mid-vote and mint COIN past the fixed reward_supply,
+    // bypassing the #12 cap and diluting the winner-take-all distribution. This is
+    // the sister hole to mint_reward; both must be finalize-gated.
+    let genesis_cfg = verify_genesis_config_pda(genesis_cfg_account, coin_mint.key, program_id)?;
+    if !genesis_cfg.is_finalized() {
+        msg!("transfer_mint_authority is locked until genesis is finalized");
+        return Err(ProgramError::InvalidInstructionData);
+    }
 
     let ma_seeds = mint_authority_seeds(coin_mint.key);
     let (expected_ma, ma_bump) = Pubkey::find_program_address(&ma_seeds, program_id);
@@ -1438,6 +1448,7 @@ fn process_percolator_admin<'a>(
     let authority = next_account_info(iter)?;
     let coin_mint = next_account_info(iter)?;
     let coin_cfg_account = next_account_info(iter)?;
+    let genesis_cfg_account = next_account_info(iter)?;
     let market_admin = next_account_info(iter)?;
     let percolator_program = next_account_info(iter)?;
 
@@ -1452,6 +1463,18 @@ fn process_percolator_admin<'a>(
         return Err(ProgramError::MissingRequiredSignature);
     }
     require_live(&coin_cfg)?;
+    // The market-admin proxy is locked over the genesis market until finalization.
+    // While depositor capital is at risk in the market, governance must not be able
+    // to forward RESOLVE_MARKET / CLOSE_SLAB / UPDATE_INSURANCE_POLICY / fee-policy
+    // changes that would brick or grief per-depositor principal recovery (a
+    // dishonest-majority DOS). Kickstart and recovery use direct CPIs, not this
+    // proxy, so it has no legitimate pre-finalization role. Post-finalize the
+    // MetaDAO regains the full lifecycle-scoped allow-list.
+    let genesis_cfg = verify_genesis_config_pda(genesis_cfg_account, coin_mint.key, program_id)?;
+    if !genesis_cfg.is_finalized() {
+        msg!("percolator admin proxy is locked until genesis is finalized");
+        return Err(ProgramError::InvalidInstructionData);
+    }
     let admin_bump = verify_market_admin_pda(market_admin, coin_mint.key, program_id)?;
 
     let tail: alloc::vec::Vec<AccountInfo<'a>> = iter.cloned().collect();
@@ -2964,9 +2987,16 @@ fn process_recover_genesis_market<'a>(
 ) -> ProgramResult {
     let iter = &mut accounts.iter();
     let payer = next_account_info(iter)?;
-    let authority = next_account_info(iter)?;
+    // `authority` / `coin_cfg` are kept in the account layout for ABI stability
+    // with the governance adapter wrapper, but recovery is PERMISSIONLESS: it only
+    // moves principal out of the market into the program-controlled genesis vault
+    // (signed by the market_admin PDA, never divertible), so it must not depend on
+    // any governance signature. This is what makes recovery DOS-safe against a
+    // dishonest majority — once kicked, anyone can repatriate principal to the vault
+    // so a malicious controller cannot strand it by finalizing without recovering.
+    let _authority = next_account_info(iter)?;
     let coin_mint = next_account_info(iter)?;
-    let coin_cfg_account = next_account_info(iter)?;
+    let _coin_cfg_account = next_account_info(iter)?;
     let genesis_cfg_account = next_account_info(iter)?;
     let market_admin = next_account_info(iter)?;
     let market_slab = next_account_info(iter)?;
@@ -2982,14 +3012,18 @@ fn process_recover_genesis_market<'a>(
     if !data.is_empty() {
         return Err(ProgramError::InvalidInstructionData);
     }
+    if !payer.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
     verify_token_program(token_program)?;
     verify_percolator_program(percolator_program)?;
-    require_genesis_governance(program_id, payer, authority, coin_mint, coin_cfg_account)?;
 
     let admin_bump = verify_market_admin_pda(market_admin, coin_mint.key, program_id)?;
     let cfg = verify_genesis_config_pda(genesis_cfg_account, coin_mint.key, program_id)?;
-    if !cfg.is_kicked() || cfg.is_finalized() {
-        msg!("genesis market recovery requires kicked, unfinalized genesis");
+    // Allowed once kicked, BEFORE or AFTER finalization — post-finalize recovery is
+    // exactly what prevents a finalize-without-recover strand.
+    if !cfg.is_kicked() {
+        msg!("genesis market recovery requires a kicked market");
         return Err(ProgramError::InvalidInstructionData);
     }
     verify_genesis_vault(genesis_vault, &cfg, market_admin.key, program_id)?;

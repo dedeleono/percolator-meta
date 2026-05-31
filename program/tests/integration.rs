@@ -1477,6 +1477,7 @@ impl TestEnv {
                 AccountMeta::new_readonly(self.rewards_id, false),
                 AccountMeta::new_readonly(self.coin_mint, false),
                 AccountMeta::new_readonly(self.coin_cfg_pda(), false),
+                AccountMeta::new_readonly(self.genesis_cfg_pda(), false),
                 AccountMeta::new_readonly(self.market_admin_pda(), false),
                 AccountMeta::new_readonly(self.percolator_id, false),
             ],
@@ -1700,6 +1701,7 @@ impl TestEnv {
                 AccountMeta::new_readonly(self.mint_authority_pda, false),
                 AccountMeta::new_readonly(*new_authority, false),
                 AccountMeta::new_readonly(spl_token::ID, false),
+                AccountMeta::new_readonly(self.genesis_cfg_pda(), false),
             ],
             data: encode_governance_transfer_mint_authority(),
         };
@@ -2502,6 +2504,16 @@ fn test_genesis_governance_surface_is_fixed_and_controller_gated() {
         custody_update.is_err(),
         "generic futarchy admin cannot move Percolator custody authorities"
     );
+
+    // #16/#19: pre-finalization the whole proxy is locked over the genesis market —
+    // even an otherwise allow-listed lifecycle tag (RESOLVE_MARKET) is rejected, so
+    // a dishonest controller cannot brick or grief per-depositor recovery while the
+    // capital is at risk and the vote is in flight.
+    let locked_resolve = env.try_governance_percolator_admin_raw(&dao, encode_resolve_market());
+    assert!(
+        locked_resolve.is_err(),
+        "proxy is locked over the genesis market until finalization"
+    );
 }
 
 #[test]
@@ -2707,13 +2719,23 @@ fn test_governance_init_authority_requires_current_mint_authority() {
 fn test_governance_reward_lifecycle_mint_and_transfer_authority() {
     let mut env = TestEnv::new();
     env.init_coin_config_with_delay(1);
-    // The governed mint is the post-genesis reward tool; it unlocks at finalization.
+    // The governed mint and the mint-authority transfer are post-genesis tools; both
+    // unlock only at finalization (otherwise the controller could rotate the mint
+    // authority to itself mid-vote and dilute the fixed supply — issue #17).
     env.init_genesis_bootstrap(1_000);
     env.set_clock(110);
     env.activate_live();
-    env.force_genesis_finalized_for_test();
 
     let dao = Keypair::from_bytes(&env.dao_authority.to_bytes()).unwrap();
+    // Pre-finalization: transferring the mint authority is locked.
+    let premature = Keypair::new();
+    assert!(
+        env.try_transfer_mint_authority(&dao, &premature.pubkey()).is_err(),
+        "transfer_mint_authority must be locked until genesis is finalized (#17)"
+    );
+
+    env.force_genesis_finalized_for_test();
+
     let dao_dest = env.create_coin_ata(&env.dao_authority.pubkey(), 0);
     env.try_governance_mint_reward(&dao, 123, &dao_dest)
         .expect("controller should mint governed reward");
@@ -3853,16 +3875,33 @@ fn test_full_genesis_to_dao_lifecycle_end_to_end() {
     assert_eq!(env.read_token_balance(&dao_coin), 100, "winner-take-all: full supply minted");
     assert_eq!(env.read_token_balance(&bob_coin), 0, "the losing proposal mints nothing");
 
-    // --- 8. Recover remaining market principal back to the vault (pre-finalize) ---
-    let recover = |env: &mut TestEnv, kind: u8, domain: u8, amount: u64| {
+    // --- 8. Dishonest-majority safety: a malicious controller could FINALIZE
+    //     before recovering, trying to strand depositor principal in the market.
+    //     It doesn't work — finalize first, with NOTHING recovered yet... ---
+    env.finalize_genesis();
+    let cfg = env.svm.get_account(&env.genesis_cfg_pda()).unwrap();
+    assert_eq!(cfg.data[136], 1, "finalized before any recovery");
+    assert_eq!(
+        env.read_token_balance(&env.genesis_vault_pda()),
+        0,
+        "vault still empty at finalization — principal is all in the market"
+    );
+
+    // --- 9. ...then ANY non-controller repatriates the principal to the vault.
+    //     Recovery is permissionless and post-finalize-allowed, so a withholding
+    //     majority cannot lock depositors out of their principal. ---
+    let keeper = Keypair::new();
+    env.svm.airdrop(&keeper.pubkey(), 10_000_000_000).unwrap();
+    let recover = |env: &mut TestEnv, signer: &Keypair, kind: u8, domain: u8, amount: u64| {
+        let mut data = vec![28u8, kind, domain]; // rewards tag 28, called directly
+        data.extend_from_slice(&amount.to_le_bytes());
         let ix = Instruction {
-            program_id: env.governance_id,
+            program_id: env.rewards_id,
             accounts: vec![
-                AccountMeta::new(env.dao_authority.pubkey(), true),
-                AccountMeta::new(env.governance_authority_pda, false),
-                AccountMeta::new_readonly(env.rewards_id, false),
+                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new_readonly(env.governance_authority_pda, false), // authority: unused
                 AccountMeta::new_readonly(env.coin_mint, false),
-                AccountMeta::new_readonly(env.coin_cfg_pda(), false),
+                AccountMeta::new_readonly(env.coin_cfg_pda(), false), // coin_cfg: unused
                 AccountMeta::new_readonly(env.genesis_cfg_pda(), false),
                 AccountMeta::new_readonly(env.market_admin_pda(), false),
                 AccountMeta::new(slab, false),
@@ -3872,25 +3911,26 @@ fn test_full_genesis_to_dao_lifecycle_end_to_end() {
                 AccountMeta::new_readonly(env.percolator_id, false),
                 AccountMeta::new_readonly(spl_token::ID, false),
             ],
-            data: encode_governance_recover_genesis_market(kind, domain, amount),
+            data,
         };
         env.svm.expire_blockhash();
         let tx = Transaction::new_signed_with_payer(
             &[ComputeBudgetInstruction::set_compute_unit_limit(1_400_000), ix],
-            Some(&env.dao_authority.pubkey()),
-            &[&env.dao_authority],
+            Some(&signer.pubkey()),
+            &[signer],
             env.svm.latest_blockhash(),
         );
-        env.svm.send_transaction(tx).expect("recover genesis market");
+        env.svm
+            .send_transaction(tx)
+            .expect("permissionless post-finalize recover");
     };
-    recover(&mut env, 0, 0, 4); // insurance-limited
-    recover(&mut env, 1, 0, 4); // backing bucket, domain 0
-    assert_eq!(env.read_token_balance(&env.genesis_vault_pda()), 8, "principal recovered to vault");
-
-    // --- 9. Finalize ---
-    env.finalize_genesis();
-    let cfg = env.svm.get_account(&env.genesis_cfg_pda()).unwrap();
-    assert_eq!(cfg.data[136], 1, "finalized");
+    recover(&mut env, &keeper, 0, 0, 4); // insurance-limited, by a non-controller
+    recover(&mut env, &keeper, 1, 0, 4); // backing bucket, domain 0
+    assert_eq!(
+        env.read_token_balance(&env.genesis_vault_pda()),
+        8,
+        "a non-controller repatriated all principal to the vault, post-finalize"
+    );
 
     // --- 10. Hand the Squads config-authority to the winning DAO ---
     let winning_dao = Pubkey::new_unique();

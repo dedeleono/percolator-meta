@@ -25,6 +25,8 @@ Experimental, **educational-use-only** software, provided **AS IS** with no warr
 
 Any surplus (value in `genesis_vault` above outstanding principal) belongs to the MetaDAO, drawn through the keys it inherits — the program itself pays out only principal.
 
+**Dishonest-majority safety.** Depositor principal is loss-of-funds and DOS safe even against a fully malicious controller / winning coalition. A dishonest majority can win the vote and inherit the COIN, keys, and *surplus* — but it cannot touch the principal: (1) the COIN supply is fixed during the vote — both `mint_reward` and `transfer_mint_authority` are locked until finalization, so the winner-take-all share can't be diluted; (2) the genesis market is insulated — the `percolator_admin` proxy is locked over it until finalization, so governance can't brick or grief per-depositor recovery (resolve/close/insurance-policy); (3) recovery can't be withheld — `recover_genesis_market` is **permissionless** and works **post-finalization**, so any depositor can always repatriate principal to the vault even if the controller finalizes without recovering; and (4) surplus draws are floored at `outstanding`, so a draw can never reach principal. (Depositors should ensure recovery is complete before withdrawing under a lossy market, since the post-finalization payout is a pro-rata haircut against the recovered vault.)
+
 **Operational invariant:** futarchy must `kickstart_genesis_market` before (or together with) `activate_live`. Minting and finalization both require a kicked market, so going live without kickstarting can never issue COIN — and because there is no withdrawal lock, depositors can still exit (non-voters directly, voters after retracting), so capital is never stranded. The kickstart-before-live ordering itself remains a governance responsibility.
 
 ## Post-Genesis Lifecycle
@@ -75,10 +77,10 @@ The integration test also requires a built Percolator BPF binary at `../percolat
 |-----|-------------|---------|
 | 3 | `init_coin_config` | One-time COIN governance/mint setup |
 | 8 | `mint_reward` | Governance-gated discretionary COIN mint (locked until genesis is finalized) |
-| 10 | `transfer_mint_authority` | Transfer or burn COIN mint authority |
+| 10 | `transfer_mint_authority` | Transfer or burn COIN mint authority (locked until genesis is finalized) |
 | 11 | `activate_live` | Move from bootstrap to live after delay |
 | 19 | `init_percolator_market` | Permissionless Percolator `InitMarket` via PDA admin |
-| 20 | `percolator_admin` | Futarchy-gated Percolator lifecycle/admin CPI |
+| 20 | `percolator_admin` | Futarchy-gated Percolator lifecycle/admin CPI (locked over the genesis market until finalized) |
 | 21 | `init_genesis_bootstrap` | Create genesis config and base-token vault |
 | 22 | `genesis_deposit` | Sybil-bond deposit; (re)sets `start_slot` (last-write-time) |
 | 23 | `genesis_withdraw` | Withdraw principal at any time (pro-rata under loss); forfeits the vote |
@@ -86,7 +88,7 @@ The integration test also requires a built Percolator BPF binary at `../percolat
 | 25 | `finalize_genesis` | Complete genesis after kickstart and full mint |
 | 26 | `draw_genesis_surplus` | DAO draws surplus above outstanding principal |
 | 27 | `kickstart_genesis_market` | Deploy genesis principal 50/50 to the market |
-| 28 | `recover_genesis_market` | Recover bootstrap market funds to `genesis_vault` |
+| 28 | `recover_genesis_market` | **Permissionless**: repatriate bootstrap market principal to `genesis_vault` (any time after kickstart, incl. post-finalize) |
 | 29 | `init_genesis_distribution` | Register a candidate full-supply distribution |
 | 30 | `vote_genesis_distribution` | Back one proposal or retract (action: back / retract) |
 | 31 | `approve_builder` | Governed builder-code and terms registry |
