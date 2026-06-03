@@ -1,5 +1,5 @@
 [workspace]
-members = ["governance", "program", "subledger", "distribution", "twap"]
+members = ["governance", "program", "subledger", "distribution", "twap", "genesis-vote"]
 resolver = "2"
 
 [workspace.dependencies]
