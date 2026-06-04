@@ -335,3 +335,29 @@ fn non_owner_cannot_withdraw_another_position() {
     );
     assert_eq!(env.token_amount(&attacker_ata), 0);
 }
+
+// Anti-theft boundary: init_pool must reject a vault that is NOT owned by the pool
+// PDA. If it accepted an attacker-owned vault, the attacker could stand up a pool,
+// lure a victim's deposit (tag 1 transfers owner -> pool.vault), and then drain the
+// funds directly via SPL as the vault owner — while the program's withdraw (which
+// signs as the pool PDA) could never move them. The vault must be pool-PDA-owned so
+// only this program can move funds out.
+#[test]
+fn init_pool_rejects_a_vault_not_owned_by_the_pool() {
+    let mut env = Env::new();
+    let asset_id = 0u64;
+    let pool = pool_pda(&env.mint, asset_id);
+
+    // A vault owned by an ATTACKER rather than the pool PDA.
+    let attacker = Pubkey::new_unique();
+    let rogue_vault = create_token_account(&mut env.svm, &clone_kp(&env.payer), &env.mint, &attacker);
+    assert!(
+        env.send(&[init_pool_ix(&env, &pool, &rogue_vault, asset_id, 0)], &[]).is_err(),
+        "init_pool must reject a vault not owned by the pool PDA"
+    );
+
+    // The canonical (pool-PDA-owned) vault is accepted.
+    let good_vault = create_token_account(&mut env.svm, &clone_kp(&env.payer), &env.mint, &pool);
+    env.send(&[init_pool_ix(&env, &pool, &good_vault, asset_id, 0)], &[])
+        .expect("a pool-PDA-owned vault is accepted");
+}

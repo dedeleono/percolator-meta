@@ -122,6 +122,15 @@ that recognize it — fail-fast at init instead of a mysterious brick at vote/tr
 Complements finding G (G stops the freeze; H stops building on a poisoned pool).
 Test (KEPT): seal.rs::init_config_rejects_pool_not_bound_to_this_config.
 
+### [BLOCKED] Own-vault init_pool vault-substitution theft (now pinned by a test)
+Probed: own-vault `deposit` (tag 1) transfers owner -> pool.vault and `withdraw`
+(tag 2) pays from pool.vault signed by the pool PDA. If `init_pool` accepted a vault
+owned by the attacker, they could stand up a pool, lure a deposit into their own
+token account, and drain it directly via SPL (program withdraw would fail). Already
+blocked: init_pool pins `vault_state.owner == pool PDA` (src line ~350). Added a
+regression to lock this anti-theft invariant (it was previously untested):
+subledger.rs::init_pool_rejects_a_vault_not_owned_by_the_pool.
+
 ### [BLOCKED] vote_weight arithmetic overflow (genesis-vote)
 `vote_weight = floor(log2(age)) * principal` uses `saturating_mul` (no wrap/panic)
 and accumulation uses `checked_add` (graceful error). Saturating to u64::MAX needs
