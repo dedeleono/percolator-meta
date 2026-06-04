@@ -40,6 +40,15 @@ Candidate fix: genesis-vote vote/retract CPIs the subledger to set a
 principal below `locked_principal`. (Subledger exposes the lock to a registered
 vote-authority only.) NEXT ITERATION.
 
+### [FIXED] B2. Vote-lock freeze-after-finalize (regression from B's fix)
+Adversarial self-review of B's fix: genesis-vote `vote` rejected ALL actions once
+a proposal was sealed (`pv.executed`), so a WINNING voter could never retract to
+clear the subledger vote-lock → principal frozen forever. FIX: post-seal forbid
+only NEW backing (VOTE_BACK); always allow VOTE_RETRACT (clears the lock; seal is
+immutable; post-seal tally writes are unread). Regression:
+insurance_percolator.rs::winning_voter_can_retract_and_exit_after_finalize
+(drives the real trigger to seal, then proves retract+exit works post-finalize).
+
 ### [BLOCKED] Subledger pool/position substitution in genesis-vote `vote`
 `vote` pins `sub_pool == config.subledger_pool`, derives the position PDA from
 that pool + voter, re-checks the stored pool/owner, and requires subledger-program
