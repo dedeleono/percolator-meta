@@ -4793,3 +4793,40 @@ fn e2e_claim_cannot_redirect_a_losers_coin_refund() {
     assert_eq!(token_amount(&svm, &b_src), 100_000, "bob's full COIN refund delivered to his canonical ATA");
     let _ = (alice, a_src, a_usd);
 }
+
+// EXECUTE SPENT-USD REDIRECT BY A PERMISSIONLESS CRANKER (external LOF): execute parks the budget it
+// spends this round (total_usd) into settlement_usd, from which winners later claim. If settlement_usd
+// weren't pinned, a cranker would pass THEIR OWN collateral account and steal the spent USD (and brick
+// winners' claims, which read book.settlement_usd). execute pins settlement_usd == book.settlement_usd.
+// This is the third movable-balance destination a cranker controls in execute — holding (the pull) and
+// coin_sink (SEND buyback, finding AV) are already pinned/tested; this is the USD-spend destination.
+#[test]
+fn e2e_execute_cranker_cannot_redirect_the_spent_usd() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0); // BURN; budget 400k
+
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("alice bid");
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+
+    // ATTACK: cranker substitutes their OWN collateral account as settlement_usd.
+    let thief = Pubkey::new_unique();
+    set_token(&mut svm, &thief, &env.collateral_mint, &cranker.pubkey(), 0);
+    assert!(send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &thief, &bk.book_escrow, &bk.coin_escrow, None)).is_err(),
+        "execute must reject a settlement_usd != the book's recorded account");
+    assert_eq!(token_amount(&svm, &thief), 0, "no spent USD redirected to the cranker");
+
+    // Honest execute -> the spent USD is parked in the book's real settlement account (claimable by winners).
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("honest execute");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 400_000, "spent USD parked in the book's settlement account");
+    let _ = (alice, a_src, a_usd);
+}
