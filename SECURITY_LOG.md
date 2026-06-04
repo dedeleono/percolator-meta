@@ -17,6 +17,25 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [STATE] Permissionless-fund-mover redirect class — fully analyzed across all six binaries
+Completing AV/AW/AX: enumerated every PERMISSIONLESS instruction that touches funds, across all six
+binaries, to confirm none lets the caller redirect value to themselves. All BLOCKED:
+ - twap `execute` (crank): the 3 movable-balance destinations are pinned + tested — holding (the surplus
+   pull; cranker-cannot-redirect-surplus), coin_sink (SEND buyback; AV), settlement_usd (spent USD; AX).
+ - twap `claim` (crank): usd_dest pinned (winner test) + coin_ata pinned (loser refund; AW) — both ==
+   the bid's recorded CANONICAL ATAs (V/AB).
+ - twap `cancel_bid`: bidder-BOUND (`SL_BIDDER == bidder.key`, only the bidder cancels their own bid) +
+   refund to the recorded canonical coin_ata; no cranker, no redirect.
+ - distribution `burn_unclaimed` (crank): pins `vault == config.vault && coin_mint == config.coin_mint`
+   and BURNS (no transfer destination) — only the config's own remainder, after the window.
+ - distribution `claim`: recipient-SIGNED (`pk == recipient`), recipient directs their own payout.
+ - genesis-vote `trigger` (crank): pins distribution program/config/proposal and only SEALS — moves no
+   funds to the cranker.
+ - subledger `deposit`/`withdraw`: owner-SIGNED; the owner directs their own funds (and the holding
+   intermediate is SPL-authority-bound, finding AU).
+No new code/test: the twap crank paths are the only ones with a redirectable destination, and they are
+now all pinned + tested; the rest move no funds to the caller or are owner/recipient/bidder-signed.
+
 ### [BLOCKED] AX. Permissionless cranker redirects execute's spent USD via a substituted settlement_usd (external LOF)
 Completes the AV/AW sweep of permissionless-cranker payout redirects. `execute` parks the budget it
 spends this round (`total_usd`, moved from the holding) into `settlement_usd`, from which winners later
