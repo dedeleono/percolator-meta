@@ -4347,6 +4347,69 @@ fn e2e_roll_with_committed_bid_settles_correctly_next_round() {
     let _ = alice;
 }
 
+// FINDING AE (roll restore, the HARD case): a roll where `marginal` was set but every fill rounded to
+// coin_i == 0 (a positive budget too small to buy a whole COIN atom at the bid's rate). The settle loop
+// ALREADY wrote SL_SETTLED=1 + SL_COIN_REFUND=full on the slot BEFORE total_coin==0 forces the roll, so
+// the restore (lib.rs ~1505) MUST reset those marks. If it didn't, the bid is left phantom-SETTLED with a
+// full COIN_REFUND -> the bidder could immediately `claim` their whole escrow back, exiting a committed
+// bid for FREE with no cooldown (anti-spoof bypass) and draining the shared coin_escrow. The existing
+// roll test triggers the roll with budget==0, where `marginal` is never set and the settle loop is
+// skipped — so the restore there is a no-op and does NOT exercise this path. This one does: reserve is 0
+// (any positive rate eligible) and a tiny pre-seeded holding makes a real but sub-atom fill.
+#[test]
+fn e2e_roll_with_a_marginal_zero_coin_fill_leaves_no_phantom_claim() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0); // reserve 0/1
+
+    // A low-rate bid: 1 COIN atom offered for 1000 USD (rate 0.001). Eligible (reserve 0).
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 1);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 1, 1000, None)).expect("alice bid");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 1, "the 1 COIN atom is escrowed");
+    let supply_before = mint_supply(&svm, &env.coin_mint);
+
+    // Make surplus == 0 (insurance below the 1M floor) so execute pulls NOTHING (no percolator CPI),
+    // then hand-seed the holding with a tiny 5-USD budget. The fill is min(5,1000)=5 USD (marginal IS
+    // set), but coin_i = floor(5 * 1/1000) = 0 -> total_coin==0 -> ROLL through the restore.
+    let mut slab = svm.get_account(&env.slab).unwrap();
+    slab.data[749..765].copy_from_slice(&800_000u128.to_le_bytes());
+    svm.set_account(env.slab, slab).unwrap();
+    set_token(&mut svm, &bk.holding, &env.collateral_mint, &env.twap_authority, 5);
+
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute rolls (marginal set, but bought 0 COIN)");
+    assert_eq!(mint_supply(&svm, &env.coin_mint), supply_before, "a roll burns no COIN");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 0, "nothing parked — no USD was spent");
+    assert_eq!(token_amount(&svm, &bk.holding), 5, "the 5-USD budget rolled over, unspent");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 1, "the bid's COIN is still committed");
+
+    // THE GUARD: the rolled bid must NOT be phantom-claimable. If the restore left SL_SETTLED=1 +
+    // COIN_REFUND=full, this claim would drain the escrow with no cooldown (anti-spoof bypass).
+    assert!(
+        send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &a_usd, &a_src, 0)).is_err(),
+        "a rolled bid (marginal-zero-coin) must not be claimable — no phantom settle was left behind"
+    );
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 1, "escrow intact — the phantom claim moved nothing");
+    assert_eq!(token_amount(&svm, &a_src), 0, "alice got no COIN back");
+
+    // And the bid is byte-clean: a next round with a real 1000-USD budget settles it correctly.
+    set_token(&mut svm, &bk.holding, &env.collateral_mint, &env.twap_authority, 1000);
+    warp_to(&mut svm, 222);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute round 2 settles the survivor");
+    assert_eq!(mint_supply(&svm, &env.coin_mint), supply_before - 1, "the 1 COIN atom is finally bought + burned");
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &a_usd, &a_src, 0)).expect("alice claims after the real settle");
+    assert_eq!(token_amount(&svm, &a_usd), 1000, "alice paid her full 1000 USD at the clearing price");
+    let _ = alice;
+}
+
 // FUTARCHY -> SQUADS -> TWAP control of buyback-vs-burn: the buy/burn SINK MODE is the DAO's monetary
 // policy, and it must be both settable at init AND CHANGEABLE later — but only through Squads (the
 // futarchy->Squads->twap arm), never the permissionless init_config (a front-runner there could route

@@ -6,8 +6,8 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 Reachable six-binary surface is exhausted: 53 vectors recorded (A–AX), of which 3 were real CRITICAL
 bugs found + fixed by this loop (AD signer-seed-binding, AI lamport-prefund init-DOS, AQ parasite-config
 insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full regression GREEN at this
-checkpoint: 124 tests across every harness (subledger insurance 23 + own-vault 5 + lib 6; genesis-vote
-seal 7 + lib 3; distribution 10 + lib 4; twap chain 61 + lib 4) and all four programs build-sbf clean.
+checkpoint: 125 tests across every harness (subledger insurance 23 + own-vault 5 + lib 6; genesis-vote
+seal 7 + lib 3; distribution 10 + lib 4; twap chain 62 + lib 4) and all four programs build-sbf clean.
 The percolator dep is pinned to committed revs (percolator-prog c050578, percolator 76d0e75), so a
 sibling mid-edit no longer breaks the build. Recent ticks are confirmations, not new findings; the
 remaining surface is runtime-guaranteed (e.g. AU SPL-authority), DAO-footgun hardening, or OFF this
@@ -16,6 +16,27 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [BLOCKED] twap execute roll — phantom-claim after a marginal-zero-coin fill (finding-AE restore, anti-spoof bypass)
+Vector: `execute` is a "roll" (nothing bought) when total_coin==0. There are TWO ways that happens:
+(a) budget==0 (surplus below floor) — `marginal` is never set, the settle loop is skipped; (b) budget>0
+but every fill rounds to coin_i==0 (a sub-atom fill at a low bid rate). In case (b) the settle loop ALREADY
+ran and wrote SL_SETTLED=1 + SL_COIN_REFUND=full on the slot BEFORE total_coin==0 forces the roll. The
+finding-AE restore (lib.rs ~1505) MUST reset SETTLED/COIN_REFUND/USD_OWED. If it didn't, the bid is left
+phantom-SETTLED with a full refund → claim (which gates on the SLOT's SL_SETTLED, NOT the book state) would
+pay the bidder their whole escrow back immediately — a FREE exit of a committed bid with no cancel cooldown
+(anti-spoof bypass) + a drain of the shared coin_escrow. Analysis: the restore resets all three fields, so
+the rolled bid is byte-identical to pre-execute and claim refuses it (SL_SETTLED==0). BLOCKED.
+Coverage gap closed: the existing roll test (`e2e_roll_with_committed_bid_settles_correctly_next_round`)
+triggers the roll via budget==0 — case (a), where `marginal` is never set, so the restore is a NO-OP and
+the SETTLED=1→0 reset is never exercised. Added
+`e2e_roll_with_a_marginal_zero_coin_fill_leaves_no_phantom_claim` (reserve 0/1; a 1-COIN-for-1000-USD bid;
+surplus forced to 0 so NO percolator CPI; holding hand-seeded with 5 USD → marginal IS set, coin_i=floor(5/1000)=0
+→ roll through the restore). Asserts: no burn, nothing parked, budget rolls over, escrow intact, the rolled
+bid is NOT claimable (the guard), and a next round with a real 1000-USD budget settles + burns it correctly.
+MUTATION-VERIFIED against the real .so: disabling the restore loop makes the phantom claim SUCCEED and the
+test FAIL (so it pins case (b), which budget==0 cannot). KEPT. INVARIANT: a roll (total_coin==0) must reset
+SL_USD_OWED/COIN_REFUND/SETTLED on every occupied slot; claim must keep gating on the slot's SL_SETTLED.
 
 ### [BLOCKED] twap claim — replaying a settled slot to drain other winners' parked USD (double-spend LOF)
 Vector: after `execute`, every winner's `usd_owed` is parked together in ONE shared settlement-USD account
