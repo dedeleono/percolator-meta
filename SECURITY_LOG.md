@@ -444,3 +444,20 @@ the handoff proposal should atomically set the policy to surplus-mode. Documente
 loud SAFETY comments in twap-program pull_surplus + accept_operator. NOT a live vuln
 (nothing deployed; handoff naturally follows the buy/burn build) but a sequencing LOF
 risk recorded so it isn't missed.
+
+### [O-update] Surplus-floor implementation blocker (slice 4)
+Attempted finding O's fix: have pull_surplus compute surplus = insurance - reserved
+and pull at most that. percolator exposes the clean accessor
+`percolator_prog::state::read_market(slab) -> (WrapperConfigV16, MarketGroupV16)`
+with `wrapper.insurance_withdraw_deposit_remaining` (reserved principal) and
+`group.header.insurance` (live insurance). BUT adding percolator-prog as a twap-program
+LIB dep FAILS the SBF build — it pulls in `wincode-derive`, whose manifest doesn't
+parse on the BPF toolchain (`failed to parse manifest ... wincode-derive-0.4.6`). So
+the clean in-program read is blocked. Options for slice 4:
+(a) percolator exposes a lightweight, wincode-free accessor for (insurance,
+    deposit_remaining) the twap can link; or
+(b) the twap reads raw slab offsets for those two u128s — but the slab layout drifts
+    (proven this session), so this needs a pinned percolator + a layout canary.
+Until resolved, finding O stands: do NOT perform the handoff, and the loud SAFETY
+comments in pull_surplus/accept_operator remain. Reverted the read_market attempt;
+twap-program stays green.
