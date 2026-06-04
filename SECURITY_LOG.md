@@ -4,6 +4,33 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 
 ## Analyzed
 
+### [BLOCKED] AF. Cross-market haircut-basis substitution (subledger) — pro-rata exit reads a pinned slab
+Probe: a depositor in an IMPAIRED genesis pool tries to inflate their pro-rata exit by passing a
+DIFFERENT, HEALTHY market's slab as `market_slab`. `withdraw`'s pro-rata haircut reads the live
+insurance BASIS straight from `market_slab` (findings L + T, offset 749); if that read could be
+pointed at an un-impaired market, `payout()` would see `insurance >= outstanding`, treat the exit as
+healthy, and pay FULL principal while the actual `WithdrawInsuranceLimited` pull still drains the
+real (impaired) market — stealing the loss-share owed to the depositors who stay. BLOCKED:
+`process_*_withdraw` pins `market_slab.key == pool.market_slab` (and `percolator_vault == pool.vault`,
+`percolator_program == pool.percolator_program`, `vault_authority == perc_vault_authority(market_slab,
+perc)`) BEFORE reading insurance or signing the pull, so the haircut basis and the pull source are the
+SAME pinned market. The defense existed but had no negative test on the subledger side (the twap had
+the symmetric `e2e_execute_rejects_foreign_market_vault_authority`). Pinned by
+`foreign_market_slab_cannot_inflate_the_haircut`: alice (1M) in a market impaired to 50% points
+`market_slab` at a cloned HEALTHY slab (2M insurance) — rejected, position untouched, 0 extracted —
+then her honest exit on the real slab pays exactly the 500k haircut, proving the foreign basis bought
+no advantage.
+
+Broad audit this tick (all BLOCKED, no new bug): distribution `claim` double-spend (guarded by
+`amount==0 -> already claimed` + zero-after-transfer + pull-model recipient-only + claim-window) and
+`burn_unclaimed` early-burn grief (window-gated, `clock < window_end` rejected); genesis-vote `vote`
+fabricated-weight via a fake position (guarded by `sub_position.owner == config.subledger_program` +
+canonical-PDA-for-(pool,voter) + disc, so neither an attacker-owned forgery nor someone else's real
+position works); twap Config/AuctionBook type-cosplay (distinct discriminators TWAPCFG1/TWAPBOK1
+checked at deserialize) and `place_bid` mint-confusion (coin_mint/collateral_mint/coin_escrow all
+pinned to the book, src/dest mints re-checked). Discriminator hygiene is uniform across all four
+programs (SUBPOOL1/SUBPOS01, GVCONFG1/GVBALOT1/GVPROPV1, DISTCFG1/DISTPRP1, TWAPCFG1/TWAPBOK1).
+
 ### [HARDENED] AE. Roll-undo left SL_COIN_REFUND stale (twap-program) — latent, non-exploitable state-restore gap
 `execute` clears the book against the pulled budget. When NOTHING is bought (`total_coin == 0` — a
 "roll": surplus below the floor so budget 0, OR a budget so small every marginal fill rounds to zero

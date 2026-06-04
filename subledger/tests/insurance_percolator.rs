@@ -807,6 +807,67 @@ fn impaired_insurance_exit_is_pro_rata() {
     assert_eq!(env.token_amount(&env.perc_vault.clone()), 0, "impaired insurance fully and fairly distributed");
 }
 
+// CROSS-MARKET HAIRCUT-BASIS SUBSTITUTION (LOF): the pro-rata exit reads the live insurance basis
+// from the passed market_slab (findings L + T). If a depositor in an IMPAIRED pool could pass a
+// DIFFERENT, HEALTHY market's slab, payout() would read that market's full insurance and treat the
+// exit as un-impaired — paying FULL principal while the pull still drains the real (impaired) market,
+// stealing the loss-share owed to the remaining depositors. Defense: withdraw pins
+// market_slab == pool.market_slab (subledger/src/lib.rs) BEFORE it reads insurance or signs the
+// WithdrawInsuranceLimited pull. Symmetric to the twap's
+// e2e_execute_rejects_foreign_market_vault_authority; previously untested on the subledger side.
+#[test]
+fn foreign_market_slab_cannot_inflate_the_haircut() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let a_hold = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &a_hold, amount).expect("alice deposit");
+
+    // A DIFFERENT, HEALTHY market (2M insurance) — the bait the attacker wants payout() to read.
+    let foreign_slab = Pubkey::new_unique();
+    let mut fs = env.svm.get_account(&env.slab).unwrap();
+    let off_ins = MARKET_GROUP_OFF + 301;
+    fs.data[off_ins..off_ins + 16].copy_from_slice(&2_000_000u128.to_le_bytes());
+    env.svm.set_account(foreign_slab, fs).unwrap();
+
+    // Impair the REAL market to 50%: an honest exit owes only 500k (insurance 500k / outstanding 1M).
+    impair_market(&mut env, 500_000u128);
+    env.svm.set_account(env.perc_vault, Account {
+        lamports: 1_000_000,
+        data: token_account_data(&env.mint, &env.vault_authority, 500_000),
+        owner: spl_token::ID, executable: false, rent_epoch: 0,
+    }).unwrap();
+
+    // ATTACK: withdraw with market_slab pointing at the HEALTHY foreign market to read its 2M basis.
+    let mut d = vec![5u8]; d.extend_from_slice(&amount.to_le_bytes());
+    let attack = Instruction {
+        program_id: sub_id(),
+        accounts: vec![
+            AccountMeta::new(alice.pubkey(), true),
+            AccountMeta::new(pool, false),
+            AccountMeta::new(env.position_pda(&alice.pubkey()), false),
+            AccountMeta::new(alice_ata, false),
+            AccountMeta::new(a_hold, false),
+            AccountMeta::new(foreign_slab, false), // <-- substituted slab
+            AccountMeta::new(env.perc_vault, false),
+            AccountMeta::new_readonly(env.vault_authority, false),
+            AccountMeta::new_readonly(perc_id(), false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+        ],
+        data: d,
+    };
+    assert!(env.send(&[attack], &[&alice]).is_err(), "a foreign market_slab must be rejected (key != pool.market_slab)");
+    let (_, _, withdrawn) = env.read_position(&alice.pubkey());
+    assert!(!withdrawn, "the position is untouched after the blocked attack");
+    assert_eq!(env.token_amount(&alice_ata), 0, "no funds extracted via the foreign slab");
+
+    // The honest exit (real slab) pays only the 50% haircut — the foreign slab bought no advantage.
+    env.insurance_withdraw(&alice, &alice_ata, &a_hold, &alice, amount).expect("honest exit");
+    assert_eq!(env.token_amount(&alice_ata), 500_000, "honest pro-rata haircut is 500k, never the 1M a healthy basis would pay");
+}
+
 // Full genesis lifecycle with ALL real programs (percolator + subledger +
 // genesis-vote + distribution): a depositor puts collateral at risk in percolator
 // insurance, votes, the permissionless trigger seals the winning distribution by CPI,
