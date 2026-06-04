@@ -392,3 +392,14 @@ insurance_percolator.rs::percolator_update_asset_authority_operator_encoding_is_
 (UpdateAssetAuthority tag 65, asset 0, kind INSURANCE_OPERATOR=2, [current(signer),
 new(signer), market(w)] accepted). This both verifies accept_operator's CPI and acts
 as an early-warning canary for future percolator drift on that instruction.
+
+### [BLOCKED] Insurance-policy change is marketauth-gated (no attacker drain-policy)
+The handoff rotates the insurance policy (principal-only -> surplus-only) via
+percolator UpdateInsurancePolicy (tag 33), gated on the GLOBAL marketauth
+(handle_update_insurance_policy: expect_live_authority(cfg.marketauth, admin)). The
+risk: if anyone could change the policy, they could set deposits_only=0,
+max_bps=10000 and enable withdrawing ALL insurance principal (drain). Pinned against
+the real binary (insurance_percolator.rs::percolator_update_insurance_policy_is_marketauth_gated):
+the marketauth can set the policy (encoding accepted) and a NON-marketauth is
+rejected. In the handoff the marketauth is the squads vault, so policy changes are
+1-week-timelock-gated. Also a drift canary for the policy-rotation encoding.
