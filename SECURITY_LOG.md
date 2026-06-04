@@ -27,6 +27,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED] Mid-auction config change cannot harm a committed bidder
+Vector: a bidder places a committed bid; the DAO then changes the auction parameters (set_reserve /
+reconfigure-bps / shutdown). Could a committed bidder lose their escrowed COIN or be forced into a worse
+fill they can't escape? Analysis of every mutator's writes (twap-program/src/lib.rs):
+- set_reserve writes ONLY BK_RESERVE_NUM/DEN; reconfigure writes ONLY config.surplus_buy_burn_bps; shutdown
+  moves ONLY holding->dest. NONE touch coin_escrow (the committed COIN), the bid slots, or BK_STATE.
+- Worst case for a committed bid: a raised reserve drops it below the bar -> at the next execute it settles
+  as a loser with a FULL coin refund (claimable) or the round rolls and the bid stays committed -> reclaimable
+  via the 2*round_length aged cancel. A swept holding (shutdown) just zeroes the budget -> next execute rolls
+  -> aged-cancel. bps only changes the surplus split, never the bids.
+So the escrowed COIN is never moved by a config change, and the bidder always has a refund/cancel path; the
+bidder is never forced to sell at a worse price without an exit. Every such change is Squads-vault-gated and
+timelock'd (the bidder observes it before it lands). BLOCKED.
+Verdict: no LOF/DOS for committed bidders from mid-auction governance. Covered by the existing shutdown-escrow
+test (e2e_shutdown_cannot_drain_escrow_or_settlement) + the aged-cancel test; no new test.
+
 ### [ATTESTATION] Coverage map — Copenhagen classes x repo boundaries (136 tests, build-sbf clean)
 Consolidated reference after the multi-tick sweep. Every Copenhagen class and repo-specific boundary maps to
 an enforcing test/finding (LOF/DOS verdict in parens):
