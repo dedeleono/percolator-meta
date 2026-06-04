@@ -521,3 +521,31 @@ creator registers only once they have finished building, so no third party can f
 a premature snapshot. Regression: subledger/tests/insurance_percolator.rs
 `only_the_proposal_creator_can_register_it` (a non-creator signer is rejected; the
 creator succeeds) against the real binaries. Green.
+
+### [BLOCKED] Distribution claim/seal/burn — account-substitution swept, no new vector
+Adversarially swept the distribution claim path (the COIN payout surface) for LOF/DOS
+this tick. Confirmed hardened; no test added (would be tautological):
+- pull-model impersonation: claim pins `entry.pubkey == recipient.key` (only the named
+  recipient is paid) AND `recipient.is_signer`. Covered by
+  `seal_then_recipients_claim_their_entries` ("cannot claim bob's entry").
+- double-claim: the entry amount is zeroed after the transfer; re-claim hits
+  `amount == 0`. Covered (same test).
+- cross-config substitution (the two non-obvious paths, now reasoned explicitly):
+  (a) feeding a FOREIGN sealed proposal into the real config is blocked by
+      `config.sealed_proposal == *proposal_account.key` (the config names exactly one
+      payable proposal); (b) pairing the REAL vault with an attacker-sealed proposal is
+      blocked because `vault.key == config.vault` and the sealed_proposal both derive
+      from the SAME config account — there is no way to mix a real vault with a foreign
+      proposal. The vault-authority PDA is seeded by `config.coin_mint`, so each config
+      can only sign for its own vault.
+- proposal griefing: create_proposal binds `header.creator`, append_entries requires
+  `header.creator == creator.key` (third parties cannot append to / brick a creator's
+  proposal — distribution-side analogue of finding M2, already enforced here).
+- window race: claim requires window OPEN, burn requires window CLOSED (no overlap);
+  burn-during-window DOS pinned by `burn_unclaimed_is_rejected_during_the_claim_window`.
+- supply/strand: init pins vault.amount >= total_supply, seal pins total_amount <=
+  total_supply, so claims can never strand a late recipient. Covered by
+  `init_config_rejects_an_underfunded_vault` / `append_cannot_exceed_total_supply`.
+- OOB: capacity <= MAX_ENTRIES (10k), index < entry_count <= capacity, so
+  entry_offset stays in-bounds; size math can't overflow.
+Distribution suite green (lib 4 + integration 7).
