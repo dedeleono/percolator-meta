@@ -32,3 +32,18 @@ vote-authority only.) NEXT ITERATION.
 that pool + voter, re-checks the stored pool/owner, and requires subledger-program
 ownership. A foreign high-principal position cannot be substituted. Well defended;
 no test added (would only re-assert existing checks).
+
+### [FIXED] C. Pool type-confusion: own-vault path accepted an insurance pool
+The subledger serves both own-vault pools (tags 1/2, funds in a pool-PDA-owned
+vault) and percolator-insurance pools (tags 4/5, funds in the percolator
+insurance vault). The insurance handlers already gated on `!pool.is_insurance()`,
+but the own-vault `deposit`/`withdraw` had NO matching guard. Attack/footgun:
+call own-vault deposit (tag 1) on an insurance pool — the SPL transfer pushes the
+user's funds straight into the percolator insurance vault with NO TopUpInsurance
+CPI (percolator never counts them) and records an own-vault position; the own-vault
+withdraw can never sign those funds back out (the pool PDA is not the insurance
+vault's token authority) → principal STRANDED (user LOF). FIX: added the symmetric
+`if pool.is_insurance() { return Err }` guard to own-vault deposit AND withdraw.
+Test (KEPT — pins a real stranded-funds boundary against the real percolator
+binary): subledger/tests/insurance_percolator.rs::
+own_vault_deposit_is_rejected_on_an_insurance_pool.

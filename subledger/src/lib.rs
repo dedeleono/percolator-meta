@@ -24,11 +24,13 @@ extern crate alloc;
 
 #[allow(unused_imports)]
 use alloc::format; // required by the entrypoint!/msg! macro in SBF builds
+use alloc::vec;
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
     clock::Clock,
     declare_id,
     entrypoint::ProgramResult,
+    instruction::{AccountMeta, Instruction},
     program::{invoke, invoke_signed},
     program_error::ProgramError,
     program_pack::Pack,
@@ -41,7 +43,10 @@ declare_id!("Sub1edger1111111111111111111111111111111111");
 
 const POOL_DISC: [u8; 8] = *b"SUBPOOL1";
 const POSITION_DISC: [u8; 8] = *b"SUBPOS01";
-const POOL_SIZE: usize = 96;
+// Pool now also carries the Percolator refs (market_slab + percolator_program) so
+// an insurance pool can sign TopUpInsurance / WithdrawInsuranceLimited as the
+// asset-0 insurance authority/operator. Own-vault pools leave them zero.
+const POOL_SIZE: usize = 160;
 const POSITION_SIZE: usize = 104;
 
 const POLICY_PRINCIPAL: u8 = 0;
@@ -55,6 +60,13 @@ const DOMAIN_BACKING: u8 = 1;
 const IX_INIT_POOL: u8 = 0;
 const IX_DEPOSIT: u8 = 1;
 const IX_WITHDRAW: u8 = 2;
+const IX_INIT_INSURANCE_POOL: u8 = 3;
+const IX_INSURANCE_DEPOSIT: u8 = 4;
+const IX_INSURANCE_WITHDRAW: u8 = 5;
+
+// Percolator CPI tags (verified against the real v16 program).
+const PERC_IX_TOP_UP_INSURANCE: u8 = 9;
+const PERC_IX_WITHDRAW_INSURANCE_LIMITED: u8 = 23;
 
 #[cfg(not(feature = "no-entrypoint"))]
 solana_program::entrypoint!(process_instruction);
@@ -75,6 +87,9 @@ struct Pool {
     mint: Pubkey,
     /// Percolator asset index this pool attributes (0 = market-0).
     asset_id: u64,
+    /// The token account principal flows through. For own-vault pools this is the
+    /// pool-PDA-owned SPL account; for insurance pools it is the Percolator
+    /// market's canonical insurance vault (the ATA of its vault_authority).
     vault: Pubkey,
     /// `outstanding_principal` is the quorum denominator the genesis-vote reads:
     /// the sum of live (un-withdrawn) deposit principal in this pool.
@@ -82,6 +97,11 @@ struct Pool {
     policy: u8,
     domain: u8, // DOMAIN_INSURANCE | DOMAIN_BACKING
     bump: u8,
+    /// Percolator market slab this insurance pool tops up / withdraws from.
+    /// `Pubkey::default()` for own-vault pools.
+    market_slab: Pubkey,
+    /// Percolator program id. `Pubkey::default()` for own-vault pools.
+    percolator_program: Pubkey,
 }
 
 impl Pool {
@@ -102,6 +122,8 @@ impl Pool {
             policy,
             domain,
             bump: data[89],
+            market_slab: Pubkey::new_from_array(data[96..128].try_into().unwrap()),
+            percolator_program: Pubkey::new_from_array(data[128..160].try_into().unwrap()),
         })
     }
 
@@ -114,7 +136,13 @@ impl Pool {
         data[88] = self.policy;
         data[89] = self.bump;
         data[90] = self.domain;
-        data[91..POOL_SIZE].fill(0);
+        data[91..96].fill(0);
+        data[96..128].copy_from_slice(self.market_slab.as_ref());
+        data[128..160].copy_from_slice(self.percolator_program.as_ref());
+    }
+
+    fn is_insurance(&self) -> bool {
+        self.percolator_program != Pubkey::default()
     }
 }
 
@@ -208,6 +236,9 @@ pub fn process_instruction(
         IX_INIT_POOL => process_init_pool(program_id, accounts, &mut data),
         IX_DEPOSIT => process_deposit(program_id, accounts, &mut data),
         IX_WITHDRAW => process_withdraw(program_id, accounts, &mut data),
+        IX_INIT_INSURANCE_POOL => process_init_insurance_pool(program_id, accounts, &mut data),
+        IX_INSURANCE_DEPOSIT => process_insurance_deposit(program_id, accounts, &mut data),
+        IX_INSURANCE_WITHDRAW => process_insurance_withdraw(program_id, accounts, &mut data),
         _ => Err(ProgramError::InvalidInstructionData),
     }
 }
@@ -306,6 +337,8 @@ fn process_init_pool(
         policy,
         domain,
         bump,
+        market_slab: Pubkey::default(),
+        percolator_program: Pubkey::default(),
     };
     pool.serialize(&mut pool_account.try_borrow_mut_data()?);
     Ok(())
@@ -342,6 +375,15 @@ fn process_deposit(
         return Err(ProgramError::IllegalOwner);
     }
     let mut pool = Pool::deserialize(&pool_account.try_borrow_data()?)?;
+    // Type guard: the own-vault path must NOT touch an insurance pool. An
+    // insurance pool's `vault` is the percolator insurance vault (owned by the
+    // percolator vault_authority, not this pool PDA). An own-vault deposit here
+    // would push funds into that vault WITHOUT a TopUpInsurance CPI — percolator
+    // never counts them — and the own-vault withdraw could never sign them back
+    // out, stranding the depositor's funds. Insurance pools use tags 4/5 only.
+    if pool.is_insurance() {
+        return Err(ProgramError::InvalidAccountData);
+    }
     if *vault.key != pool.vault {
         return Err(ProgramError::InvalidAccountData);
     }
@@ -454,6 +496,13 @@ fn process_withdraw(
     }
     let mut pool = Pool::deserialize(&pool_account.try_borrow_data()?)?;
     let mut position = Position::deserialize(&position_account.try_borrow_data()?)?;
+    // Type guard: own-vault withdraw must never run against an insurance pool
+    // (its vault is the percolator insurance vault; the pool PDA is not its token
+    // authority, so this would fail anyway — reject early and explicitly). See
+    // the matching guard in the own-vault deposit. Insurance uses tags 4/5.
+    if pool.is_insurance() {
+        return Err(ProgramError::InvalidAccountData);
+    }
 
     // Re-derive the pool PDA so the recorded vault and signing seeds are trusted.
     let asset_id_bytes = pool.asset_id.to_le_bytes();
@@ -513,6 +562,416 @@ fn process_withdraw(
 }
 
 // ---------------------------------------------------------------------------
+// Percolator-insurance pools
+// ---------------------------------------------------------------------------
+//
+// A pool whose `vault` is the Percolator market's canonical insurance vault. The
+// pool PDA is the asset-0 insurance *authority* (so it may TopUpInsurance) and the
+// asset-0 insurance *operator* (so it may WithdrawInsuranceLimited). Principal is
+// custodied by Percolator, never by this program; the only way out is the
+// owner-authorized, principal-only exit, capped at the owner's own recorded
+// principal — the pool can never take a depositor's funds.
+
+fn perc_vault_authority(market_slab: &Pubkey, percolator_program: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"vault", market_slab.as_ref()], percolator_program).0
+}
+
+// init_insurance_pool accounts: [payer(s,w), mint, pool(w,pda), percolator_vault,
+//   market_slab, percolator_program, system_program]
+// data: asset_id (u64), policy (u8)
+//
+// `percolator_vault` must be the canonical insurance vault token account for
+// `market_slab` (the ATA of its vault_authority), owned by the vault_authority PDA.
+fn process_init_insurance_pool(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &mut &[u8],
+) -> ProgramResult {
+    let iter = &mut accounts.iter();
+    let payer = next_account_info(iter)?;
+    let mint = next_account_info(iter)?;
+    let pool_account = next_account_info(iter)?;
+    let percolator_vault = next_account_info(iter)?;
+    let market_slab = next_account_info(iter)?;
+    let percolator_program = next_account_info(iter)?;
+    let system_program = next_account_info(iter)?;
+
+    let asset_id = read_u64(data)?;
+    let policy = read_u8(data)?;
+    if policy > POLICY_WITH_SURPLUS || !data.is_empty() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    if !payer.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    if *system_program.key != solana_program::system_program::ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    if *percolator_program.key == Pubkey::default() {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let asset_id_bytes = asset_id.to_le_bytes();
+    let (expected_pool, bump) =
+        Pubkey::find_program_address(&pool_seeds(mint.key, &asset_id_bytes), program_id);
+    if *pool_account.key != expected_pool {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    if pool_account.lamports() != 0 || pool_account.data_len() != 0 {
+        return Err(ProgramError::AccountAlreadyInitialized);
+    }
+
+    // The vault is the Percolator canonical insurance vault: an SPL token account
+    // for `mint`, owned by the market's vault_authority PDA.
+    let vault_authority = perc_vault_authority(market_slab.key, percolator_program.key);
+    let vault_state = spl_token::state::Account::unpack(&percolator_vault.try_borrow_data()?)?;
+    if vault_state.mint != *mint.key || vault_state.owner != vault_authority {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let rent = solana_program::rent::Rent::get()?;
+    let lamports = rent.minimum_balance(POOL_SIZE);
+    let bump_arr = [bump];
+    let seeds: [&[u8]; 4] = [b"subledger_pool", mint.key.as_ref(), &asset_id_bytes, &bump_arr];
+    invoke_signed(
+        &system_instruction::create_account(
+            payer.key,
+            pool_account.key,
+            lamports,
+            POOL_SIZE as u64,
+            program_id,
+        ),
+        &[payer.clone(), pool_account.clone(), system_program.clone()],
+        &[&seeds],
+    )?;
+
+    let pool = Pool {
+        mint: *mint.key,
+        asset_id,
+        vault: *percolator_vault.key,
+        outstanding_principal: 0,
+        policy,
+        domain: DOMAIN_INSURANCE,
+        bump,
+        market_slab: *market_slab.key,
+        percolator_program: *percolator_program.key,
+    };
+    pool.serialize(&mut pool_account.try_borrow_mut_data()?);
+    Ok(())
+}
+
+// insurance_deposit accounts: [owner(s,w), pool(w), position(w,pda), owner_ata(w),
+//   holding(w, pool-PDA-owned token acct), market_slab(w), percolator_vault(w),
+//   percolator_program, token_program, system_program]
+// data: amount (u64)
+//
+// User -> holding (user-signed). Then the pool PDA (asset-0 insurance authority)
+// signs TopUpInsurance moving holding -> Percolator insurance vault. Records the
+// position (principal += amount, start_slot = now) and bumps outstanding.
+fn process_insurance_deposit(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &mut &[u8],
+) -> ProgramResult {
+    let iter = &mut accounts.iter();
+    let owner = next_account_info(iter)?;
+    let pool_account = next_account_info(iter)?;
+    let position_account = next_account_info(iter)?;
+    let owner_ata = next_account_info(iter)?;
+    let holding = next_account_info(iter)?;
+    let market_slab = next_account_info(iter)?;
+    let percolator_vault = next_account_info(iter)?;
+    let percolator_program = next_account_info(iter)?;
+    let token_program = next_account_info(iter)?;
+    let system_program = next_account_info(iter)?;
+
+    let amount = read_u64(data)?;
+    if amount == 0 || !data.is_empty() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    if !owner.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    if *token_program.key != spl_token::ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    if pool_account.owner != program_id {
+        return Err(ProgramError::IllegalOwner);
+    }
+    let mut pool = Pool::deserialize(&pool_account.try_borrow_data()?)?;
+    if !pool.is_insurance() {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    // Re-derive the pool PDA so the signing seeds are trusted.
+    let asset_id_bytes = pool.asset_id.to_le_bytes();
+    let (expected_pool, bump) =
+        Pubkey::find_program_address(&pool_seeds(&pool.mint, &asset_id_bytes), program_id);
+    if *pool_account.key != expected_pool || bump != pool.bump {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    if *market_slab.key != pool.market_slab
+        || *percolator_vault.key != pool.vault
+        || *percolator_program.key != pool.percolator_program
+    {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    // Position PDA (one per owner per pool).
+    let pos_seeds = position_seeds(pool_account.key, owner.key);
+    let (expected_pos, pos_bump) = Pubkey::find_program_address(&pos_seeds, program_id);
+    if *position_account.key != expected_pos {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    let mut position = if position_account.data_len() == 0 || position_account.lamports() == 0 {
+        let rent = solana_program::rent::Rent::get()?;
+        let lamports = rent.minimum_balance(POSITION_SIZE);
+        let pbump = [pos_bump];
+        let seeds: [&[u8]; 4] = [
+            b"subledger_position",
+            pool_account.key.as_ref(),
+            owner.key.as_ref(),
+            &pbump,
+        ];
+        invoke_signed(
+            &system_instruction::create_account(
+                owner.key,
+                position_account.key,
+                lamports,
+                POSITION_SIZE as u64,
+                program_id,
+            ),
+            &[owner.clone(), position_account.clone(), system_program.clone()],
+            &[&seeds],
+        )?;
+        Position {
+            pool: *pool_account.key,
+            owner: *owner.key,
+            principal: 0,
+            withdrawn_amount: 0,
+            withdrawn: false,
+            start_slot: 0,
+        }
+    } else {
+        if position_account.owner != program_id {
+            return Err(ProgramError::IllegalOwner);
+        }
+        let p = Position::deserialize(&position_account.try_borrow_data()?)?;
+        if p.owner != *owner.key || p.pool != *pool_account.key || p.withdrawn {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        p
+    };
+
+    // 1) User -> holding (user-signed; the user is moving their own funds).
+    invoke(
+        &spl_token::instruction::transfer(
+            token_program.key,
+            owner_ata.key,
+            holding.key,
+            owner.key,
+            &[],
+            amount,
+        )?,
+        &[owner_ata.clone(), holding.clone(), owner.clone(), token_program.clone()],
+    )?;
+
+    // 2) holding -> Percolator insurance vault, signed by the pool PDA as the
+    //    asset-0 insurance authority (TopUpInsurance, tag 9).
+    let seeds: [&[u8]; 4] = [
+        b"subledger_pool",
+        pool.mint.as_ref(),
+        &asset_id_bytes,
+        core::slice::from_ref(&pool.bump),
+    ];
+    let mut ix_data = vec![PERC_IX_TOP_UP_INSURANCE];
+    ix_data.extend_from_slice(&(amount as u128).to_le_bytes());
+    invoke_signed(
+        &Instruction {
+            program_id: *percolator_program.key,
+            accounts: vec![
+                AccountMeta::new_readonly(*pool_account.key, true),
+                AccountMeta::new(*market_slab.key, false),
+                AccountMeta::new(*holding.key, false),
+                AccountMeta::new(*percolator_vault.key, false),
+                AccountMeta::new_readonly(*token_program.key, false),
+            ],
+            data: ix_data,
+        },
+        &[
+            pool_account.clone(),
+            market_slab.clone(),
+            holding.clone(),
+            percolator_vault.clone(),
+            token_program.clone(),
+            percolator_program.clone(),
+        ],
+        &[&seeds],
+    )?;
+
+    pool.outstanding_principal = pool
+        .outstanding_principal
+        .checked_add(amount)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    position.principal = position
+        .principal
+        .checked_add(amount)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    // Last-write-time: topping up resets the vote clock.
+    position.start_slot = Clock::get()?.slot;
+
+    pool.serialize(&mut pool_account.try_borrow_mut_data()?);
+    position.serialize(&mut position_account.try_borrow_mut_data()?);
+    Ok(())
+}
+
+// insurance_withdraw accounts: [owner(s,w), pool(w), position(w), owner_ata(w),
+//   holding(w, pool-PDA-owned token acct), market_slab(w), percolator_vault(w),
+//   vault_authority, percolator_program, token_program]
+// data: amount (u64)
+//
+// Owner-bound, principal-only exit: `amount <= position.principal`. The pool PDA
+// (asset-0 insurance operator) signs WithdrawInsuranceLimited (tag 23). NOTE: the
+// real percolator handler requires the withdraw destination to be owned by the
+// *operator* (the pool PDA), not an arbitrary user, so we withdraw into a
+// pool-PDA-owned holding account and then SPL-transfer holding -> owner's ATA
+// (pool PDA signs). Can never exceed the owner's own recorded principal.
+fn process_insurance_withdraw(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &mut &[u8],
+) -> ProgramResult {
+    let iter = &mut accounts.iter();
+    let owner = next_account_info(iter)?;
+    let pool_account = next_account_info(iter)?;
+    let position_account = next_account_info(iter)?;
+    let owner_ata = next_account_info(iter)?;
+    let holding = next_account_info(iter)?;
+    let market_slab = next_account_info(iter)?;
+    let percolator_vault = next_account_info(iter)?;
+    let vault_authority = next_account_info(iter)?;
+    let percolator_program = next_account_info(iter)?;
+    let token_program = next_account_info(iter)?;
+
+    let amount = read_u64(data)?;
+    if amount == 0 || !data.is_empty() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    if !owner.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    if *token_program.key != spl_token::ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    if pool_account.owner != program_id || position_account.owner != program_id {
+        return Err(ProgramError::IllegalOwner);
+    }
+    let mut pool = Pool::deserialize(&pool_account.try_borrow_data()?)?;
+    let mut position = Position::deserialize(&position_account.try_borrow_data()?)?;
+    if !pool.is_insurance() {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let asset_id_bytes = pool.asset_id.to_le_bytes();
+    let (expected_pool, bump) =
+        Pubkey::find_program_address(&pool_seeds(&pool.mint, &asset_id_bytes), program_id);
+    if *pool_account.key != expected_pool || bump != pool.bump {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    if *market_slab.key != pool.market_slab
+        || *percolator_vault.key != pool.vault
+        || *percolator_program.key != pool.percolator_program
+    {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    // vault_authority is a passed account, validated by PDA derivation.
+    if *vault_authority.key != perc_vault_authority(market_slab.key, percolator_program.key) {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    // The holding account must be a token account for `mint` owned by the pool PDA
+    // (the real percolator handler requires the withdraw dest to be the operator).
+    let holding_state = spl_token::state::Account::unpack(&holding.try_borrow_data()?)?;
+    if holding_state.mint != pool.mint || holding_state.owner != *pool_account.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    // Owner-bound: only the position owner can exit.
+    if position.owner != *owner.key || position.pool != *pool_account.key {
+        return Err(ProgramError::IllegalOwner);
+    }
+    if position.withdrawn {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    // Principal-only: never exceeds the owner's own recorded principal.
+    if amount > position.principal || amount > pool.outstanding_principal {
+        return Err(ProgramError::InsufficientFunds);
+    }
+
+    // The pool PDA (asset-0 insurance operator) signs WithdrawInsuranceLimited,
+    // moving Percolator insurance -> pool-PDA-owned holding.
+    let seeds: [&[u8]; 4] = [
+        b"subledger_pool",
+        pool.mint.as_ref(),
+        &asset_id_bytes,
+        core::slice::from_ref(&pool.bump),
+    ];
+    let mut ix_data = vec![PERC_IX_WITHDRAW_INSURANCE_LIMITED];
+    ix_data.extend_from_slice(&(amount as u128).to_le_bytes());
+    invoke_signed(
+        &Instruction {
+            program_id: *percolator_program.key,
+            accounts: vec![
+                AccountMeta::new_readonly(*pool_account.key, true),
+                AccountMeta::new(*market_slab.key, false),
+                AccountMeta::new(*holding.key, false),
+                AccountMeta::new(*percolator_vault.key, false),
+                AccountMeta::new_readonly(*vault_authority.key, false),
+                AccountMeta::new_readonly(*token_program.key, false),
+            ],
+            data: ix_data,
+        },
+        &[
+            pool_account.clone(),
+            market_slab.clone(),
+            holding.clone(),
+            percolator_vault.clone(),
+            vault_authority.clone(),
+            token_program.clone(),
+            percolator_program.clone(),
+        ],
+        &[&seeds],
+    )?;
+
+    // holding -> owner's ATA, signed by the pool PDA. This is the only path out and
+    // it is bounded by the owner's recorded principal, so the program can never pay
+    // the owner more than they put in.
+    invoke_signed(
+        &spl_token::instruction::transfer(
+            token_program.key,
+            holding.key,
+            owner_ata.key,
+            pool_account.key,
+            &[],
+            amount,
+        )?,
+        &[holding.clone(), owner_ata.clone(), pool_account.clone(), token_program.clone()],
+        &[&seeds],
+    )?;
+
+    pool.outstanding_principal -= amount;
+    position.principal -= amount;
+    position.withdrawn_amount = position
+        .withdrawn_amount
+        .checked_add(amount)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    if position.principal == 0 {
+        position.withdrawn = true;
+    }
+
+    pool.serialize(&mut pool_account.try_borrow_mut_data()?);
+    position.serialize(&mut position_account.try_borrow_mut_data()?);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests for the pure payout arithmetic
 // ---------------------------------------------------------------------------
 
@@ -550,6 +1009,8 @@ mod tests {
 
     #[test]
     fn state_round_trips() {
+        let slab = Pubkey::new_unique();
+        let perc = Pubkey::new_unique();
         let pool = Pool {
             mint: Pubkey::new_unique(),
             asset_id: 7,
@@ -558,6 +1019,8 @@ mod tests {
             policy: POLICY_WITH_SURPLUS,
             domain: DOMAIN_BACKING,
             bump: 254,
+            market_slab: slab,
+            percolator_program: perc,
         };
         let mut buf = [0u8; POOL_SIZE];
         pool.serialize(&mut buf);
@@ -569,6 +1032,9 @@ mod tests {
         assert_eq!(d.policy, POLICY_WITH_SURPLUS);
         assert_eq!(d.domain, DOMAIN_BACKING);
         assert_eq!(d.bump, 254);
+        assert_eq!(d.market_slab, slab);
+        assert_eq!(d.percolator_program, perc);
+        assert!(d.is_insurance());
 
         let pos = Position {
             pool: Pubkey::new_unique(),
