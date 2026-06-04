@@ -27,6 +27,26 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED-COVERED] #28-class sweep across state machines — no stale-cache read, no permissionless-advance bug
+Generalized the #28 pattern ("a permissionless action advances some state, changing a TIME/STATE guard's
+behavior") and swept every state machine + cached value for the same shape:
+- genesis-vote quorum cache: `vote` writes `config.outstanding_principal` on every vote, but NO guard reads
+  it — `trigger` deliberately RE-READS the live pool outstanding at seal time (lib.rs:737), never the stored
+  field. So the cache is vestigial (off-chain visibility only); there is no stale-cache read bug. Using it
+  WOULD reopen the stale-low minority-capture hole that `trigger_uses_live_pool_outstanding_not_stale_cache`
+  exists to prevent. Clarified the misleading "Sync the quorum denominator" comment so an auditor/the active
+  external filer does not mistake it for a stale read.
+- twap reserved_floor / round_end / book.state, distribution sealed_proposal / seal_slot+claim_window,
+  subledger pool.outstanding: every guard reads the CURRENT value at decision time (no cached snapshot drives
+  a decision). round_end advances only via execute (already fixed for cancel, #28). seal_slot is set once by
+  the trigger and the window is immutable; a cranker can only DELAY the seal (not shorten the claim window),
+  and the trigger rejects until quorum holds.
+- Other permissionless cranks (claim->reopen, burn_unclaimed, trigger->executed) advance state but no other
+  guard keys off a delta exploitably (claim reopens only when fully drained; burn is terminal; trigger is
+  one-shot).
+Verdict: #28 was the only instance of the pattern; it is fixed, and no sibling exists in the other state
+machines (all guards read live, no cache drives a decision). Comment-only change; suites green at 134.
+
 ### [VERIFIED-COVERED] Auction anti-spoof — proactive #28-sibling sweep (no other cooldown bypass)
 After fixing #28 (no-op roll unlocking cancel), swept the auction state machine for SIBLING bypasses of the
 "committed until settled/aged/evicted" anti-spoof — the class the external filer is mining:

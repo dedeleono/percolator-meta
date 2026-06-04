@@ -571,7 +571,11 @@ fn vote<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>], data: &[u8]) -
     }
     let (principal, start_slot) =
         read_sub_position(&sub_position.try_borrow_data()?, sub_pool.key, voter.key)?;
-    // Sync the quorum denominator from the live pool outstanding.
+    // Snapshot the live pool outstanding into the config for off-chain visibility. NOTE: this is NOT
+    // the quorum denominator — `trigger` deliberately RE-READS the live pool outstanding at seal time
+    // (see read_sub_pool_outstanding there), never this stored field, so a late deposit/exit between the
+    // last vote and the trigger is always reflected. Using this cached value would reintroduce the
+    // stale-low minority-capture hole that `trigger_uses_live_pool_outstanding_not_stale_cache` guards.
     config.outstanding_principal = read_sub_pool_outstanding(&sub_pool.try_borrow_data()?)?;
 
     // Ballot PDA (one per voter per config). Created lazily on first back.
