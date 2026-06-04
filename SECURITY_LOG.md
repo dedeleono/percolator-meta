@@ -252,6 +252,32 @@ refused. Regression (real cross-program e2e):
 insurance_percolator.rs::proposal_changed_after_registration_cannot_be_sealed
 (register partial -> vote -> creator appends -> trigger rejected).
 
+### [BLOCKED] Percolator admin proxy (program/ IX_PERCOLATOR_ADMIN) — analyzed
+Forwards percolator admin CPIs signed by the market_admin PDA. Well-guarded:
+(a) tag ALLOWLIST (percolator_admin_tag_allowed) — only lifecycle-scoped tags;
+(b) governance-authority gate (authority == coin_cfg.authority, signer);
+(c) LOCKED ENTIRELY until genesis is finalized (the #16/#19 fix) — no pre-finalize
+admin ops while depositor capital is at risk; kickstart/recovery use direct CPIs,
+not this proxy. Post-finalize the allowlist is the MetaDAO's intended lifecycle
+controls. Even the allowed UPDATE_INSURANCE_POLICY can't drain principal: the
+subledger operator caps every withdraw to position.principal regardless of the
+market policy. No gap. (Hard to e2e — needs the drift-broken genesis lifecycle.)
+
+### [BLOCKED] Distribution seal authority — gated + already tested
+seal_winner requires `authority.is_signer && authority.key == config.authority`
+(the genesis-vote config PDA). A non-authority sealing would bypass the vote
+entirely (governance capture) — already pinned:
+distribution.rs::seal_then_recipients_claim_their_entries asserts an imposter
+cannot seal and the real authority can.
+
+### [BLOCKED] governance/ adapter forwarding (init/handover squads, percolator admin)
+The adapter CPIs the rewards program signed by a PDA derived FROM the passed
+rewards_program ([b"rewards_authority", rewards_program, coin_mint]). A malicious
+rewards_program only ever yields a PDA bound to itself (no impersonation of the
+legit authority), and the real validation (governance authority, finalized lock)
+lives in the rewards program the adapter forwards to. Trusted-forwarder pattern,
+PDA-bound. No gap.
+
 ### [BLOCKED] vote_weight arithmetic overflow (genesis-vote)
 `vote_weight = floor(log2(age)) * principal` uses `saturating_mul` (no wrap/panic)
 and accumulation uses `checked_add` (graceful error). Saturating to u64::MAX needs
