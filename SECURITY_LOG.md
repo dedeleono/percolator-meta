@@ -3,11 +3,11 @@
 Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdict.
 
 ## Checkpoint (latest)
-Reachable six-binary surface is exhausted: 50 vectors recorded (A–AU), of which 3 were real CRITICAL
+Reachable six-binary surface is exhausted: 51 vectors recorded (A–AV), of which 3 were real CRITICAL
 bugs found + fixed by this loop (AD signer-seed-binding, AI lamport-prefund init-DOS, AQ parasite-config
 insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full regression GREEN at this
 checkpoint: 119 tests across every harness (subledger insurance 23 + own-vault 5 + lib 6; genesis-vote
-seal 5 + lib 3; distribution 8 + lib 4; twap chain 57 + lib 4) and all four programs build-sbf clean.
+seal 5 + lib 3; distribution 8 + lib 4; twap chain 58 + lib 4) and all four programs build-sbf clean.
 The percolator dep is pinned to committed revs (percolator-prog c050578, percolator 76d0e75), so a
 sibling mid-edit no longer breaks the build. Recent ticks are confirmations, not new findings; the
 remaining surface is runtime-guaranteed (e.g. AU SPL-authority), DAO-footgun hardening, or OFF this
@@ -16,6 +16,18 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [BLOCKED] AV. Permissionless cranker redirects the SEND buyback via a substituted coin_sink (external LOF)
+`execute` is PERMISSIONLESS (any cranker turns it). In SEND (buyback) mode it transfers the bought COIN
+to a `coin_sink` passed as a TRAILING account. If the sink were not pinned, a hostile cranker would
+pass THEIR OWN COIN account and steal the entire buyback — a direct external LOF (the bought COIN is
+the protocol's/treasury's). BLOCKED: execute checks `*coin_sink.key == book.coin_sink` (the DAO-set,
+Squads-gated sink recorded on the book) before the transfer, so a substituted sink is rejected and the
+whole execute reverts (book unsettled, COIN safe in escrow). Pinned by
+`e2e_execute_send_cranker_cannot_redirect_the_buyback`: a cranker passes their own COIN account as the
+sink -> rejected, 0 redirected; the honest execute (book-recorded treasury sink) then routes the 400k
+bought COIN to the treasury. Distinct from AS (set-time self-loop guard) and AH (happy-path
+burn->send flip) — this is the execute-time redirect by an external cranker, which was untested.
 
 ### [BLOCKED] AU. insurance_deposit holding-intermediate substitution/duplicate — SPL authority is the boundary
 `insurance_deposit` routes funds user_ata -> `holding` (user-signed) -> percolator insurance vault

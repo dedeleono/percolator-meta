@@ -4711,3 +4711,42 @@ fn e2e_send_sink_cannot_be_the_coin_escrow() {
     ];
     squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 7, &ok, &ok_rem).expect("external treasury sink accepted");
 }
+
+// SEND-SINK REDIRECT BY A PERMISSIONLESS CRANKER (external LOF): execute is permissionless and, in
+// SEND (buyback) mode, transfers the bought COIN to the book's recorded coin_sink (passed as a
+// trailing account). If that sink were not pinned, any cranker could pass THEIR OWN COIN account and
+// steal the entire buyback. execute checks `coin_sink.key == book.coin_sink`, so a substituted sink is
+// rejected; the honest execute routes the COIN to the DAO treasury. Distinct from AS (set-time
+// self-loop guard) and AH (happy-path burn->send flip) — this is the execute-time redirect.
+#[test]
+fn e2e_execute_send_cranker_cannot_redirect_the_buyback() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let treasury = Pubkey::new_unique();
+    set_token(&mut svm, &treasury, &env.coin_mint, &payer.pubkey(), 0);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 1 /* SINK_SEND */, Some(treasury), 0);
+
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("alice bid");
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+
+    // ATTACK: the cranker substitutes their OWN COIN account as the SEND sink.
+    let thief = Pubkey::new_unique();
+    set_token(&mut svm, &thief, &env.coin_mint, &cranker.pubkey(), 0);
+    assert!(send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, Some(thief))).is_err(),
+        "execute must reject a coin_sink != the book's recorded sink");
+    assert_eq!(token_amount(&svm, &thief), 0, "no buyback COIN redirected to the cranker");
+
+    // The honest execute (correct, book-recorded sink) routes the bought COIN to the DAO treasury.
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, Some(treasury))).expect("honest execute");
+    assert_eq!(token_amount(&svm, &treasury), 400_000, "bought COIN routed to the DAO treasury, not the cranker");
+    let _ = (alice, a_src, a_usd);
+}
