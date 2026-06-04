@@ -854,6 +854,16 @@ fn process_insurance_deposit(
     {
         return Err(ProgramError::InvalidAccountData);
     }
+    // The transit `holding` must be a `mint` token account owned by the pool PDA — the pool signs the
+    // holding->vault TopUpInsurance, so a non-pool/wrong-mint holding would already make that CPI revert.
+    // Validate it up front (matching insurance_withdraw) so the failure is a clear, fail-fast error rather
+    // than a downstream CPI revert, and so a wrong holding can never reach the user->holding transfer.
+    {
+        let hs = spl_token::state::Account::unpack(&holding.try_borrow_data()?)?;
+        if hs.mint != pool.mint || hs.owner != *pool_account.key {
+            return Err(ProgramError::InvalidAccountData);
+        }
+    }
 
     // Position PDA (one per owner per pool).
     let pos_seeds = position_seeds(pool_account.key, owner.key);

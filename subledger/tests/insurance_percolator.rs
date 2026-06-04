@@ -361,6 +361,39 @@ fn those_who_stay_decide_after_a_nonvoting_majority_forfeits_by_exiting() {
     assert_eq!(sealed_to, dist_proposal, "alice's proposal sealed — governance follows the capital that stayed");
 }
 
+// insurance_deposit routes funds user -> holding -> percolator insurance vault (TopUpInsurance, pool-signed).
+// The transit `holding` must be a pool-PDA-owned token account for the pool mint. A holding the depositor
+// controls would let the user->holding leg land funds in an attacker account before the (failing) TopUp; the
+// deposit now validates it up front (matching insurance_withdraw), so a non-pool holding is refused outright.
+#[test]
+fn insurance_deposit_rejects_a_non_pool_holding() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let (alice, alice_ata) = new_depositor(&mut env, 1_000_000);
+
+    // A token account of the correct mint but owned by an ATTACKER, not the pool PDA.
+    let attacker = Pubkey::new_unique();
+    let rogue_holding = Pubkey::new_unique();
+    env.svm
+        .set_account(
+            rogue_holding,
+            solana_sdk::account::Account {
+                lamports: 1_000_000_000,
+                data: token_account_data(&env.mint, &attacker, 0),
+                owner: spl_token::ID,
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
+    assert!(
+        env.insurance_deposit(&alice, &alice_ata, &rogue_holding, 1_000_000).is_err(),
+        "deposit must reject a holding not owned by the pool PDA"
+    );
+    assert_eq!(env.pool_outstanding(), 0, "no credit from the rejected deposit");
+    assert_eq!(env.token_amount(&alice_ata), 1_000_000, "alice's capital untouched");
+}
+
 // A pool-PDA-owned holding token account (created per depositor).
 fn create_holding(env: &mut Env, owner_pool: &Pubkey) -> Pubkey {
     let acc = Keypair::new();

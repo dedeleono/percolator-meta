@@ -6,8 +6,8 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 Reachable six-binary surface is exhausted: 53 vectors recorded (A–AX), of which 3 were real CRITICAL
 bugs found + fixed by this loop (AD signer-seed-binding, AI lamport-prefund init-DOS, AQ parasite-config
 insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full regression GREEN at this
-checkpoint: 135 tests across every harness (subledger insurance 26 + own-vault 5 + lib 6 = 37; genesis-vote
-seal 9 + lib 3 = 12; distribution 13 + lib 4 = 17; twap chain 65 + lib 4 = 69; 37+12+17+69 = 135), full
+checkpoint: 136 tests across every harness (subledger insurance 27 + own-vault 5 + lib 6 = 38; genesis-vote
+seal 9 + lib 3 = 12; distribution 13 + lib 4 = 17; twap chain 65 + lib 4 = 69; 38+12+17+69 = 136), full
 suite green, and all four programs build-sbf clean.
 On-chain FIXES this run: twap init_config enforces the bound Squads multisig time_lock >= 1 week; twap
 cancel_bid no longer lets a no-op roll unlock the anti-spoof cooldown early (external issue #28).
@@ -26,6 +26,21 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [HARDENING] subledger insurance_deposit — fail-fast holding validation (consistency with withdraw)
+Vector probed: insurance_deposit routes funds user -> holding -> percolator insurance vault (TopUpInsurance,
+pool-signed). The WITHDRAW validates `holding.owner == pool && holding.mint == pool.mint` up front
+(lib.rs:1024), but the DEPOSIT did not — it relied on the pool-signed TopUp CPI to revert on a non-pool/
+wrong-mint holding. Asymmetry of exactly the kind the external auditor flags.
+Analysis + MUTATION result: NOT a security gap — the deposit was already safe. Mutation-verified: with the
+new check REMOVED, `insurance_deposit_rejects_a_non_pool_holding` STILL passes, i.e. the TopUp CPI backstops a
+non-pool holding (the pool cannot authorize a transfer from an account it does not own). So a wrong holding
+was always rejected and the whole tx reverts (the user->holding leg is rolled back; no LOF). Added the
+explicit up-front check anyway as DEFENSE-IN-DEPTH + consistency (a clear fail-fast InvalidAccountData instead
+of a downstream CPI revert, and so a wrong holding can never even reach the user->holding transfer).
+Added `insurance_deposit_rejects_a_non_pool_holding` pinning the boundary (attacker-owned holding -> rejected,
+no credit, capital untouched). KEPT — it is the first test of the deposit-holding boundary (doubly-defended,
+documented as such). No LOF was present; this is hardening, not a bug fix.
 
 ### [VERIFIED-COVERED] Auction state-machine sweep complete — cancel/execute/claim transitions all correctly guarded
 Closing the auction state-machine class the external auditor mines (#28 was a cancel-transition bug). Verified
