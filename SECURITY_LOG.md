@@ -716,3 +716,16 @@ accept_operator (tag 7) is the mirror of the twap's, required solely because per
 asset-0 UpdateAssetAuthority has no consent-free grant path (the incoming key must co-sign).
 Stage-A (`e2e_squads_grants_operator_to_subledger_then_real_deposit`) pins the grant+deposit
 half on its own. All suites green: twap lib 2 + chain 7; subledger 6+16+5; gv 3+5; dist 4+7.
+
+### [BLOCKED] E2E probe: operator grant cannot bypass the Squads timelock
+ATTACK: an attacker calls subledger.accept_operator DIRECTLY (not through a Squads
+execute), signing as a forged asset_admin, to grant the asset-0 insurance operator to the
+pool outside the 1-week timelock. The pool consents (its PDA is hardcoded in
+accept_operator), but the inner percolator UpdateAssetAuthority requires the signer to be
+the asset-0 asset_admin (the Squads vault) — an attacker key (and the plain payer) is not,
+so percolator rejects. Confirms the grant/rotation is reachable ONLY through the real
+asset_admin, i.e. a timelock'd Squads execute; calling the subledger straight cannot
+sidestep it. accept_operator is powerless on its own — it only co-signs; percolator is the
+gate. Test: twap-program/tests/chain.rs
+`e2e_attacker_cannot_grant_operator_bypassing_squads` (real Squads v4 + percolator + the
+deployed subledger). KEPT — pins the core authority boundary of the whole handoff.

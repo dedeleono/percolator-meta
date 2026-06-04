@@ -1374,3 +1374,84 @@ fn e2e_full_genesis_to_twap_surplus_pull() {
     assert_eq!(token_amount(&svm, &twap_holding), surplus, "twap pulled the surplus into its holding");
     assert_eq!(token_amount(&svm, &perc_vault), principal, "principal remains in insurance");
 }
+
+// ATTACK PROBE (authority bypass): the subledger.accept_operator grant must be
+// unreachable except through the real asset_admin (the Squads vault, behind the 1-week
+// timelock). An attacker who calls accept_operator DIRECTLY, signing as a forged
+// asset_admin, must be rejected by percolator (the signer is not the asset-0 asset_admin),
+// so the timelock cannot be sidestepped by calling the subledger straight.
+#[test]
+fn e2e_attacker_cannot_grant_operator_bypassing_squads() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(sub_id(), so_deploy("subledger_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let squads = squads_id();
+    let treasury = install_squads(&mut svm, &squads, &payer.pubkey());
+    let dao = Keypair::new();
+    svm.airdrop(&dao.pubkey(), 1_000_000_000_000).unwrap();
+    let create_key = Keypair::new();
+    let multisig = multisig_pda(&squads, &create_key.pubkey());
+    let create_ix = multisig_create_v2_ix(&squads, &treasury, &multisig, &create_key.pubkey(), &payer.pubkey(),
+        Some(&dao.pubkey()), 1, &[(dao.pubkey(), PERM_ALL)], TIMELOCK_1_WEEK_SECS);
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[create_ix], Some(&payer.pubkey()), &[&payer, &create_key], bh)).expect("multisig");
+    let squads_vault = vault_pda(&squads, &multisig, 0);
+
+    let collateral_mint = Pubkey::new_unique();
+    let slab = Pubkey::new_unique();
+    let init_slot = 100u64;
+    let slab_data = make_live_market(&slab, &collateral_mint, &squads_vault, init_slot);
+    svm.set_account(slab, Account { lamports: 1_000_000_000, data: slab_data, owner: perc_id(), executable: false, rent_epoch: 0 }).unwrap();
+    svm.set_sysvar(&Clock { slot: init_slot, unix_timestamp: 100, ..Clock::default() });
+    let vault_authority = perc_vault_authority(&slab, &perc_id());
+    let perc_vault = canonical_insurance_vault(&vault_authority, &collateral_mint);
+    set_token(&mut svm, &perc_vault, &collateral_mint, &vault_authority, 0);
+    let pool = sub_pool_pda(&collateral_mint, 0, &slab, &perc_id());
+    let vote_auth = Pubkey::new_unique();
+    let mut d = vec![3u8]; d.extend_from_slice(&0u64.to_le_bytes()); d.push(0);
+    let init_pool = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true),
+        AccountMeta::new_readonly(collateral_mint, false),
+        AccountMeta::new(pool, false),
+        AccountMeta::new_readonly(perc_vault, false),
+        AccountMeta::new_readonly(slab, false),
+        AccountMeta::new_readonly(perc_id(), false),
+        AccountMeta::new_readonly(system_program::ID, false),
+        AccountMeta::new_readonly(vote_auth, false),
+    ], data: d };
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[init_pool], Some(&payer.pubkey()), &[&payer], bh)).expect("init pool");
+
+    // ATTACK: call accept_operator DIRECTLY with the attacker as the "asset_admin" signer.
+    // The pool consents (its PDA is hardcoded), but percolator's UpdateAssetAuthority
+    // rejects because the signer is NOT the asset-0 asset_admin (the Squads vault).
+    let attacker = Keypair::new();
+    svm.airdrop(&attacker.pubkey(), 1_000_000_000).unwrap();
+    let direct = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new_readonly(attacker.pubkey(), true), // forged asset_admin
+        AccountMeta::new_readonly(pool, false),
+        AccountMeta::new(slab, false),
+        AccountMeta::new_readonly(perc_id(), false),
+    ], data: vec![7u8] };
+    svm.expire_blockhash();
+    let bh = svm.latest_blockhash();
+    let r = svm.send_transaction(Transaction::new_signed_with_payer(&[direct], Some(&payer.pubkey()), &[&payer, &attacker], bh));
+    assert!(r.is_err(), "a forged asset_admin must not be able to grant the operator outside the Squads timelock");
+
+    // And the payer themselves (also not the asset_admin) cannot do it either.
+    let direct2 = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new_readonly(payer.pubkey(), true),
+        AccountMeta::new_readonly(pool, false),
+        AccountMeta::new(slab, false),
+        AccountMeta::new_readonly(perc_id(), false),
+    ], data: vec![7u8] };
+    svm.expire_blockhash();
+    let bh = svm.latest_blockhash();
+    assert!(svm.send_transaction(Transaction::new_signed_with_payer(&[direct2], Some(&payer.pubkey()), &[&payer], bh)).is_err(),
+        "only the real asset_admin (Squads vault, via timelock) can drive the grant");
+}
