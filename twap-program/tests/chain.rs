@@ -2736,12 +2736,15 @@ fn build_init_book_message(
     squads_vault: &Pubkey, book: &Pubkey, config: &Pubkey, book_escrow: &Pubkey, coin_escrow: &Pubkey,
     settlement_usd: &Pubkey, holding: &Pubkey, coin_mint: &Pubkey, collateral_mint: &Pubkey,
     reserve_num: u128, reserve_den: u128, round_length: u64, sink_mode: u8, bid_fee: u64,
+    coin_sink: Option<&Pubkey>, // included only in SEND mode (init_book reads it last)
 ) -> Vec<u8> {
     let mut m = Vec::new();
+    let n_keys: u8 = if coin_sink.is_some() { 12 } else { 11 };
+    let twap_idx: u8 = n_keys - 1; // twap program is the last key
     m.push(1); // num_signers
     m.push(1); // num_writable_signers (squads_vault pays rent)
     m.push(1); // num_writable_non_signers (book)
-    m.push(11); // account_keys
+    m.push(n_keys); // account_keys
     m.extend_from_slice(squads_vault.as_ref());   // 0 writable signer
     m.extend_from_slice(book.as_ref());           // 1 writable non-signer
     m.extend_from_slice(config.as_ref());         // 2 ro
@@ -2752,11 +2755,18 @@ fn build_init_book_message(
     m.extend_from_slice(collateral_mint.as_ref());// 7 ro
     m.extend_from_slice(system_program::ID.as_ref()); // 8 ro
     m.extend_from_slice(holding.as_ref());        // 9 ro
-    m.extend_from_slice(twap_id().as_ref());      // 10 program
+    if let Some(s) = coin_sink {
+        m.extend_from_slice(s.as_ref());          // 10 ro coin sink (SEND mode)
+    }
+    m.extend_from_slice(twap_id().as_ref());      // program (last)
     m.push(1); // instructions
-    m.push(10); // program_id_index -> twap
-    m.push(10); // num account_indexes (order init_book reads)
-    for i in [0u8, 2, 1, 3, 4, 5, 9, 6, 7, 8] { m.push(i); }
+    m.push(twap_idx); // program_id_index -> twap
+    // account_indexes — the order init_book reads: squads_vault, config, book, book_escrow,
+    // coin_escrow, settlement_usd, holding, coin_mint, collateral_mint, system_program, [coin_sink].
+    let mut idx = vec![0u8, 2, 1, 3, 4, 5, 9, 6, 7, 8];
+    if coin_sink.is_some() { idx.push(10); }
+    m.push(idx.len() as u8);
+    for i in idx { m.push(i); }
     let mut data = vec![5u8];
     data.extend_from_slice(&reserve_num.to_le_bytes());
     data.extend_from_slice(&reserve_den.to_le_bytes());
@@ -2881,16 +2891,16 @@ fn setup_auction(svm: &mut LiteSVM, payer: &Keypair, env: &HandoffEnv, round_len
     set_token(svm, &holding, &env.collateral_mint, &env.twap_authority, 0);
     svm.airdrop(&env.squads_vault, 1_000_000_000).unwrap();
     let msg = build_init_book_message(&env.squads_vault, &book, &env.twap_cfg, &book_escrow, &coin_escrow,
-        &settlement_usd, &holding, &env.coin_mint, &env.collateral_mint, 0, 1, round_length, sink_mode, bid_fee);
+        &settlement_usd, &holding, &env.coin_mint, &env.collateral_mint, 0, 1, round_length, sink_mode, bid_fee, coin_sink.as_ref());
     let mut rem = vec![
         AccountMeta::new(env.squads_vault, false), AccountMeta::new(book, false),
         AccountMeta::new_readonly(env.twap_cfg, false), AccountMeta::new_readonly(book_escrow, false),
         AccountMeta::new_readonly(coin_escrow, false), AccountMeta::new_readonly(settlement_usd, false),
         AccountMeta::new_readonly(env.coin_mint, false), AccountMeta::new_readonly(env.collateral_mint, false),
         AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(holding, false),
-        AccountMeta::new_readonly(twap_id(), false),
     ];
-    let _ = (&coin_sink, &mut rem);
+    if let Some(s) = coin_sink { rem.push(AccountMeta::new_readonly(s, false)); }
+    rem.push(AccountMeta::new_readonly(twap_id(), false));
     squads_execute(svm, &env.squads, &env.multisig, &env.dao, payer, 5, &msg, &rem).expect("init_book");
     BookEnv { book, book_escrow, coin_escrow, settlement_usd, holding }
 }
@@ -3368,7 +3378,7 @@ fn e2e_full_genesis_to_buy_burn() {
     set_token(&mut svm, &holding, &collateral_mint, &twap_authority, 0);
     svm.airdrop(&squads_vault, 1_000_000_000).unwrap();
     let ib = build_init_book_message(&squads_vault, &book, &twap_cfg, &book_escrow, &coin_escrow,
-        &settlement_usd, &holding, &coin_mint, &collateral_mint, 0, 1, 10, 0, 0);
+        &settlement_usd, &holding, &coin_mint, &collateral_mint, 0, 1, 10, 0, 0, None);
     let ib_rem = vec![
         AccountMeta::new(squads_vault, false), AccountMeta::new(book, false),
         AccountMeta::new_readonly(twap_cfg, false), AccountMeta::new_readonly(book_escrow, false),
@@ -3553,4 +3563,48 @@ fn e2e_closing_refund_ata_cannot_permanently_brick_the_book() {
     // Book reopened: a new bid now works.
     send(&mut svm, &[&late], place_bid_ix(&late.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &l_src, &l_usd, &env.coin_mint, &env.collateral_mint, 5_000, 5_000, None)).expect("book reopened — bidding works again");
     let _ = (winner, attacker, late);
+}
+
+// ADVERSARIAL (coin-sink redirection) + COVERAGE (SEND branch was untested): in SEND mode the
+// bought COIN is transferred to the DAO-configured treasury instead of burned. A cranker must not
+// be able to redirect it to their own account — the sink is pinned to book.coin_sink.
+#[test]
+fn e2e_send_mode_routes_bought_coin_to_treasury_not_attacker() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+
+    // DAO treasury COIN account = the configured sink.
+    let treasury = Pubkey::new_unique();
+    set_token(&mut svm, &treasury, &env.coin_mint, &Pubkey::new_unique(), 0);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 1 /* SINK_SEND */, Some(treasury), 0);
+
+    // A bidder sells 400k COIN for the 400k surplus budget (rate 1, fully filled).
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("alice bid");
+
+    warp_to(&mut svm, 111);
+    let supply_before = mint_supply(&svm, &env.coin_mint);
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+
+    // ATTACK: a cranker tries to redirect the bought COIN to their OWN account.
+    let rogue_sink = Pubkey::new_unique();
+    set_token(&mut svm, &rogue_sink, &env.coin_mint, &cranker.pubkey(), 0);
+    assert!(send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, Some(rogue_sink))).is_err(),
+        "execute must reject a coin_sink other than the configured treasury");
+    assert_eq!(token_amount(&svm, &rogue_sink), 0, "no COIN redirected to the attacker");
+    assert_eq!(token_amount(&svm, &treasury), 0, "nothing moved yet (rogue execute fully reverted)");
+
+    // Honest execute routes the bought COIN to the configured treasury — NOT burned.
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, Some(treasury))).expect("execute (send mode)");
+    assert_eq!(mint_supply(&svm, &env.coin_mint), supply_before, "SEND mode does not burn — supply unchanged");
+    assert_eq!(token_amount(&svm, &treasury), 400_000, "bought COIN routed to the DAO treasury");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 400_000, "spent USD parked for the winner");
+    let _ = (alice, a_usd);
 }

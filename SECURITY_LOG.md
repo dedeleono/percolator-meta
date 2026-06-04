@@ -43,6 +43,11 @@ tags 5-11). Security properties, each pinned by a chain.rs e2e against the real 
 - **Permissionless place/execute/claim**; **futarchy-configurable COIN sink** (burn default OR send to
   an account, Squads-gated); **DAO shutdown** sweeps the TWAP's accumulated USD to a supplied address
   (Squads-gated only). Pinned: `e2e_shutdown_sweeps_holding_only_via_squads`.
+  - SEND-mode coin sink (probe #2): in SEND mode `execute` transfers the bought COIN to the
+    DAO-configured `book.coin_sink` (not burned). The sink is PINNED — a cranker passing any other
+    coin account is rejected (`*coin_sink.key != book.coin_sink`), so the bought COIN can't be
+    redirected to an attacker (LOF blocked). The SEND branch was previously untested; now covered +
+    the redirection attack pinned by `e2e_send_mode_routes_bought_coin_to_treasury_not_attacker`.
 - COIN escrow is pooled in ONE book-escrow account so `execute` burns/pays in O(1) CPIs regardless of
   bid count; the book is a fixed 32-slot array with O(n) worst-bid eviction; the canonical USD
   `holding` is pinned in the book so the rolled-over budget can't be fragmented.
