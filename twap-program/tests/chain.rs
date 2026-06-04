@@ -2896,10 +2896,17 @@ fn setup_auction(svm: &mut LiteSVM, payer: &Keypair, env: &HandoffEnv, round_len
 }
 
 // A bidder with a funded COIN source account and an empty collateral USD destination.
+// A bidder's canonical COIN ATA — the auction's pinned refund target (matches the program's
+// bidder_coin_ata). Reuses the ATA derivation (= associated-token-address).
+fn coin_ata_of(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
+    canonical_insurance_vault(owner, mint)
+}
+
 fn new_bidder(svm: &mut LiteSVM, payer: &Keypair, env: &HandoffEnv, coin_amount: u64) -> (Keypair, Pubkey, Pubkey) {
     let bidder = Keypair::new();
     svm.airdrop(&bidder.pubkey(), 1_000_000_000).unwrap();
-    let coin_src = Pubkey::new_unique();
+    // Fund + bid from the bidder's CANONICAL ATA, which is also the pinned COIN refund target.
+    let coin_src = coin_ata_of(&bidder.pubkey(), &env.coin_mint);
     set_token(svm, &coin_src, &env.coin_mint, &bidder.pubkey(), 0);
     mint_coin(svm, payer, &env.coin_mint, &env.coin_mint_authority, &coin_src, coin_amount);
     let usd_dest = Pubkey::new_unique();
@@ -3262,7 +3269,8 @@ fn e2e_full_genesis_to_buy_burn() {
 
     // --- Proposal: full COIN supply to a recipient; create + register ---
     let recipient = Keypair::new();
-    let recipient_ata = Pubkey::new_unique();
+    // The winner's canonical COIN ATA (also the auction's pinned bid-refund target).
+    let recipient_ata = coin_ata_of(&recipient.pubkey(), &coin_mint);
     set_token(&mut svm, &recipient_ata, &coin_mint, &recipient.pubkey(), 0);
     let id = 1u64;
     let dist_proposal = Pubkey::find_program_address(&[b"dist_proposal", dist_config.as_ref(), &id.to_le_bytes()], &dist_id_e2e()).0;
@@ -3492,4 +3500,57 @@ fn e2e_bid_cancellable_after_cooldown_keeps_fee() {
     assert_eq!(token_amount(&svm, &bk.coin_escrow), 0, "escrow drained");
     assert_eq!(mint_supply(&svm, &env.coin_mint), supply_after_place, "the anti-spam fee stays burned — cancelling still costs it");
     let _ = (alice, a_usd, mallory);
+}
+
+// ADVERSARIAL DOS (refund-ATA brick): a losing bidder closes their COIN refund account after
+// bidding, so claim cannot deliver the refund and the slot can never free — bricking the whole
+// book (it stays SETTLED, execute + place_bid blocked) forever. FIXED by pinning the refund to the
+// bidder's CANONICAL ATA: anyone may recreate it, so a stuck claim is always recoverable, not a
+// permanent DOS. This test drives the attack end-to-end against the real binaries and proves
+// recovery.
+#[test]
+fn e2e_closing_refund_ata_cannot_permanently_brick_the_book() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+
+    // A winner (rate 1) takes the whole 400k budget; the attacker's tiny-rate bid loses and is
+    // owed a full COIN refund.
+    let (winner, w_src, w_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    let (attacker, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 10);
+    send(&mut svm, &[&winner], place_bid_ix(&winner.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &w_src, &w_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("winner bid");
+    send(&mut svm, &[&attacker], place_bid_ix(&attacker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 10, 400_000, None)).expect("attacker bid");
+
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute");
+
+    // The winner claims fine.
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &w_usd, &w_src, 0)).expect("winner claim");
+
+    // ATTACK: the loser CLOSES their refund ATA so claim cannot deliver the 10-COIN refund.
+    let close = spl_token::instruction::close_account(&spl_token::ID, &a_src, &attacker.pubkey(), &attacker.pubkey(), &[]).unwrap();
+    send(&mut svm, &[&attacker], close).expect("attacker closes refund ata");
+    assert!(send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &a_usd, &a_src, 1)).is_err(),
+        "claim cannot deliver to a closed account (slot temporarily stuck)");
+    // While the slot is stuck the book is SETTLED — new bids are blocked.
+    let (late, l_src, l_usd) = new_bidder(&mut svm, &payer, &env, 5_000);
+    assert!(send(&mut svm, &[&late], place_bid_ix(&late.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &l_src, &l_usd, &env.coin_mint, &env.collateral_mint, 5_000, 5_000, None)).is_err(),
+        "book is settled — placing is blocked until it drains");
+
+    // RECOVERY (permissionless): anyone recreates the canonical ATA, then claim succeeds and the
+    // book reopens. This is what the canonical-ATA pin buys — no permanent brick.
+    set_token(&mut svm, &a_src, &env.coin_mint, &attacker.pubkey(), 0);
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &a_usd, &a_src, 1)).expect("claim recovers once the ATA exists again");
+    assert_eq!(token_amount(&svm, &a_src), 10, "attacker's COIN refund delivered after recreating the ATA");
+    // Book reopened: a new bid now works.
+    send(&mut svm, &[&late], place_bid_ix(&late.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &l_src, &l_usd, &env.coin_mint, &env.collateral_mint, 5_000, 5_000, None)).expect("book reopened — bidding works again");
+    let _ = (winner, attacker, late);
 }

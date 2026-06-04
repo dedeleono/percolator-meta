@@ -42,6 +42,21 @@ const SQUADS_PROGRAM_ID: Pubkey =
 // config_authority is at bytes [40..72] of the account.
 const SQUADS_MULTISIG_DISC: [u8; 8] = [224, 116, 121, 186, 68, 161, 79, 236];
 
+// Associated Token Account program — used to derive a bidder's CANONICAL COIN ATA as the auction
+// refund target. Pinning refunds to the canonical ATA (not an arbitrary caller account) means a
+// bidder cannot brick the book by closing the refund destination: anyone can recreate an ATA, so
+// a stuck claim is always recoverable (it is not a permanent DOS).
+const ATA_PROGRAM_ID: Pubkey =
+    solana_program::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+
+fn bidder_coin_ata(bidder: &Pubkey, coin_mint: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[bidder.as_ref(), spl_token::ID.as_ref(), coin_mint.as_ref()],
+        &ATA_PROGRAM_ID,
+    )
+    .0
+}
+
 // The twap_authority PDA seed — matches the `twap` lib's TWAP_AUTHORITY_SEED so the
 // authority address is the canonical market-0 TWAP authority.
 const TWAP_AUTHORITY_SEED: &[u8] = b"market-0-twap";
@@ -1159,7 +1174,11 @@ fn process_place_bid(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
     d[o + SL_SETTLED] = 0;
     d[o + SL_BIDDER..o + SL_BIDDER + 32].copy_from_slice(bidder.key.as_ref());
     d[o + SL_USD_DEST..o + SL_USD_DEST + 32].copy_from_slice(usd_dest.key.as_ref());
-    d[o + SL_COIN_ATA..o + SL_COIN_ATA + 32].copy_from_slice(bidder_coin_src.key.as_ref());
+    // The COIN refund target is the bidder's CANONICAL ATA, not the (arbitrary) funding source —
+    // so a bidder cannot brick the book by closing the source after bidding; a closed ATA is
+    // permissionlessly recreatable, making any stuck claim recoverable.
+    d[o + SL_COIN_ATA..o + SL_COIN_ATA + 32]
+        .copy_from_slice(bidder_coin_ata(bidder.key, coin_mint.key).as_ref());
     book_wr_u128(&mut d, o + SL_COIN, coin_atoms);
     book_wr_u128(&mut d, o + SL_USDC, usdc_atoms);
     book_wr_u128(&mut d, o + SL_USD_OWED, 0);

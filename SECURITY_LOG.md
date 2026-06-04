@@ -4,6 +4,21 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 
 ## Analyzed
 
+### [FIXED] V. Refund-ATA brick → permanent auction DOS (twap-program) — SOL-class: account-closure griefing
+The auction's COIN refund (claim / cancel / eviction) was delivered to the bid's stored `coin_ata`,
+which `place_bid` set to the bidder's *arbitrary* funding source. A losing bidder could place a bid
+and then CLOSE that account — after which `claim` could never deliver the refund (`spl transfer` to a
+closed account aborts), the slot could never free, and the book stayed `SETTLED` forever, blocking
+all future `execute` and `place_bid` — a PERMANENT DOS of the whole buy/burn, at the cost of only the
+attacker's own (forfeited) stake. An arbitrary account address, once closed, cannot be permissionlessly
+recreated, so the brick was permanent.
+FIX: pin the COIN refund target to the bidder's CANONICAL ATA (`bidder_coin_ata` =
+ATA(bidder, coin_mint)) instead of the caller-supplied source. Anyone can recreate an ATA, so a stuck
+claim is always recoverable — closing it is a temporary, self-healing nuisance, not a permanent brick.
+Pinned: `e2e_closing_refund_ata_cannot_permanently_brick_the_book` drives the attack end-to-end
+against the real binaries (loser closes the ATA → claim fails + book blocked → recreate the ATA →
+claim succeeds + refund delivered + book reopens). Probe-loop iteration 1.
+
 ### [DESIGN] U. Buy/burn uniform-price (Dutch) auction — invariants (twap-program)
 The COIN buy/burn settlement is a permissionless, time-boxed uniform-price auction (twap-program
 tags 5-11). Security properties, each pinned by a chain.rs e2e against the real binaries:
