@@ -878,3 +878,15 @@ backing B, retracts A, then successfully backs B. This invariant was previously 
 anywhere. Test: twap-program/tests/chain.rs `e2e_voter_cannot_back_two_proposals_without_retracting`.
 KEPT — pins one-vote-one-proposal. (Also added setup_genesis + register_proposal harness
 helpers to keep future genesis-side probes focused.)
+
+### [BLOCKED] E2E probe: no surplus pull before the floor is configured (fail-safe default)
+The handoff is several timelock'd Squads executes and the surplus floor is set in its own
+step. In the window AFTER the operator rotates to the twap but BEFORE set_reserved_floor — or
+if the DAO never sets a floor — reserved_floor is its init default u128::MAX, so pull_surplus
+computes surplus = insurance - MAX = 0 and a permissionless cranker can pull NOTHING. Proven
+end-to-end: insurance is funded with genuine surplus, the policy + operator are handed to the
+twap, the floor is left unset (verified == u128::MAX), and a cranker's pull is rejected with
+the insurance untouched. So a handed-off-but-unconfigured twap is safe by default; the
+multi-step handoff exposes no funds at any intermediate point. Test:
+twap-program/tests/chain.rs `e2e_no_surplus_pull_before_floor_is_configured`. KEPT — pins the
+fail-safe default of the floor.

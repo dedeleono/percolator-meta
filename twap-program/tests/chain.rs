@@ -2477,3 +2477,79 @@ fn e2e_voter_cannot_back_two_proposals_without_retracting() {
     send(&mut svm, vote(&gv_a, 2)).expect("retract A");
     send(&mut svm, vote(&gv_b, 1)).expect("after retract, back B");
 }
+
+// ATTACK PROBE (handoff-window safety / safe default): the handoff is several Squads executes
+// and the surplus floor is set in its own step. Between rotating the operator to the twap and
+// setting reserved_floor — or if the DAO never sets it — the floor is its init default
+// u128::MAX, so pull_surplus computes surplus = insurance - MAX = 0 and a permissionless
+// cranker can pull NOTHING. This pins that a handed-off-but-unconfigured twap is safe by
+// default: no surplus (and certainly no principal) is exposed until the DAO explicitly sets a
+// floor through the timelock.
+#[test]
+fn e2e_no_surplus_pull_before_floor_is_configured() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let squads = squads_id();
+    let treasury = install_squads(&mut svm, &squads, &payer.pubkey());
+    let dao = Keypair::new(); svm.airdrop(&dao.pubkey(), 1_000_000_000_000).unwrap();
+    let create_key = Keypair::new();
+    let multisig = multisig_pda(&squads, &create_key.pubkey());
+    let create_ix = multisig_create_v2_ix(&squads, &treasury, &multisig, &create_key.pubkey(), &payer.pubkey(),
+        Some(&dao.pubkey()), 1, &[(dao.pubkey(), PERM_ALL)], TIMELOCK_1_WEEK_SECS);
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[create_ix], Some(&payer.pubkey()), &[&payer, &create_key], bh)).expect("multisig");
+    let squads_vault = vault_pda(&squads, &multisig, 0);
+
+    let collateral_mint = Pubkey::new_unique();
+    let coin_mint = Pubkey::new_unique();
+    let slab = Pubkey::new_unique();
+    let slab_data = make_live_market(&slab, &collateral_mint, &squads_vault, 100);
+    svm.set_account(slab, Account { lamports: 1_000_000_000, data: slab_data, owner: perc_id(), executable: false, rent_epoch: 0 }).unwrap();
+    svm.set_sysvar(&Clock { slot: 100, unix_timestamp: 100, ..Clock::default() });
+    let vault_authority = perc_vault_authority(&slab, &perc_id());
+    let perc_vault = canonical_insurance_vault(&vault_authority, &collateral_mint);
+    set_token(&mut svm, &perc_vault, &collateral_mint, &vault_authority, 0);
+    let twap_init = init_config_ix(&payer.pubkey(), &coin_mint, &slab, &multisig, &dao.pubkey(), &perc_id());
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[twap_init], Some(&payer.pubkey()), &[&payer], bh)).expect("twap init");
+    let twap_cfg = twap_config_pda(&slab, &multisig, &coin_mint, &perc_id());
+    let twap_authority = Pubkey::find_program_address(&[b"market-0-twap", slab.as_ref()], &twap_id()).0;
+
+    // Fund insurance with genuine surplus, rotate the policy + operator — but DO NOT set the floor.
+    let surplus = 500_000u64;
+    let src = Pubkey::new_unique(); set_token(&mut svm, &src, &collateral_mint, &squads_vault, surplus);
+    let topup = build_topup_message(&squads_vault, &slab, &src, &perc_vault, &perc_id(), surplus as u128);
+    let tr = vec![
+        AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(slab, false), AccountMeta::new(src, false),
+        AccountMeta::new(perc_vault, false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(perc_id(), false)];
+    squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 1, &topup, &tr).expect("fund surplus");
+    let pol = build_update_insurance_policy_message(&squads_vault, &slab, &perc_id(), 9_000, 0, 10);
+    let pr = vec![AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(slab, false), AccountMeta::new_readonly(perc_id(), false)];
+    squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 2, &pol, &pr).expect("policy");
+    let op = build_accept_operator_message(&squads_vault, &slab, &twap_cfg, &twap_authority, &perc_id(), &twap_id());
+    let or = vec![
+        AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(slab, false), AccountMeta::new_readonly(twap_cfg, false),
+        AccountMeta::new_readonly(twap_authority, false), AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(twap_id(), false)];
+    squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 3, &op, &or).expect("operator -> twap");
+
+    // Sanity: the floor is still the init default (u128::MAX).
+    assert_eq!(u128::from_le_bytes(svm.get_account(&twap_cfg).unwrap().data[173..189].try_into().unwrap()), u128::MAX);
+
+    // A cranker tries to pull the genuine surplus — blocked, because no floor has been set.
+    let twap_holding = Pubkey::new_unique(); set_token(&mut svm, &twap_holding, &collateral_mint, &twap_authority, 0);
+    let mut pd = vec![1u8]; pd.extend_from_slice(&surplus.to_le_bytes());
+    let pull = Instruction { program_id: twap_id(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(twap_cfg, false), AccountMeta::new_readonly(twap_authority, false),
+        AccountMeta::new(slab, false), AccountMeta::new(twap_holding, false), AccountMeta::new(perc_vault, false),
+        AccountMeta::new_readonly(vault_authority, false), AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false)], data: pd };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    assert!(svm.send_transaction(Transaction::new_signed_with_payer(&[pull], Some(&payer.pubkey()), &[&payer], bh)).is_err(),
+        "with no floor set (default u128::MAX) a handed-off twap must pull nothing");
+    assert_eq!(token_amount(&svm, &perc_vault), surplus, "even genuine surplus stays until the DAO sets a floor");
+}
