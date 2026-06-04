@@ -3229,3 +3229,79 @@ fn e2e_tied_weight_between_proposals_deadlocks_until_broken() {
     let dist_cfg = svm.get_account(&env.dist_config).unwrap();
     assert_eq!(Pubkey::new_from_array(dist_cfg.data[120..152].try_into().unwrap()), prop_a, "A is the sealed winner once the tie breaks");
 }
+
+// ATTACK/DESIGN PROBE (exit recomputes quorum — "those who stay decide"): quorum is
+// total_voted_principal*2 > LIVE pool outstanding. A non-voter's capital counts AGAINST quorum
+// only while it stays in the pool; when they EXIT, outstanding shrinks and a voter who was below
+// quorum can become the majority of who remains. This is the design's anti-stall property: a
+// large passive holder cannot indefinitely block a finalize just by abstaining — they either
+// vote or exit, and exiting hands the decision to those who stay. Pinned end-to-end with a real
+// withdrawal that flips the trigger from rejected to sealed.
+#[test]
+fn e2e_non_voter_exit_recomputes_quorum_stayers_decide() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(sub_id(), so_deploy("subledger_program")).unwrap();
+    svm.add_program_from_file(gv_id_e2e(), so_deploy("genesis_vote_program")).unwrap();
+    svm.add_program_from_file(dist_id_e2e(), so_deploy("distribution_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_genesis(&mut svm, &payer);
+    let recipient = Pubkey::new_unique();
+    let (dist_proposal, gv_proposal) = register_proposal(&mut svm, &payer, &env, 1, &recipient, 100);
+
+    // Returns (position, ata, holding) so the depositor can later exit.
+    let deposit = |svm: &mut LiteSVM, who: &Keypair, amt: u64| -> (Pubkey, Pubkey, Pubkey) {
+        svm.airdrop(&who.pubkey(), 1_000_000_000).unwrap();
+        let ata = Pubkey::new_unique(); set_token(svm, &ata, &env.collateral_mint, &who.pubkey(), amt);
+        let holding = Pubkey::new_unique(); set_token(svm, &holding, &env.collateral_mint, &env.pool, 0);
+        let position = sub_position_pda(&env.pool, &who.pubkey());
+        let mut d = vec![4u8]; d.extend_from_slice(&amt.to_le_bytes());
+        let ix = Instruction { program_id: sub_id(), accounts: vec![
+            AccountMeta::new(who.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(position, false), AccountMeta::new(ata, false),
+            AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false),
+            AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(system_program::ID, false)], data: d };
+        svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, who], bh)).expect("deposit");
+        (position, ata, holding)
+    };
+    let trigger = |svm: &mut LiteSVM| -> Result<(), String> {
+        let ix = Instruction { program_id: gv_id_e2e(), accounts: vec![
+            AccountMeta::new(payer.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(gv_proposal, false),
+            AccountMeta::new_readonly(dist_id_e2e(), false), AccountMeta::new(env.dist_config, false), AccountMeta::new(dist_proposal, false),
+            AccountMeta::new_readonly(env.pool, false)], data: vec![4u8] };
+        svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer], bh)).map(|_| ()).map_err(|e| format!("{:?}", e))
+    };
+
+    let alice = Keypair::new(); let (a_pos, _a_ata, _a_h) = deposit(&mut svm, &alice, 400_000);
+    let bob = Keypair::new(); let (b_pos, b_ata, b_h) = deposit(&mut svm, &bob, 600_000); // outstanding = 1,000,000
+    let mut c = svm.get_sysvar::<Clock>(); c.slot += 8; svm.set_sysvar::<Clock>(&c);
+
+    // alice (40%) votes; bob (60%) abstains -> no quorum.
+    let ballot = Pubkey::find_program_address(&[b"gv_ballot", env.gv_config.as_ref(), alice.pubkey().as_ref()], &gv_id_e2e()).0;
+    let vote = Instruction { program_id: gv_id_e2e(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(ballot, false), AccountMeta::new(gv_proposal, false),
+        AccountMeta::new(a_pos, false), AccountMeta::new_readonly(env.pool, false), AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(sub_id(), false)], data: vec![3u8, 1u8] };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[vote], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("alice votes");
+    let _ = b_pos;
+    assert!(trigger(&mut svm).is_err(), "40% of capital cannot reach quorum while the 60% holder stays");
+
+    // bob (a non-voter, no vote-lock) EXITS his full principal -> outstanding shrinks to 400,000.
+    let withdraw = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(bob.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(b_pos, false), AccountMeta::new(b_ata, false),
+        AccountMeta::new(b_h, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false), AccountMeta::new_readonly(perc_vault_authority(&env.slab, &perc_id()), false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false)],
+        data: { let mut d = vec![5u8]; d.extend_from_slice(&600_000u64.to_le_bytes()); d } };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[withdraw], Some(&payer.pubkey()), &[&payer, &bob], bh)).expect("bob exits");
+
+    // Now alice's 400k is 100% of the remaining outstanding -> quorum, and the trigger seals.
+    trigger(&mut svm).expect("after the abstainer exits, the remaining voter has quorum and seals");
+    let dist_cfg = svm.get_account(&env.dist_config).unwrap();
+    assert_eq!(Pubkey::new_from_array(dist_cfg.data[120..152].try_into().unwrap()), dist_proposal, "those who stay decide");
+}

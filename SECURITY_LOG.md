@@ -1054,3 +1054,15 @@ is rejected AND triggering B is rejected (each has exactly half the cast weight)
 (100k) backs A, tipping it over half; A now has a strict weighted majority and seals as the sole
 winner. Complements the quorum strict-edge probe (this is the MAJORITY/cast-weight edge). Test:
 twap-program/tests/chain.rs `e2e_tied_weight_between_proposals_deadlocks_until_broken`. KEPT.
+
+### [BLOCKED/DESIGN] E2E probe: a non-voter's exit recomputes quorum (those who stay decide)
+Quorum is total_voted_principal*2 > LIVE pool outstanding, so a passive holder's capital counts
+AGAINST quorum only while it stays in the pool. The anti-stall property: a large abstainer cannot
+indefinitely block finalization — they must either vote or exit, and EXITING shrinks outstanding
+and hands the decision to those who stay. Proven end-to-end with a real withdrawal that flips the
+trigger: alice (400k = 40%) votes, bob (600k = 60%) abstains -> trigger REJECTED (no quorum); bob
+(a non-voter, no vote-lock) withdraws his full 600k principal -> outstanding shrinks to 400k ->
+alice is now 100% of the remainder -> trigger SEALS. Distinct from the static minority-turnout
+probe (here the abstainer actually leaves). Confirms exits dynamically recompute quorum against
+the live pool. Test: twap-program/tests/chain.rs `e2e_non_voter_exit_recomputes_quorum_stayers_decide`.
+KEPT.
