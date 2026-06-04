@@ -3933,3 +3933,46 @@ fn e2e_full_book_of_worst_case_rates_cannot_dos_execute() {
         .expect("execute must clear a full worst-case book without exhausting compute");
     assert!(m.compute_units_consumed < 500_000, "execute compute must stay bounded (constant-time ranking), got {}", m.compute_units_consumed);
 }
+
+// LIVENESS (multi-round ratchet over fresh surplus): the buy/burn repeats. Each execute pulls the
+// burn-share of the CURRENT surplus and ratchets the retained share into the principal counter; as
+// NEW surplus accrues (market profit / DAO top-up), later rounds must pull it too — the ratchet
+// must not permanently lock future surplus out. Pins two rounds with fresh surplus injected between.
+#[test]
+fn e2e_ratchet_pulls_fresh_surplus_across_rounds() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer); // insurance 1.5M, floor 1M, surplus 500k, bps 80%
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+
+    // Round 1 (no bids -> rolls): pulls 80% of 500k = 400k, ratchets 100k into the floor.
+    warp_to(&mut svm, 111);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute round 1");
+    assert_eq!(token_amount(&svm, &bk.holding), 400_000);
+    assert_eq!(read_reserved_floor(&svm, &env.twap_cfg), 1_100_000, "floor ratcheted to principal + 20%");
+    assert_eq!(token_amount(&svm, &env.perc_vault), 1_100_000, "insurance = floor after round 1");
+
+    // Inject 500k of FRESH surplus via a timelock'd Squads TopUp (market profit / DAO top-up).
+    let src = Pubkey::new_unique(); set_token(&mut svm, &src, &env.collateral_mint, &env.squads_vault, 500_000);
+    let topup = build_topup_message(&env.squads_vault, &env.slab, &src, &env.perc_vault, &perc_id(), 500_000u128);
+    let tr = vec![
+        AccountMeta::new_readonly(env.squads_vault, false), AccountMeta::new(env.slab, false), AccountMeta::new(src, false),
+        AccountMeta::new(env.perc_vault, false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(perc_id(), false),
+    ];
+    squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 6, &topup, &tr).expect("inject fresh surplus");
+    assert_eq!(token_amount(&svm, &env.perc_vault), 1_600_000, "insurance back up to 1.6M");
+
+    // Round 2: surplus = 1.6M - 1.1M = 500k; pulls another 400k, ratchets 100k -> floor 1.2M.
+    warp_to(&mut svm, 222);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute round 2");
+    assert_eq!(token_amount(&svm, &bk.holding), 800_000, "twap kept its 400k and pulled another 400k");
+    assert_eq!(read_reserved_floor(&svm, &env.twap_cfg), 1_200_000, "floor ratcheted again on the fresh surplus");
+    assert_eq!(token_amount(&svm, &env.perc_vault), 1_200_000, "insurance = the grown floor; principal never pulled");
+}

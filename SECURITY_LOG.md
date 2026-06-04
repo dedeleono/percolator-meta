@@ -157,6 +157,12 @@ tags 5-11). Security properties, each pinned by a chain.rs e2e against the real 
 - **Full lifecycle**: `e2e_full_genesis_to_buy_burn` runs deposit → vote → distribute → claim →
   DAO/Squads handoff → buy/burn auction across all six real binaries; the COIN winner sells COIN
   back into the surplus buy/burn and it is really burned (mint supply drops), closing the loop.
+- **Multi-round ratchet liveness** (probe #10): each `execute` pulls the burn-share of the CURRENT
+  surplus and ratchets the retained share into the principal counter; as FRESH surplus accrues, later
+  rounds pull it too (no permanent lockout) and the principal is never pulled. Pinned by
+  `e2e_ratchet_pulls_fresh_surplus_across_rounds` (round 1 pulls 400k + floor→1.1M; inject 500k fresh
+  surplus via a timelock'd Squads TopUp; round 2 pulls another 400k + floor→1.2M; holding 400k→800k;
+  insurance always == the grown floor). Confirms the repeating buy/burn works over time; no bug.
 
 ### [FIXED] T. Insurance slab offset read `vault`, not `insurance` (subledger + twap) — finding-O class LOF
 Both the subledger pro-rata haircut (`subledger/src/lib.rs PERC_INSURANCE_OFFSET`) and the twap
