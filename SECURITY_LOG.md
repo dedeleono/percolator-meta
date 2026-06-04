@@ -6,8 +6,8 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 Reachable six-binary surface is exhausted: 53 vectors recorded (A–AX), of which 3 were real CRITICAL
 bugs found + fixed by this loop (AD signer-seed-binding, AI lamport-prefund init-DOS, AQ parasite-config
 insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full regression GREEN at this
-checkpoint: 134 tests across every harness (subledger insurance 25 + own-vault 5 + lib 6 = 36; genesis-vote
-seal 9 + lib 3 = 12; distribution 13 + lib 4 = 17; twap chain 65 + lib 4 = 69; 36+12+17+69 = 134), full
+checkpoint: 135 tests across every harness (subledger insurance 26 + own-vault 5 + lib 6 = 37; genesis-vote
+seal 9 + lib 3 = 12; distribution 13 + lib 4 = 17; twap chain 65 + lib 4 = 69; 37+12+17+69 = 135), full
 suite green, and all four programs build-sbf clean.
 On-chain FIXES this run: twap init_config enforces the bound Squads multisig time_lock >= 1 week; twap
 cancel_bid no longer lets a no-op roll unlock the anti-spoof cooldown early (external issue #28).
@@ -26,6 +26,29 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [REVIEW] Full GitHub issue/PR audit (DPRK lens) — #20 verified real but ACCEPTED by design (voluntary exit)
+Reviewed ALL issues + PRs (open + closed) adversarially. State: nothing open. Triage:
+- #1–#19, #22–#25 + PRs #6–#18, #21–#27: audited the DEPRECATED `percolator-genesis` MONOLITH (mint_reward/
+  reward_supply, percolator_admin/RESOLVE_MARKET, activate_live, handover_genesis_squads, transfer_mint_
+  authority, init_market_rewards, pull_insurance, governance adapter) — that subsystem was DELETED; obsolete
+  in the current four-program design. PR #27 was a regression trap (caught + closed). #26 (one TWAP signer
+  across configs) superseded by the AQ config-binding; #24 (non-canonical vault) closed by F-VAULT pins.
+- #28 (cancel-cooldown bypass): a real current-design bug — FIXED this run (see FIXED entry).
+- #20 (minority captures when committed depositors exit during voting): VERIFIED still real in the CURRENT
+  genesis-vote via TDD (`those_who_stay_decide_after_a_nonvoting_majority_forfeits_by_exiting`, subledger
+  tests): the trigger reads LIVE pool outstanding, so when a non-voting majority exits, a 2% voter becomes the
+  majority of the remainder and seals the whole distribution. BUT this is the INTENDED "those who stay decide"
+  design and is ACCEPTED (owner decision, kept): the exit is OWNER-SIGNED (insurance_withdraw requires
+  owner.is_signer + position.owner==owner; `principal_only_owner_exit_returns_funds_and_guards` pins that a
+  non-owner cannot withdraw), so NO ONE can force the majority out — they leave VOLUNTARILY and with their
+  FULL principal (no theft; only COIN governance follows participation). #20's proposed fix (anchor quorum to
+  the committed pool) was declined: it trades this capture-resistance for low-turnout STALLS (a passive
+  majority could freeze the genesis forever). The complementary deposit-DURING-voting griefing (inflate
+  quorum to DOS the trigger) and the deposit-deadline/kickstart that would bound BOTH directions remain the
+  documented OFF-HARNESS orchestration requirement (DESIGN-DOS entry below).
+Verdict: no open issue is an unaddressed real bug. #28 fixed; #20 accepted-by-design (voluntary exit, no
+theft) with a test documenting the intended behavior; the rest are deprecated-monolith or already covered.
 
 ### [VERIFIED-COVERED] #28-class sweep across state machines — no stale-cache read, no permissionless-advance bug
 Generalized the #28 pattern ("a permissionless action advances some state, changing a TIME/STATE guard's

@@ -309,6 +309,58 @@ impl Env {
     }
 }
 
+// "THOSE WHO STAY DECIDE" (intended design; reviewed re: external issue #20, kept by design).
+// The genesis quorum is measured against the LIVE subledger outstanding, deliberately, so that exits during
+// voting recompute it: a non-voter who leaves FORFEITS their share of the decision. alice holds 2% of the
+// committed pool and votes; bob (98%, a non-voter) exits during voting. Before bob leaves, alice lacks quorum
+// (2*2 !> 100); after bob forfeits by exiting, alice — now the majority of the remaining at-risk capital —
+// decides. This is governance, NOT theft: bob gets his full principal back (only the COIN governance follows
+// participation). #20 proposed anchoring quorum to the committed pool instead; that was reviewed and declined
+// because it trades this capture-resistance for low-turnout STALLS (a passive majority could freeze the
+// genesis forever). The complementary deposit-during-voting griefing (the inflate-quorum DOS) and the
+// deposit-deadline that would bound BOTH are tracked in SECURITY_LOG as off-harness orchestration work.
+#[test]
+fn those_who_stay_decide_after_a_nonvoting_majority_forfeits_by_exiting() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+
+    let (alice, alice_ata) = new_depositor(&mut env, 20_000); // 2%
+    let (bob, bob_ata) = new_depositor(&mut env, 980_000); // 98%, never votes
+    let pool = env.pool;
+    let a_hold = create_holding(&mut env, &pool);
+    let b_hold = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &a_hold, 20_000).expect("alice deposit");
+    env.insurance_deposit(&bob, &bob_ata, &b_hold, 980_000).expect("bob deposit");
+    assert_eq!(env.pool_outstanding(), 1_000_000, "full committed pool");
+
+    let alice_dest = Pubkey::new_unique();
+    let (dist_proposal, gv_proposal) = create_and_register_proposal(&mut env, &ve, 1, &alice_dest);
+    env.warp_slot(1124); // alice's position has time-weight
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("alice backs her proposal");
+
+    // Before the exit: a 2% voter lacks quorum against the full committed pool.
+    assert!(
+        gv_trigger(&mut env, &ve, &gv_proposal, &dist_proposal).is_err(),
+        "2% cannot trigger against 100% committed"
+    );
+
+    // The 98% leaves VOLUNTARILY: insurance_withdraw is OWNER-SIGNED (bob signs his own exit). No one can
+    // force a depositor out — `principal_only_owner_exit_returns_funds_and_guards` pins that a non-owner
+    // cannot withdraw. So the capture below can only happen if the majority CHOOSES to forfeit.
+    env.insurance_withdraw(&bob, &bob_ata, &b_hold, &bob, 980_000).expect("bob voluntarily exits (owner-signed)");
+    assert_eq!(env.pool_outstanding(), 20_000, "outstanding recomputed to the at-risk capital that stayed");
+    assert_eq!(env.token_amount(&bob_ata), 980_000, "the exiting majority keeps its FULL principal — no theft");
+
+    // Now alice — the majority of the capital that STAYED at risk — decides. Intended, not a vuln.
+    let dc = env.svm.get_account(&ve.dist_config).unwrap();
+    assert!(dc.data[120..152] == [0u8; 32], "not sealed before the trigger");
+    gv_trigger(&mut env, &ve, &gv_proposal, &dist_proposal).expect("those who stay decide: alice seals");
+    let dc = env.svm.get_account(&ve.dist_config).unwrap();
+    let sealed_to = Pubkey::new_from_array(dc.data[120..152].try_into().unwrap());
+    assert_eq!(sealed_to, dist_proposal, "alice's proposal sealed — governance follows the capital that stayed");
+}
+
 // A pool-PDA-owned holding token account (created per depositor).
 fn create_holding(env: &mut Env, owner_pool: &Pubkey) -> Pubkey {
     let acc = Keypair::new();
