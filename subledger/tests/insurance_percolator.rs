@@ -231,7 +231,7 @@ impl Env {
                 AccountMeta::new_readonly(perc_id(), false),
                 AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
                 // vote_authority = the genesis-vote config PDA (keyed by the COIN).
-                AccountMeta::new_readonly(gv_config_pda(&self.coin_mint), false),
+                AccountMeta::new_readonly(gv_config_pda(&self.coin_mint, &self.pool), false),
             ],
             data,
         };
@@ -482,8 +482,8 @@ struct VoteEnv {
     coin_vault: Pubkey,
 }
 
-fn gv_config_pda(mint: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"gv_config", mint.as_ref()], &gv_id()).0
+fn gv_config_pda(mint: &Pubkey, subledger_pool: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"gv_config", mint.as_ref(), subledger_pool.as_ref()], &gv_id()).0
 }
 fn dist_config_pda(mint: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"dist_config", mint.as_ref()], &dist_id()).0
@@ -507,7 +507,7 @@ fn setup_vote(env: &mut Env) -> VoteEnv {
     // gv + distribution are keyed by the COIN (a fixed-supply mint, distinct from
     // the collateral `env.mint` the subledger pool holds).
     let coin_mint = env.coin_mint;
-    let gv_config = gv_config_pda(&coin_mint);
+    let gv_config = gv_config_pda(&coin_mint, &env.pool);
     let dist_config = dist_config_pda(&coin_mint);
 
     // distribution InitConfig with seal authority = the gv config PDA. Fund the COIN
@@ -1277,7 +1277,7 @@ fn init_insurance_pool_rejects_non_canonical_vault() {
             AccountMeta::new_readonly(env.slab, false),
             AccountMeta::new_readonly(perc_id(), false),
             AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
-            AccountMeta::new_readonly(gv_config_pda(&env.coin_mint), false),
+            AccountMeta::new_readonly(gv_config_pda(&env.coin_mint, &env.pool), false),
         ],
         data,
     };
@@ -1557,7 +1557,7 @@ fn init_insurance_pool_cannot_be_squatted_to_misdirect_the_genesis_pool() {
             AccountMeta::new_readonly(attacker_slab, false),
             AccountMeta::new_readonly(perc_id(), false),
             AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
-            AccountMeta::new_readonly(gv_config_pda(&env.coin_mint), false),
+            AccountMeta::new_readonly(gv_config_pda(&env.coin_mint, &env.pool), false),
         ],
         data,
     };

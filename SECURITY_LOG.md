@@ -661,3 +661,36 @@ green: subledger lib 6 + insurance 16 + own-vault 5; genesis-vote 3+4; distribut
 NOTE: this is the same permissionless-init + caller-bindings + too-few-seeds pattern as
 finding P (twap). Pattern to watch in any future init: bind the PDA to ALL trust-relevant
 caller-supplied accounts, or land squats at harmless distinct addresses.
+
+### [FIXED] R. gv init_config front-run squat -> genesis bound to attacker pool (LOF/DOS)
+Third instance of the permissionless-init squat pattern (after P/Q). genesis-vote
+init_config is permissionless and its config PDA was keyed on COIN_mint ALONE. It binds
+a distribution_config and a subledger_pool, each required to point back at the (then
+predictable) gv config PDA. The distribution_config is a UNIQUE PDA f(COIN) that can't be
+forged (distribution init needs the funded fixed-supply COIN), so it can't be substituted
+-- but the subledger_pool is NOT unique: an attacker could create their own valid pool
+(vote_authority = the predictable gv PDA, bound to a market they control post-finding-Q)
+and FRONT-RUN init_config to bind the genesis to THAT pool. Then every depositor's
+principal routes into the attacker's pool/market (LOF), or the quorum is read from the
+wrong pool (DOS), and the real orchestrator's init fails (PDA taken).
+Fix: fold subledger_pool into the gv config PDA seed -> [b"gv_config", COIN_mint,
+subledger_pool]. The legit gv address = f(COIN, real_pool); an attacker's pool yields a
+different gv PDA the genesis ignores. And because the unique distribution_config's seal
+authority is pinned to ONE gv PDA, post-fix only the pool that distribution commits to can
+ever be bound -- a substituted pool makes `expected` mismatch the distribution authority
+and is refused. distribution_config is NOT in the seed (it is already unique per COIN, so
+unsubstitutable). Threaded through init derive + create_pda + the vote() and trigger()
+gv-config signing seeds (config.subledger_pool). No percolator slab read (not blocked on
+finding O). Tests: seal.rs Env derives gv config after the pool; new
+`gv_config_cannot_be_bound_to_a_substituted_pool` (asserts the gv PDA now commits to the
+pool -- fails pre-fix -- and that binding a substituted attacker pool is rejected by the
+distribution-authority pin). All suites green: genesis-vote 3+5; subledger 6+16+5.
+PATTERN now 3x (P twap, Q subledger, R gv): permissionless init + caller-supplied
+bindings + PDA keyed on too few seeds. RULE: an init PDA must commit to every
+trust-relevant caller-supplied account that is not already unique/unforgeable, so squats
+land at harmless distinct addresses. Remaining permissionless init reviewed: distribution
+init_config keys on COIN_mint and binds the COIN mint + vault (validated funded/fixed
+supply) -- the COIN mint is the identity, the vault/authority are caller-set but a squat
+there only produces a config for that same COIN (no misroute), and a re-init is blocked;
+acceptable. twap init_config = finding P (fixed). subledger init_insurance_pool = finding
+Q (fixed).

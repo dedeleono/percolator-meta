@@ -77,8 +77,18 @@ const VOTE_RETRACT: u8 = 2;
 #[cfg(not(feature = "no-entrypoint"))]
 solana_program::entrypoint!(process_instruction);
 
-fn config_seeds<'a>(coin_mint: &'a Pubkey) -> [&'a [u8]; 2] {
-    [b"gv_config", coin_mint.as_ref()]
+// The gv config PDA commits to its subledger_pool, not just the COIN. init_config is
+// permissionless and the config PDA = f(COIN_mint) was predictable; the distribution
+// config it binds is a unique PDA f(COIN_mint) that can't be forged (distribution init
+// requires the funded fixed-supply COIN), but the subledger_pool is NOT unique — an
+// attacker could pass their OWN valid pool (vote_authority set to the predictable gv
+// PDA, bound to a market they control post-finding-Q) and squat the gv config, pointing
+// the genesis at their pool -> depositor principal misrouted (LOF) or quorum read from
+// the wrong pool (DOS). Folding subledger_pool into the seed means the only gv config
+// that can exist at the legit address is bound to the real pool; an attacker's pool
+// lands at a different gv PDA the genesis ignores. (finding R; same class as P/Q.)
+fn config_seeds<'a>(coin_mint: &'a Pubkey, subledger_pool: &'a Pubkey) -> [&'a [u8]; 3] {
+    [b"gv_config", coin_mint.as_ref(), subledger_pool.as_ref()]
 }
 fn ballot_seeds<'a>(config: &'a Pubkey, owner: &'a Pubkey) -> [&'a [u8]; 3] {
     [b"gv_ballot", config.as_ref(), owner.as_ref()]
@@ -328,7 +338,8 @@ fn init_config<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>]) -> Prog
     if *system_program.key != solana_program::system_program::ID {
         return Err(ProgramError::IncorrectProgramId);
     }
-    let (expected, bump) = Pubkey::find_program_address(&config_seeds(coin_mint.key), program_id);
+    let (expected, bump) =
+        Pubkey::find_program_address(&config_seeds(coin_mint.key, subledger_pool.key), program_id);
     if *config_account.key != expected {
         return Err(ProgramError::InvalidSeeds);
     }
@@ -374,7 +385,8 @@ fn init_config<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>]) -> Prog
     }
 
     let bump_arr = [bump];
-    let seeds: [&[u8]; 3] = [b"gv_config", coin_mint.key.as_ref(), &bump_arr];
+    let seeds: [&[u8]; 4] =
+        [b"gv_config", coin_mint.key.as_ref(), subledger_pool.key.as_ref(), &bump_arr];
     create_pda(payer, config_account, system_program, program_id, &seeds, CONFIG_SIZE)?;
 
     let config = Config {
@@ -627,7 +639,8 @@ fn vote<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>], data: &[u8]) -
     // pool's vote_authority; it can only toggle the lock, never move funds.
     let lock_val: u8 = if ballot.has_live_ballot() { 1 } else { 0 };
     let bump_arr = [config.bump];
-    let seeds: [&[u8]; 3] = [b"gv_config", config.coin_mint.as_ref(), &bump_arr];
+    let seeds: [&[u8]; 4] =
+        [b"gv_config", config.coin_mint.as_ref(), config.subledger_pool.as_ref(), &bump_arr];
     invoke_signed(
         &Instruction {
             program_id: config.subledger_program,
@@ -724,7 +737,8 @@ fn trigger<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>], data: &[u8]
 
     // Seal the distribution. The config PDA is the distribution's seal authority.
     let bump_arr = [config.bump];
-    let seeds: [&[u8]; 3] = [b"gv_config", config.coin_mint.as_ref(), &bump_arr];
+    let seeds: [&[u8]; 4] =
+        [b"gv_config", config.coin_mint.as_ref(), config.subledger_pool.as_ref(), &bump_arr];
     invoke_signed(
         &Instruction {
             program_id: *distribution_program.key,

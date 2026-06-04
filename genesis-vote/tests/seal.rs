@@ -48,15 +48,16 @@ impl Env {
         let mint_auth = Keypair::new();
         let coin_mint = create_mint(&mut svm, &payer, &mint_auth.pubkey());
 
-        let gv_config = Pubkey::find_program_address(&[b"gv_config", coin_mint.as_ref()], &gv_id()).0;
+        // Stand-in subledger program id + insurance pool; the genesis-vote config
+        // pins these and the trigger re-reads the pool's outstanding live. The gv
+        // config PDA now commits to the pool (finding R), so derive it after.
+        let sub_pid = Pubkey::new_from_array([7u8; 32]);
+        let sub_pool = Pubkey::new_from_array([8u8; 32]);
+        let gv_config =
+            Pubkey::find_program_address(&[b"gv_config", coin_mint.as_ref(), sub_pool.as_ref()], &gv_id()).0;
         let dist_config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref()], &dist_id()).0;
         let vault = create_token_account(&mut svm, &payer, &coin_mint, &dist_config);
         mint_to(&mut svm, &payer, &coin_mint, &mint_auth, &vault, 100);
-
-        // Stand-in subledger program id + insurance pool; the genesis-vote config
-        // pins these and the trigger re-reads the pool's outstanding live.
-        let sub_pid = Pubkey::new_from_array([7u8; 32]);
-        let sub_pool = Pubkey::new_from_array([8u8; 32]);
 
         let mut env = Env { svm, payer, coin_mint, mint_auth, gv_config, dist_config, vault, sub_pid, sub_pool };
         env.set_pool_outstanding(0);
@@ -75,12 +76,13 @@ impl Env {
         svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
         let mint_auth = Keypair::new();
         let coin_mint = create_mint(&mut svm, &payer, &mint_auth.pubkey());
-        let gv_config = Pubkey::find_program_address(&[b"gv_config", coin_mint.as_ref()], &gv_id()).0;
+        let sub_pid = Pubkey::new_from_array([7u8; 32]);
+        let sub_pool = Pubkey::new_from_array([8u8; 32]);
+        let gv_config =
+            Pubkey::find_program_address(&[b"gv_config", coin_mint.as_ref(), sub_pool.as_ref()], &gv_id()).0;
         let dist_config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref()], &dist_id()).0;
         let vault = create_token_account(&mut svm, &payer, &coin_mint, &dist_config);
         mint_to(&mut svm, &payer, &coin_mint, &mint_auth, &vault, 100);
-        let sub_pid = Pubkey::new_from_array([7u8; 32]);
-        let sub_pool = Pubkey::new_from_array([8u8; 32]);
         let mut env = Env { svm, payer, coin_mint, mint_auth, gv_config, dist_config, vault, sub_pid, sub_pool };
         env.set_pool_outstanding(0);
         env.init_distribution();
@@ -420,4 +422,73 @@ fn init_config_rejects_pool_not_bound_to_this_config() {
     let gv = env.gv_config;
     env.poison_pool_vote_authority(&gv);
     env.init_gv().expect("a correctly-bound pool is accepted");
+}
+
+// Finding R regression: the gv config PDA now commits to its subledger_pool. init_config
+// is permissionless, and the distribution config it binds is a UNIQUE PDA f(COIN) whose
+// seal authority is pinned to one gv PDA. So a genesis can be wired to exactly ONE pool —
+// the one the real distribution's authority commits to. An attacker cannot front-run
+// init_config to bind the genesis to a DIFFERENT (their own) valid pool: doing so makes
+// `expected` = f(COIN, attacker_pool), which no longer matches the distribution's pinned
+// authority, so the binding is refused. (Pre-fix the gv PDA was f(COIN) regardless of the
+// pool, so a front-run could bind the real distribution to an attacker pool and misroute
+// every deposit.)
+#[test]
+fn gv_config_cannot_be_bound_to_a_substituted_pool() {
+    let mut env = Env::new(); // real gv config bound to env.sub_pool; dist authority = that gv PDA
+
+    // The gv config PDA now commits to the pool: it is NOT the old market-only address.
+    // (This assertion would fail before the finding-R fix, where gv config = f(COIN).)
+    let old_style = Pubkey::find_program_address(&[b"gv_config", env.coin_mint.as_ref()], &gv_id()).0;
+    assert_ne!(env.gv_config, old_style, "gv config PDA commits to the subledger_pool (finding R)");
+
+    // An attacker's OWN valid insurance pool at a different address, with vote_authority
+    // set to the gv PDA *that* pool would imply — so the pool's own binding check passes.
+    let attacker_pool = Pubkey::new_from_array([9u8; 32]);
+    let attacker_gv = Pubkey::find_program_address(
+        &[b"gv_config", env.coin_mint.as_ref(), attacker_pool.as_ref()],
+        &gv_id(),
+    )
+    .0;
+    let mut data = vec![0u8; 192];
+    data[..8].copy_from_slice(b"SUBPOOL1");
+    data[8..40].copy_from_slice(env.coin_mint.as_ref());
+    data[160..192].copy_from_slice(attacker_gv.as_ref());
+    env.svm
+        .set_account(
+            attacker_pool,
+            solana_sdk::account::Account {
+                lamports: 1_000_000,
+                data,
+                owner: env.sub_pid,
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
+    assert_ne!(attacker_gv, env.gv_config, "the pool is part of the gv config PDA");
+
+    // Attacker tries to init a gv config bound to THEIR pool, reusing the real (unique)
+    // distribution config. expected = f(COIN, attacker_pool) = attacker_gv, but the
+    // distribution's seal authority is the REAL gv PDA -> the distribution binding fails.
+    let dummy = Pubkey::new_unique();
+    let ix = Instruction {
+        program_id: gv_id(),
+        accounts: vec![
+            AccountMeta::new(env.payer.pubkey(), true),
+            AccountMeta::new_readonly(env.coin_mint, false),
+            AccountMeta::new(attacker_gv, false),
+            AccountMeta::new_readonly(dist_id(), false),
+            AccountMeta::new_readonly(env.dist_config, false),
+            AccountMeta::new_readonly(env.sub_pid, false),
+            AccountMeta::new_readonly(attacker_pool, false),
+            AccountMeta::new_readonly(dummy, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        ],
+        data: vec![0u8],
+    };
+    assert!(
+        env.send(&[ix], &[]).is_err(),
+        "the genesis cannot be bound to a substituted pool the distribution does not commit to"
+    );
 }
