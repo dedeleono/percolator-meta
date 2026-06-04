@@ -26,6 +26,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED-COVERED] Cross-program byte-offset coupling — all readers pinned (finding-T family audit)
+Audited every place a program reads a FOREIGN struct by raw byte offset (the finding-T risk class):
+- twap reads asset-0 `insurance` from the percolator slab at INSURANCE_OFFSET=448+301=749. PINNED by its OWN
+  canary `insurance_offset_matches_real_percolator_slab` (chain.rs:1279): `offset_of!(MarketGroupV16HeaderAccount,
+  insurance)` against the REAL percolator binary + `assert_ne!(vault, insurance)`. This canary is REQUIRED
+  because the e2e hand-edits slab[749] (edit + read both at 749 would agree even if the field moved); the
+  canary catches a sibling-percolator layout drift the e2e cannot.
+- subledger reads the same slab `insurance` — PINNED by its own canary (insurance_percolator.rs:352, impair_market):
+  offset_of! for insurance/vault/budget-remaining. Independent of the twap canary (separate program).
+- genesis-vote reads the subledger Position (pool[8..40], owner[40..72], principal[72..80], start_slot[89..97])
+  and Pool (outstanding[80..88], vote_authority[160..192]) by hardcoded offsets. VERIFIED all six match the REAL
+  subledger struct (subledger:239-245 Position, :179-204 Pool). No separate canary needed: the gv↔subledger e2e
+  (chain.rs full genesis) drives REAL subledger deposits/positions, so an offset drift makes the weight/quorum
+  wrong and the e2e fails — unlike the hand-edited percolator case, this coupling's e2e genuinely catches drift.
+Verdict: every raw-offset foreign read is either canaried against the real struct (the two percolator readers,
+where the e2e can't catch drift) or e2e-validated with real data (gv->subledger). No gap, no test added.
+
 ### [VERIFIED-COVERED] place_bid state guard / remaining-account smuggling / capped-pull conservation
 Three probes this tick, all resolve to existing coverage or by-design safety:
 - place_bid rejects when `book.state != BOOK_STATE_OPEN` (lib.rs:39) so a bid can't be slipped into a SETTLED
