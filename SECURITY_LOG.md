@@ -350,3 +350,18 @@ also requires `mint.supply == total_supply`; with the vault-funding check (E) th
 proves every COIN that exists is in the distribution vault. Regressions:
 distribution.rs::init_config_rejects_a_mintable_coin (now also pre-mint extra ->
 rejected) + init_config_accepts_a_fully_in_vault_fixed_supply_coin.
+
+### [COVERAGE] Squads -> TWAP reconfigure: timelock-gated, proven e2e
+The twap IX_RECONFIGURE is gated on the config's Squads multisig default vault PDA.
+Adversarial review: the multisig is pinned at init (finding I: config_authority ==
+DAO), the vault is derived from it, new_bps is bounded (0,10000], and a foreign
+config only exposes its own multisig's vault — secure. Pinned both ways against the
+REAL Squads v4 binary:
+- negative (chain.rs): a random signer / the correct vault address WITHOUT a
+  signature are both rejected.
+- keystone (chain.rs::reconfigure_only_via_squads_vault_execute_after_timelock):
+  the DAO proposes a vault-transaction that CPIs reconfigure; executing it BEFORE the
+  1-week timelock is rejected (config unchanged); after warping past the timelock the
+  execute succeeds and the buy/burn share changes. This proves the on-chain
+  DAO -> Squads(1-week) -> TWAP control link end-to-end and that the timelock cannot
+  be bypassed for a TWAP reconfigure.
