@@ -364,6 +364,44 @@ fn trigger_uses_live_pool_outstanding_not_stale_cache() {
     assert_eq!(env.dist_sealed_proposal(), dist_proposal);
 }
 
+// Winner-take-all is irreversible across COMPETING proposals. The single-proposal
+// re-trigger is blocked by `pv.executed`; this pins the DISTINCT, defense-in-depth
+// boundary: two proposals share ONE distribution config, and once proposal A seals,
+// proposal B must not be able to seal a DIFFERENT distribution — even if B's gv tally
+// is made to look winning (e.g. a post-execution weight-shift: voters may retract from
+// the executed A, dropping total_cast_weight, then pile weight onto B). The true gate
+// is the distribution `seal_winner`'s is_sealed() check: B's trigger passes every gv
+// check, sets pv_B.executed, then the seal CPI fails because the config is already
+// sealed — reverting B's trigger whole. So there is exactly one sealed distribution.
+#[test]
+fn a_second_proposal_cannot_reseal_after_a_winner_is_sealed() {
+    let mut env = Env::new();
+    let alice = Pubkey::new_unique();
+    let bob = Pubkey::new_unique();
+    // Two distinct distribution proposals under the SAME dist config.
+    let prop_a = env.create_dist_proposal(1, &[(alice, 100)]);
+    let prop_b = env.create_dist_proposal(2, &[(bob, 100)]);
+    let gv_a = env.register(&prop_a);
+    let gv_b = env.register(&prop_b);
+    env.set_pool_outstanding(10);
+
+    // A reaches quorum + weighted majority and seals.
+    env.inject_tally(&gv_a, 10, 8, 10, 8, 10);
+    env.trigger(&gv_a, &prop_a).expect("A triggers + seals");
+    assert_eq!(env.dist_sealed_proposal(), prop_a, "A is the sealed winner");
+
+    // Now make B ALSO look winning at the gv layer (simulating a post-seal weight
+    // shift onto B). B passes every genesis-vote check, but the distribution is
+    // already sealed, so the seal_winner CPI rejects and B's trigger reverts.
+    env.inject_tally(&gv_b, 10, 8, 10, 8, 10);
+    assert!(
+        env.trigger(&gv_b, &prop_b).is_err(),
+        "a second proposal must not be able to reseal a different distribution"
+    );
+    // The sealed winner is unchanged: exactly one distribution, A's.
+    assert_eq!(env.dist_sealed_proposal(), prop_a, "still A — winner-take-all is irreversible");
+}
+
 // Setup-integrity: InitConfig must refuse to wire the genesis to a subledger pool
 // whose vote_authority is NOT this config's PDA. Otherwise an honest orchestrator
 // could bind to a poisoned/foreign pool (cf. finding G): votes' SetVoteLock CPI

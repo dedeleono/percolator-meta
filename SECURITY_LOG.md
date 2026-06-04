@@ -549,3 +549,23 @@ this tick. Confirmed hardened; no test added (would be tautological):
 - OOB: capacity <= MAX_ENTRIES (10k), index < entry_count <= capacity, so
   entry_offset stays in-bounds; size math can't overflow.
 Distribution suite green (lib 4 + integration 7).
+
+### [COVERAGE] Winner-take-all is irreversible across COMPETING proposals
+Swept the genesis-vote vote/trigger tally surface this tick (checked_add/sub on every
+tally, ballot PDA-pinned per (config,voter), sub_position canonical-PDA + owner pinned,
+quorum read LIVE from the pool). All hardened. Found one DISTINCT boundary with no
+direct coverage and pinned it: the existing re-trigger test only blocks the SAME
+proposal (via pv.executed). Two COMPETING proposals share ONE distribution config, and
+post-execution VOTE_RETRACT is allowed (so voters can leave an executed A and shift
+weight onto B) — so the genesis-vote layer alone does not guarantee a single winner.
+The true winner-take-all gate is the distribution `seal_winner` is_sealed() check:
+B's trigger passes every gv check, sets pv_B.executed, then the seal CPI fails because
+the config is already sealed, reverting B's trigger whole. New test
+(genesis-vote/tests/seal.rs `a_second_proposal_cannot_reseal_after_a_winner_is_sealed`):
+A seals; B is then made to look winning at the gv layer; trigger(B) is rejected and the
+sealed winner stays A. KEPT — pins the cross-proposal irreversibility (not the same as
+the same-proposal re-trigger block). genesis-vote suite green (lib 3 + seal 4).
+Also noted (not a live risk): total_cast_weight is u64 and each voter adds <= 63*principal;
+the sum could in principle overflow u64 only at absurd aggregate principal (> ~2.9e17
+base units genuinely at risk), where checked_add fails the marginal vote (no corruption,
+just a failed late vote). Not worth a saturating change; recorded for completeness.
