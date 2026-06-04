@@ -1905,3 +1905,93 @@ fn e2e_floor_holds_across_repeated_pulls() {
     assert_eq!(token_amount(&svm, &twap_holding), surplus, "exactly the surplus was pulled across the loop");
     assert_eq!(token_amount(&svm, &perc_vault), principal, "principal fully intact at the floor");
 }
+
+// ATTACK PROBE (surplus exfiltration): pull_surplus is PERMISSIONLESS, so the destination
+// must be locked to the twap_authority — otherwise any cranker could pull the surplus into
+// their OWN wallet. An attacker cranks pull_surplus with a holding token account they own
+// (not the twap_authority); it must be rejected, and no surplus leaves the insurance vault.
+#[test]
+fn e2e_cranker_cannot_redirect_surplus_to_own_holding() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let squads = squads_id();
+    let treasury = install_squads(&mut svm, &squads, &payer.pubkey());
+    let dao = Keypair::new();
+    svm.airdrop(&dao.pubkey(), 1_000_000_000_000).unwrap();
+    let create_key = Keypair::new();
+    let multisig = multisig_pda(&squads, &create_key.pubkey());
+    let create_ix = multisig_create_v2_ix(&squads, &treasury, &multisig, &create_key.pubkey(), &payer.pubkey(),
+        Some(&dao.pubkey()), 1, &[(dao.pubkey(), PERM_ALL)], TIMELOCK_1_WEEK_SECS);
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[create_ix], Some(&payer.pubkey()), &[&payer, &create_key], bh)).expect("multisig");
+    let squads_vault = vault_pda(&squads, &multisig, 0);
+
+    let collateral_mint = Pubkey::new_unique();
+    let coin_mint = Pubkey::new_unique();
+    let slab = Pubkey::new_unique();
+    let slab_data = make_live_market(&slab, &collateral_mint, &squads_vault, 100);
+    svm.set_account(slab, Account { lamports: 1_000_000_000, data: slab_data, owner: perc_id(), executable: false, rent_epoch: 0 }).unwrap();
+    svm.set_sysvar(&Clock { slot: 100, unix_timestamp: 100, ..Clock::default() });
+    let vault_authority = perc_vault_authority(&slab, &perc_id());
+    let perc_vault = canonical_insurance_vault(&vault_authority, &collateral_mint);
+    set_token(&mut svm, &perc_vault, &collateral_mint, &vault_authority, 0);
+    let twap_init = init_config_ix(&payer.pubkey(), &coin_mint, &slab, &multisig, &dao.pubkey(), &perc_id());
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[twap_init], Some(&payer.pubkey()), &[&payer], bh)).expect("twap init");
+    let twap_cfg = twap_config_pda(&slab, &multisig, &coin_mint, &perc_id());
+    let twap_authority = Pubkey::find_program_address(&[b"market-0-twap", slab.as_ref()], &twap_id()).0;
+
+    // insurance = principal + surplus; floor = principal (so 500k is genuinely pullable).
+    let principal = 1_000_000u64;
+    let surplus = 500_000u64;
+    let src = Pubkey::new_unique();
+    set_token(&mut svm, &src, &collateral_mint, &squads_vault, principal + surplus);
+    let topup = build_topup_message(&squads_vault, &slab, &src, &perc_vault, &perc_id(), (principal + surplus) as u128);
+    let tr = vec![
+        AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(slab, false), AccountMeta::new(src, false),
+        AccountMeta::new(perc_vault, false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(perc_id(), false),
+    ];
+    squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 1, &topup, &tr).expect("fund insurance");
+    let pol = build_update_insurance_policy_message(&squads_vault, &slab, &perc_id(), 9_000, 0, 10);
+    let pr = vec![AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(slab, false), AccountMeta::new_readonly(perc_id(), false)];
+    squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 2, &pol, &pr).expect("policy");
+    let op = build_accept_operator_message(&squads_vault, &slab, &twap_cfg, &twap_authority, &perc_id(), &twap_id());
+    let or = vec![
+        AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(slab, false), AccountMeta::new_readonly(twap_cfg, false),
+        AccountMeta::new_readonly(twap_authority, false), AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(twap_id(), false),
+    ];
+    squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 3, &op, &or).expect("operator -> twap");
+    let fm = build_set_reserved_floor_message(&squads_vault, &twap_cfg, principal as u128);
+    let fr = vec![AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(twap_cfg, false), AccountMeta::new_readonly(twap_id(), false)];
+    squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 4, &fm, &fr).expect("set floor");
+
+    // ATTACK: an attacker cranks pull_surplus into a holding THEY own — must be rejected.
+    let attacker = Keypair::new();
+    svm.airdrop(&attacker.pubkey(), 1_000_000_000).unwrap();
+    let attacker_holding = Pubkey::new_unique();
+    set_token(&mut svm, &attacker_holding, &collateral_mint, &attacker.pubkey(), 0);
+    let mut pd = vec![1u8]; pd.extend_from_slice(&surplus.to_le_bytes());
+    let steal = Instruction { program_id: twap_id(), accounts: vec![
+        AccountMeta::new(attacker.pubkey(), true),
+        AccountMeta::new_readonly(twap_cfg, false),
+        AccountMeta::new_readonly(twap_authority, false),
+        AccountMeta::new(slab, false),
+        AccountMeta::new(attacker_holding, false), // attacker-owned destination
+        AccountMeta::new(perc_vault, false),
+        AccountMeta::new_readonly(vault_authority, false),
+        AccountMeta::new_readonly(perc_id(), false),
+        AccountMeta::new_readonly(spl_token::ID, false),
+    ], data: pd };
+    svm.expire_blockhash();
+    let bh = svm.latest_blockhash();
+    assert!(svm.send_transaction(Transaction::new_signed_with_payer(&[steal], Some(&payer.pubkey()), &[&payer, &attacker], bh)).is_err(),
+        "a cranker must not be able to redirect surplus to a holding it owns");
+    assert_eq!(token_amount(&svm, &attacker_holding), 0, "no surplus reached the attacker");
+    assert_eq!(token_amount(&svm, &perc_vault), principal + surplus, "insurance untouched");
+}

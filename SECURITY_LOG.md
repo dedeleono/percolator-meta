@@ -810,3 +810,15 @@ third pull of even 1 unit is REJECTED, with the full principal intact in insuran
 the surplus in the twap holding. Pins that the floor is stateless/live (no cached insurance, no
 cumulative over-pull). Test: twap-program/tests/chain.rs `e2e_floor_holds_across_repeated_pulls`.
 KEPT — distinct from the single-pull finding-O test (this covers the looping/cumulative case).
+
+### [BLOCKED] E2E probe: a cranker cannot redirect surplus to its own holding
+pull_surplus is PERMISSIONLESS (anyone may crank it), so the destination must be locked to
+the twap_authority — otherwise a cranker could pull the surplus into their own wallet (free
+money). pull_surplus requires `holding.owner == twap_authority` (the percolator
+WithdrawInsuranceLimited dest-owned-by-operator rule, re-checked twap-side). Proven
+end-to-end: an attacker cranks pull_surplus with a holding token account THEY own; it is
+rejected, no surplus reaches the attacker, and the insurance vault is untouched. So a
+permissionless crank can only ever move surplus into a twap_authority-owned account (from
+which only the twap program, via the buy/burn slice, can act). Test:
+twap-program/tests/chain.rs `e2e_cranker_cannot_redirect_surplus_to_own_holding`. KEPT —
+pins the destination boundary of the permissionless pull.
