@@ -9,7 +9,8 @@ insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full r
 checkpoint: 127 tests across every harness (subledger insurance 23 + own-vault 5 + lib 6; genesis-vote
 seal 8 + lib 3; distribution 11 + lib 4; twap chain 62 + lib 4) and all four programs build-sbf clean.
 All four permissionless-init PDAs (subledger pool, twap book, gv config, distribution config) now have a
-finding-AI lamport-prefund-DOS regression test.
+finding-AI lamport-prefund-DOS regression test. The eviction refund-redirect guard is pinned inside
+`e2e_full_book_evicts_only_for_a_strictly_better_bid` (extended, mutation-verified).
 The percolator dep is pinned to committed revs (percolator-prog c050578, percolator 76d0e75), so a
 sibling mid-edit no longer breaks the build. Recent ticks are confirmations, not new findings; the
 remaining surface is runtime-guaranteed (e.g. AU SPL-authority), DAO-footgun hardening, or OFF this
@@ -18,6 +19,28 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [BLOCKED] twap place_bid eviction — redirecting the evicted bidder's escrowed COIN to the attacker (LOF)
+Vector: when the book is full, a STRICTLY-better incoming bid evicts the weakest and must refund the
+evictee's escrowed COIN. The incoming bidder passes the evict refund account as the trailing account.
+Hostile idea: pass an attacker-controlled COIN account instead of the evictee's account, so the eviction
+refund (the evictee's full escrow) lands in the attacker's hands — stealing a stranger's committed COIN
+while taking their book slot.
+Analysis (twap-program/src/lib.rs place_bid, ~1188-1207): the refund target is pinned to the weakest bid's
+RECORDED `SL_COIN_ATA` (set to the evictee's CANONICAL COIN ATA at THEIR own place_bid, ~1243), and the
+passed evict account must equal it exactly (`*evict_acct.key != evicted_ata -> InvalidAccountData`, ~1197).
+So a mismatched/attacker account reverts the whole placement; the evictee's COIN can only ever go to the
+evictee's canonical ATA (permissionlessly recreatable, finding V/AB). BLOCKED.
+Coverage gap closed: the eviction HAPPY path (refund to the correct canonical ATA) and the not-better-bid
+rejection were tested in `e2e_full_book_evicts_only_for_a_strictly_better_bid`, but the adversarial
+REDIRECT was not. Extended that test (reusing its 32-bid full book — no duplicate setup): the better bidder
+first tries to evict while redirecting the refund to a fresh attacker COIN account -> rejected, attacker
+account stays 0, the evictee's COIN stays escrowed, the escrow total is untouched, and the attacker's own
+bid COIN was NOT escrowed (tx reverted); then the HONEST eviction (correct canonical target) succeeds.
+MUTATION-VERIFIED against the real .so: removing the `evict_acct.key != evicted_ata` pin makes the redirect
+SUCCEED (attacker gets the COIN) and the test FAIL. KEPT (extended, no new test). INVARIANT: place_bid must
+keep pinning the eviction refund to the weakest bid's recorded canonical SL_COIN_ATA; never refund to a
+caller-supplied account.
 
 ### [BLOCKED] distribution init_config — lamport-prefund DOS on the config that custodies the COIN supply (finding AI)
 Vector: the dist config PDA is deterministic (f(coin_mint, authority), both public) and init_config is

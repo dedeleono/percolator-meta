@@ -4087,6 +4087,23 @@ fn e2e_full_book_evicts_only_for_a_strictly_better_bid() {
     let weakest_ata = bidders[0].1; // bid 0's canonical COIN ATA (the refund target)
     assert_eq!(token_amount(&svm, &weakest_ata), 0, "weakest bidder's COIN is escrowed before eviction");
     let (better, bt_s, bt_u) = new_bidder(&mut svm, &payer, &env, 50);
+
+    // ATTACK (eviction-refund theft): the incoming bidder tries to redirect the evicted bidder's
+    // escrowed COIN to an account THEY control instead of the evictee's RECORDED canonical ATA. The
+    // refund target is pinned to the weakest bid's stored SL_COIN_ATA (set at the evictee's own
+    // place_bid), so a mismatched evict account is rejected and the evictee's COIN is never stolen.
+    let thief = Pubkey::new_unique();
+    set_token(&mut svm, &thief, &env.coin_mint, &better.pubkey(), 0);
+    assert!(
+        send(&mut svm, &[&better], place_bid_ix(&better.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &bt_s, &bt_u, &env.coin_mint, &env.collateral_mint, 50, 1000, Some(thief))).is_err(),
+        "eviction must refund the evictee's recorded canonical ATA, not an attacker-chosen account"
+    );
+    assert_eq!(token_amount(&svm, &thief), 0, "no COIN redirected to the attacker");
+    assert_eq!(token_amount(&svm, &weakest_ata), 0, "evictee's COIN still escrowed — the redirect reverted");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), escrow_full, "escrow untouched by the rejected redirect");
+    assert_eq!(token_amount(&svm, &bt_s), 50, "the attacker's own bid COIN was not escrowed (tx reverted)");
+
+    // The HONEST eviction (correct canonical refund target) succeeds.
     send(&mut svm, &[&better], place_bid_ix(&better.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &bt_s, &bt_u, &env.coin_mint, &env.collateral_mint, 50, 1000, Some(weakest_ata))).expect("strictly-better bid evicts the weakest");
     assert_eq!(token_amount(&svm, &weakest_ata), 1, "evicted bidder refunded their 1 COIN");
     assert_eq!(token_amount(&svm, &bt_s), 0, "the better bid's 50 COIN is escrowed");
