@@ -400,6 +400,30 @@ fn trigger_seals_the_distribution_cross_program() {
     assert!(env.trigger(&gv_proposal, &dist_proposal).is_err(), "no double seal");
 }
 
+// REINIT DOS: init_config is permissionless. If an already-initialized gv config could be
+// re-initialized, the second init would RESET the global tallies (total_voted_principal,
+// total_cast_weight, outstanding) to 0 while every voter's ballot PDA + subledger vote-lock
+// persists — desyncing the genesis: it could never reach quorum again (permanent DOS), and an
+// in-flight winning vote would be silently wiped. The `data_len() != 0 -> AccountAlreadyInitialized`
+// gate blocks the second init. (Parallel of the subledger `insurance_pool_cannot_be_reinitialized_
+// after_funding`, finding AJ, for the genesis governance config.)
+#[test]
+fn gv_config_cannot_be_reinitialized_to_wipe_a_vote() {
+    let mut env = Env::new(); // gv config already initialized + wired
+    let alice = Pubkey::new_unique();
+    let dist_proposal = env.create_dist_proposal(1, &[(alice, 100)]);
+    let gv_proposal = env.register(&dist_proposal);
+    env.set_pool_outstanding(10);
+    env.inject_tally(&gv_proposal, 10, 8, 10, 8, 10); // a quorum+majority vote is in progress
+
+    // ATTACK: re-init the live config to zero its tallies.
+    assert!(env.init_gv().is_err(), "an initialized gv config cannot be re-initialized");
+
+    // The vote is intact: the genesis triggers + seals exactly as if the re-init never happened.
+    env.trigger(&gv_proposal, &dist_proposal).expect("vote survived the rejected re-init");
+    assert_eq!(env.dist_sealed_proposal(), dist_proposal, "winner sealed — re-init could not reset the tally");
+}
+
 // Griefing-DOS boundary: register is permissionless EXCEPT it binds to the distribution
 // proposal's creator (lib.rs:471). The gv_proposal is a UNIQUE PDA f(config, dist_proposal),
 // and register freezes a (entry_count, total_amount) SNAPSHOT that `trigger` later requires to

@@ -6,8 +6,8 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 Reachable six-binary surface is exhausted: 53 vectors recorded (A–AX), of which 3 were real CRITICAL
 bugs found + fixed by this loop (AD signer-seed-binding, AI lamport-prefund init-DOS, AQ parasite-config
 insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full regression GREEN at this
-checkpoint: 127 tests across every harness (subledger insurance 23 + own-vault 5 + lib 6; genesis-vote
-seal 8 + lib 3; distribution 11 + lib 4; twap chain 62 + lib 4) and all four programs build-sbf clean.
+checkpoint: 128 tests across every harness (subledger insurance 23 + own-vault 5 + lib 6; genesis-vote
+seal 9 + lib 3; distribution 11 + lib 4; twap chain 62 + lib 4) and all four programs build-sbf clean.
 All four permissionless-init PDAs (subledger pool, twap book, gv config, distribution config) now have a
 finding-AI lamport-prefund-DOS regression test. The eviction refund-redirect guard is pinned inside
 `e2e_full_book_evicts_only_for_a_strictly_better_bid` (extended, mutation-verified).
@@ -19,6 +19,25 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [BLOCKED] genesis-vote init_config — re-initializing a live config to wipe the vote tallies (reinit DOS)
+Vector: init_config is permissionless. If an already-initialized gv config could be re-initialized, the
+second init would RESET the global tallies (total_voted_principal / total_cast_weight / outstanding) to 0
+while every voter's ballot PDA + subledger vote-lock persists — desyncing the genesis: it could never reach
+quorum again (permanent DOS) and an in-flight winning vote would be silently wiped.
+Analysis: BLOCKED by TWO independent layers — (1) the `data_len() != 0 -> AccountAlreadyInitialized` gate
+at the top of init_config, and (2) the robust `create_pda` (allocate + assign via invoke_signed require a
+SYSTEM-owned, data-empty account; after the first init the config is PROGRAM-owned, so allocate fails). So
+re-init is doubly refused. Verified via mutation: even with the data_len gate removed, the create_pda
+backstop still rejects the second init (the test stays green) — i.e. neither guard alone is a single point
+of failure.
+Coverage gap closed: the reinit-DOS was tested for the subledger pool (`insurance_pool_cannot_be_reinitialized_
+after_funding`, finding AJ) but not for the gv governance config. Added `gv_config_cannot_be_reinitialized_to_
+wipe_a_vote` (genesis-vote/tests/seal.rs): with a quorum+majority vote in progress, a second init_gv is
+rejected and the vote then triggers + seals exactly as before (tally intact). KEPT — pins the outcome (a live
+governance config can't be reset) end-to-end; defense-in-depth means a single-guard regression won't silently
+reopen it. INVARIANT: init_config must keep the data_len re-init gate AND the system-owned-account robust
+create; do not let either become the sole guard.
 
 ### [BLOCKED] twap place_bid eviction — redirecting the evicted bidder's escrowed COIN to the attacker (LOF)
 Vector: when the book is full, a STRICTLY-better incoming bid evicts the weakest and must refund the
