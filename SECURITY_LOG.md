@@ -27,6 +27,38 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [ATTESTATION] Coverage map — Copenhagen classes x repo boundaries (136 tests, build-sbf clean)
+Consolidated reference after the multi-tick sweep. Every Copenhagen class and repo-specific boundary maps to
+an enforcing test/finding (LOF/DOS verdict in parens):
+COPENHAGEN CLASSES:
+- account confusion / substitution: parasite-config drain (AQ), foreign market_slab/vault/vault_authority at
+  execute + withdraw (AF, e2e_execute_rejects_*), canonical-vault F-VAULT (init_..._rejects_non_canonical),
+  eviction-refund redirect, claim usd_dest/coin_ata pins (AW), deposit holding (HARDENING).
+- missing owner/signer: reconfigure/set_vote_lock/seal_winner is_signer pins (mutation-verified), withdraw
+  owner-binding (non_owner_cannot_withdraw), accept_operator bypass (e2e_attacker_cannot_grant_operator_*).
+- PDA/seed collisions: config bindings P/Q/R/AA/AQ (gv config, dist config, twap config, subledger pool).
+- type cosplay: owner+disc+offset checks; ALL four cross-program discs verified equal + offsets match (gv->
+  subledger/distribution); two percolator readers offset_of!-canaried.
+- arbitrary CPI: percolator_program/subledger_program/distribution_program pinned to config before every CPI.
+- reinit: data_len gate + robust create, tested (insurance_pool / gv_config reinit, finding AJ).
+- rounding: pro-rata haircut floor (finding L, order-independent), uniform-price floor + coin_i==0 unfilled
+  (AE roll restore), ratchet burnable+retained==surplus (no residual). All conservative/bounded.
+- missing rent/exempt (prefund DOS): robust create for ALL 4 init PDAs (subledger pool, twap book, gv config,
+  distribution config) — finding AI, mutation-verified.
+- sysvar spoofing: N/A — programs use Clock::get() syscall, never a passed sysvar account.
+- duplicate accounts: pinned + mint-typed accounts cannot alias harmfully (different mints/owners/pinned keys).
+- remaining-account smuggling: SEND coin_sink read only in SEND mode + pinned; BURN/claim/trigger fixed lists.
+REPO BOUNDARIES: subledger insurance-authority-vs-operator (accept_operator hardcoded-to-pool + Squads), gv
+weight/quorum (weight-0 flash-deposit, vote-lock self-unlock, live-outstanding by design), distribution
+claim/seal (cross-proposal isolation, missing-signer seal, freeze/mint/supply, bait-and-switch snapshot), twap
+auction (anti-spoof cancel #28 FIXED, roll restore, double-claim, book-squat init_book, reserve/sink/floor
+Squads-gated), Squads 1-week timelock (enforced on-chain at init FIXED + before-expiry tests), finding-O floor
+(execute pulls only surplus), finding-T offset (canaried both readers).
+OFF-HARNESS (task #6 orchestration, on-chain-uncloseable): deposit-deadline/kickstart (bounds the exit-capture
+#20-1 + the deposit-inflate-quorum griefing), durable timelock, handover-bound-to-vote-winner (#20-2).
+Verdict: on-chain surface comprehensively covered; 2 real fixes (timelock-min, #28), 1 hardening (deposit
+holding) this run; residual risk consolidated in the 3 off-harness orchestration requirements.
+
 ### [VERIFIED-COVERED] gv->distribution offsets verified — completes the finding-T-family cross-program audit
 Closed the last raw-byte-offset cross-program read I had not explicitly checked: genesis-vote reads the
 distribution proposal by hardcoded offsets in register_proposal (creator-binding + snapshot) and trigger
