@@ -26,6 +26,27 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED-COVERED] COIN-authority safety chain — enforced once (distribution), inherited everywhere
+Follow-up to the freeze-authority pin below: audited whether ANY other program needs its own non-mintable/
+non-freezable check on the genesis COIN. It does not — the safety is enforced at the single custody point and
+inherited structurally:
+1. distribution init_config is the enforcement point: rejects a live mint authority (pre-mint dilution) AND a
+   live freeze authority (vault-freeze brick) AND `mint.supply != total_supply` (COIN held outside the pool).
+   All three clauses are now tested (mint -> init_config_rejects_a_mintable_coin incl. the supply>total case;
+   freeze -> init_config_rejects_a_freezable_coin, this run). So the genesis COIN is provably fixed-supply +
+   unfreezable + fully in the vault.
+2. The TWAP auction does NOT re-check the COIN's authorities — and does not need to: place_bid pins
+   `bidder_src.mint == coin_mint == config.coin_mint` (lib.rs:42-61), so bidders MUST hold exactly the bound
+   COIN; the auction's COIN therefore IS the genesis COIN and inherits (1). A parasite twap config bound to a
+   different (mintable/freezable) COIN cannot drain real insurance — its config-derived twap_authority is not
+   the percolator operator (finding AQ) — so it is inert.
+3. The SUBLEDGER intentionally has no mint/freeze-authority check: its deposit asset is the collateral
+   stablecoin (e.g. USDC), which is freezable BY DESIGN (the issuer can freeze) — a standard, accepted
+   property, NOT the governance COIN. The COIN never touches the subledger.
+Verdict: the non-mintable + non-freezable + full-supply invariants are enforced exactly once (distribution)
+and inherited by the twap via the place_bid mint pin + finding AQ; no redundant twap/subledger-side check is
+warranted. No code change, no test added.
+
 ### [BLOCKED] distribution init_config — a freezable COIN could brick every claim (freeze-authority clause)
 Vector: the distributed COIN IS the MetaDAO. If a distribution were created against a COIN with a live FREEZE
 authority, that authority (the deployer) could (a) FREEZE the distribution VAULT — the config PDA can then
