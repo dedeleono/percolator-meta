@@ -504,3 +504,20 @@ PRECISE ASK for the percolator side to unblock slice 4's floor:
   by reading the fixed scalars directly from the slab bytes. Then twap pull_surplus
   enforces amount <= insurance - reserved. Until then finding O stands (handoff must
   not run; SAFETY comments in place).
+
+### [FIXED] M2. Front-run griefing DOS on register_proposal (genesis-vote)
+Finding M takes a snapshot of (entry_count, total_amount) at REGISTRATION time and
+`trigger` rejects the proposal forever if the live distribution proposal no longer
+matches that snapshot. register_proposal was permissionless (only payer.is_signer),
+so an attacker could register a creator's PARTIALLY-built distribution proposal,
+freezing a stale snapshot; the creator's very next `append` would then make the live
+proposal mismatch the sealed snapshot, and `trigger` would reject it permanently — a
+front-run that bricks a legitimate proposal (it can never be sealed -> finalize DOS),
+costing the attacker only the gv_proposal rent.
+Fix (genesis-vote/src/lib.rs register_proposal, in the snapshot block after the
+config-binding check): bind registration to the distribution proposal's CREATOR
+(header [48..80]) — `if creator != *payer.key { return Err(IllegalOwner) }`. The
+creator registers only once they have finished building, so no third party can freeze
+a premature snapshot. Regression: subledger/tests/insurance_percolator.rs
+`only_the_proposal_creator_can_register_it` (a non-creator signer is rejected; the
+creator succeeds) against the real binaries. Green.

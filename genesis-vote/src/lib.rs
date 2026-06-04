@@ -434,6 +434,17 @@ fn register_proposal<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>]) -
         if dist_proposal_config != config.distribution_config {
             return Err(ProgramError::InvalidAccountData);
         }
+        // Only the proposal's CREATOR may register it for voting (creator at [48..80]
+        // of the distribution proposal header). register is otherwise permissionless,
+        // so an attacker could register a creator's PARTIALLY-built proposal, freezing
+        // the snapshot at a stale (entry_count, total_amount); the creator's next
+        // append would then make the live proposal mismatch the snapshot and `trigger`
+        // would reject it forever (front-run griefing DOS). Binding registration to the
+        // creator means they register only once the proposal is complete.
+        let creator = Pubkey::new_from_array(pd[48..80].try_into().unwrap());
+        if creator != *payer.key {
+            return Err(ProgramError::IllegalOwner);
+        }
         let entry_count = u32::from_le_bytes(pd[84..88].try_into().unwrap());
         let total_amount = u64::from_le_bytes(pd[88..96].try_into().unwrap());
         if entry_count == 0 {

@@ -1423,3 +1423,73 @@ fn percolator_update_insurance_policy_is_marketauth_gated() {
         "a non-marketauth must not be able to change the insurance policy"
     );
 }
+
+// Front-run griefing DOS (finding M2): register_proposal is otherwise permissionless,
+// so an attacker could register a creator's partially-built proposal, freezing the
+// (entry_count,total_amount) snapshot; the creator's next append would then make the
+// live proposal mismatch the snapshot and trigger would reject it forever. Fixed by
+// requiring the registrant to be the proposal's creator. Here a non-creator is
+// rejected and the creator succeeds.
+#[test]
+fn only_the_proposal_creator_can_register_it() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+    let dist_config = ve.dist_config;
+
+    let creator = Keypair::new();
+    env.svm.airdrop(&creator.pubkey(), 10_000_000_000).unwrap();
+    let id = 1u64;
+    let dist_proposal =
+        Pubkey::find_program_address(&[b"dist_proposal", dist_config.as_ref(), &id.to_le_bytes()], &dist_id()).0;
+    let mut cd = vec![1u8];
+    cd.extend_from_slice(&id.to_le_bytes());
+    cd.extend_from_slice(&4u32.to_le_bytes());
+    env.send(&[Instruction {
+        program_id: dist_id(),
+        accounts: vec![
+            AccountMeta::new(creator.pubkey(), true),
+            AccountMeta::new_readonly(dist_config, false),
+            AccountMeta::new(dist_proposal, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        ],
+        data: cd,
+    }], &[&creator]).expect("creator creates proposal");
+    let dest = Pubkey::new_unique();
+    let mut ad = vec![2u8];
+    ad.extend_from_slice(&1u32.to_le_bytes());
+    ad.extend_from_slice(dest.as_ref());
+    ad.extend_from_slice(&100u64.to_le_bytes());
+    env.send(&[Instruction {
+        program_id: dist_id(),
+        accounts: vec![
+            AccountMeta::new(creator.pubkey(), true),
+            AccountMeta::new_readonly(dist_config, false),
+            AccountMeta::new(dist_proposal, false),
+        ],
+        data: ad,
+    }], &[&creator]).expect("creator appends");
+
+    let gv_proposal =
+        Pubkey::find_program_address(&[b"gv_proposal", ve.gv_config.as_ref(), dist_proposal.as_ref()], &gv_id()).0;
+    let register = |payer: Pubkey| Instruction {
+        program_id: gv_id(),
+        accounts: vec![
+            AccountMeta::new(payer, true),
+            AccountMeta::new_readonly(ve.gv_config, false),
+            AccountMeta::new(gv_proposal, false),
+            AccountMeta::new_readonly(dist_proposal, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        ],
+        data: vec![2u8],
+    };
+
+    // ATTACKER (env.payer, not the creator) cannot front-register.
+    assert!(
+        env.send(&[register(env.payer.pubkey())], &[]).is_err(),
+        "a non-creator must not be able to register the proposal"
+    );
+    // The creator can register their own.
+    env.send(&[register(creator.pubkey())], &[&creator]).expect("creator registers");
+    assert!(env.svm.get_account(&gv_proposal).is_some_and(|a| !a.data.is_empty()), "gv_proposal created by the creator");
+}
