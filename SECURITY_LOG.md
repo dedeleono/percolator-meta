@@ -2,6 +2,19 @@
 
 Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdict.
 
+## Checkpoint (latest)
+Reachable six-binary surface is exhausted: 50 vectors recorded (A–AU), of which 3 were real CRITICAL
+bugs found + fixed by this loop (AD signer-seed-binding, AI lamport-prefund init-DOS, AQ parasite-config
+insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full regression GREEN at this
+checkpoint: 119 tests across every harness (subledger insurance 23 + own-vault 5 + lib 6; genesis-vote
+seal 5 + lib 3; distribution 8 + lib 4; twap chain 57 + lib 4) and all four programs build-sbf clean.
+The percolator dep is pinned to committed revs (percolator-prog c050578, percolator 76d0e75), so a
+sibling mid-edit no longer breaks the build. Recent ticks are confirmations, not new findings; the
+remaining surface is runtime-guaranteed (e.g. AU SPL-authority), DAO-footgun hardening, or OFF this
+harness (the `rewards-program` monolith with its own suite; the unbuilt local proposal-generation tool,
+whose bugs are the realistic trigger for program-level footguns like AS). Recommend redirecting the loop
+to one of those, or pausing it.
+
 ## Analyzed
 
 ### [BLOCKED] AU. insurance_deposit holding-intermediate substitution/duplicate — SPL authority is the boundary
