@@ -574,7 +574,8 @@ const BK_STATE: usize = 248;
 const BK_SINK_MODE: usize = 249;
 const BK_BOOK_BUMP: usize = 250;
 const BK_ESCROW_BUMP: usize = 251;
-const BOOK_HEADER: usize = 252;
+const BK_HOLDING: usize = 252; // the canonical twap_authority-owned USD budget account
+const BOOK_HEADER: usize = 284;
 
 // Per-bid slot field offsets, relative to the slot start.
 const SL_OCCUPIED: usize = 0;
@@ -612,6 +613,7 @@ struct BookHeader {
     coin_escrow: Pubkey,
     settlement_usd: Pubkey,
     coin_sink: Pubkey,
+    holding: Pubkey,
     reserve_num: u128,
     reserve_den: u128,
     round_length: u64,
@@ -634,6 +636,7 @@ fn load_book_header(d: &[u8]) -> Result<BookHeader, ProgramError> {
         coin_escrow: book_rd_key(d, BK_COIN_ESCROW),
         settlement_usd: book_rd_key(d, BK_SETTLEMENT_USD),
         coin_sink: book_rd_key(d, BK_COIN_SINK),
+        holding: book_rd_key(d, BK_HOLDING),
         reserve_num: book_rd_u128(d, BK_RESERVE_NUM),
         reserve_den: book_rd_u128(d, BK_RESERVE_DEN),
         round_length: book_rd_u64(d, BK_ROUND_LENGTH),
@@ -750,12 +753,15 @@ fn require_squads_vault(squads_vault: &AccountInfo, config: &Config) -> ProgramR
 }
 
 // init_book accounts: [squads_vault(signer, payer), config, book(w, init), book_escrow(pda),
-//   coin_escrow, settlement_usd, coin_mint, collateral_mint, system_program, coin_sink?]
+//   coin_escrow, settlement_usd, holding, coin_mint, collateral_mint, system_program, coin_sink?]
 // data: reserve_num (u128) || reserve_den (u128) || round_length (u64) || sink_mode (u8)
 //
-// Squads-vault-gated (timelock'd): pins the reserve, round length, COIN sink and binding mints and
-// records the shared COIN-escrow + settlement-USD token accounts (owned by the book-escrow PDA,
-// pre-created by the caller). Everything that drives the auction afterwards is permissionless.
+// Squads-vault-gated (timelock'd): pins the reserve, round length, COIN sink, binding mints and
+// the canonical USD holding, and records the shared COIN-escrow + settlement-USD token accounts
+// (owned by the book-escrow PDA, pre-created by the caller). The holding is the single
+// twap_authority-owned account `execute` pulls surplus into and rolls over across rounds —
+// pinning it here keeps the accumulated budget from fragmenting. Everything that drives the
+// auction afterwards is permissionless.
 fn process_init_book(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let iter = &mut accounts.iter();
     let squads_vault = next_account_info(iter)?;
@@ -764,6 +770,7 @@ fn process_init_book(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
     let book_escrow = next_account_info(iter)?;
     let coin_escrow = next_account_info(iter)?;
     let settlement_usd = next_account_info(iter)?;
+    let holding = next_account_info(iter)?;
     let coin_mint = next_account_info(iter)?;
     let collateral_mint = next_account_info(iter)?;
     let system_program = next_account_info(iter)?;
@@ -801,6 +808,16 @@ fn process_init_book(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
     }
     let su = spl_token::state::Account::unpack(&settlement_usd.try_borrow_data()?)?;
     if su.owner != expected_escrow || su.mint != *collateral_mint.key || su.amount != 0 {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    // The canonical USD holding must be a collateral token account owned by the twap_authority
+    // (so percolator's WithdrawInsuranceLimited will pay into it during execute).
+    let auth_bump = [config.authority_bump];
+    let auth_seeds: [&[u8]; 3] = [TWAP_AUTHORITY_SEED, config.market_slab.as_ref(), &auth_bump];
+    let twap_authority =
+        Pubkey::create_program_address(&auth_seeds, program_id).map_err(|_| ProgramError::InvalidSeeds)?;
+    let hs = spl_token::state::Account::unpack(&holding.try_borrow_data()?)?;
+    if hs.owner != twap_authority || hs.mint != *collateral_mint.key {
         return Err(ProgramError::InvalidAccountData);
     }
     // In SEND mode, validate + record the COIN sink (a COIN token account); BURN mode ignores it.
@@ -851,6 +868,7 @@ fn process_init_book(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
     d[BK_COIN_ESCROW..BK_COIN_ESCROW + 32].copy_from_slice(coin_escrow.key.as_ref());
     d[BK_SETTLEMENT_USD..BK_SETTLEMENT_USD + 32].copy_from_slice(settlement_usd.key.as_ref());
     d[BK_COIN_SINK..BK_COIN_SINK + 32].copy_from_slice(coin_sink_key.as_ref());
+    d[BK_HOLDING..BK_HOLDING + 32].copy_from_slice(holding.key.as_ref());
     book_wr_u128(&mut d, BK_RESERVE_NUM, reserve_num);
     book_wr_u128(&mut d, BK_RESERVE_DEN, reserve_den);
     d[BK_ROUND_LENGTH..BK_ROUND_LENGTH + 8].copy_from_slice(&round_length.to_le_bytes());
@@ -1158,7 +1176,9 @@ fn process_execute(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
     }
     {
         let h = spl_token::state::Account::unpack(&holding.try_borrow_data()?)?;
-        if h.owner != expected_auth || h.mint != book.collateral_mint {
+        // Pinned: only the book's canonical holding can be used, so the rolled-over budget never
+        // fragments across different twap_authority-owned accounts.
+        if *holding.key != book.holding || h.owner != expected_auth || h.mint != book.collateral_mint {
             return Err(ProgramError::InvalidAccountData);
         }
         let su = spl_token::state::Account::unpack(&settlement_usd.try_borrow_data()?)?;

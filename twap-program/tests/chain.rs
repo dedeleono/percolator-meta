@@ -2731,16 +2731,17 @@ fn mint_coin(svm: &mut LiteSVM, payer: &Keypair, mint: &Pubkey, authority: &Keyp
 
 // Squads vault-transaction message wrapping twap.init_book (tag 5). squads_vault is a WRITABLE
 // signer (it pays the book account rent), book is a writable non-signer; the rest are read-only.
+#[allow(clippy::too_many_arguments)]
 fn build_init_book_message(
     squads_vault: &Pubkey, book: &Pubkey, config: &Pubkey, book_escrow: &Pubkey, coin_escrow: &Pubkey,
-    settlement_usd: &Pubkey, coin_mint: &Pubkey, collateral_mint: &Pubkey,
+    settlement_usd: &Pubkey, holding: &Pubkey, coin_mint: &Pubkey, collateral_mint: &Pubkey,
     reserve_num: u128, reserve_den: u128, round_length: u64, sink_mode: u8,
 ) -> Vec<u8> {
     let mut m = Vec::new();
     m.push(1); // num_signers
     m.push(1); // num_writable_signers (squads_vault pays rent)
     m.push(1); // num_writable_non_signers (book)
-    m.push(10); // account_keys
+    m.push(11); // account_keys
     m.extend_from_slice(squads_vault.as_ref());   // 0 writable signer
     m.extend_from_slice(book.as_ref());           // 1 writable non-signer
     m.extend_from_slice(config.as_ref());         // 2 ro
@@ -2750,11 +2751,12 @@ fn build_init_book_message(
     m.extend_from_slice(coin_mint.as_ref());      // 6 ro
     m.extend_from_slice(collateral_mint.as_ref());// 7 ro
     m.extend_from_slice(system_program::ID.as_ref()); // 8 ro
-    m.extend_from_slice(twap_id().as_ref());      // 9 program
+    m.extend_from_slice(holding.as_ref());        // 9 ro
+    m.extend_from_slice(twap_id().as_ref());      // 10 program
     m.push(1); // instructions
-    m.push(9); // program_id_index -> twap
-    m.push(9); // num account_indexes (order init_book reads)
-    for i in [0u8, 2, 1, 3, 4, 5, 6, 7, 8] { m.push(i); }
+    m.push(10); // program_id_index -> twap
+    m.push(10); // num account_indexes (order init_book reads)
+    for i in [0u8, 2, 1, 3, 4, 5, 9, 6, 7, 8] { m.push(i); }
     let mut data = vec![5u8];
     data.extend_from_slice(&reserve_num.to_le_bytes());
     data.extend_from_slice(&reserve_den.to_le_bytes());
@@ -2877,13 +2879,14 @@ fn setup_auction(svm: &mut LiteSVM, payer: &Keypair, env: &HandoffEnv, round_len
     set_token(svm, &holding, &env.collateral_mint, &env.twap_authority, 0);
     svm.airdrop(&env.squads_vault, 1_000_000_000).unwrap();
     let msg = build_init_book_message(&env.squads_vault, &book, &env.twap_cfg, &book_escrow, &coin_escrow,
-        &settlement_usd, &env.coin_mint, &env.collateral_mint, 0, 1, round_length, sink_mode);
+        &settlement_usd, &holding, &env.coin_mint, &env.collateral_mint, 0, 1, round_length, sink_mode);
     let mut rem = vec![
         AccountMeta::new(env.squads_vault, false), AccountMeta::new(book, false),
         AccountMeta::new_readonly(env.twap_cfg, false), AccountMeta::new_readonly(book_escrow, false),
         AccountMeta::new_readonly(coin_escrow, false), AccountMeta::new_readonly(settlement_usd, false),
         AccountMeta::new_readonly(env.coin_mint, false), AccountMeta::new_readonly(env.collateral_mint, false),
-        AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(twap_id(), false),
+        AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(holding, false),
+        AccountMeta::new_readonly(twap_id(), false),
     ];
     let _ = (&coin_sink, &mut rem);
     squads_execute(svm, &env.squads, &env.multisig, &env.dao, payer, 5, &msg, &rem).expect("init_book");
@@ -3025,8 +3028,16 @@ fn e2e_execute_pulls_only_burn_share_and_ratchets_principal() {
     let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None);
 
     let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
-    // No bids: execute still pulls the burn-share + ratchets, then rolls. surplus=500k, burn=400k.
     warp_to(&mut svm, 111);
+    // A non-canonical (but twap_authority-owned) holding is rejected — the budget can't be routed
+    // into a different account and fragmented.
+    let rogue_holding = Pubkey::new_unique();
+    set_token(&mut svm, &rogue_holding, &env.collateral_mint, &env.twap_authority, 0);
+    assert!(send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &rogue_holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).is_err(),
+        "execute must reject a holding other than the book's pinned one");
+    assert_eq!(token_amount(&svm, &rogue_holding), 0, "rogue holding never funded");
+
+    // No bids: execute still pulls the burn-share + ratchets, then rolls. surplus=500k, burn=400k.
     send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute 1");
     assert_eq!(token_amount(&svm, &bk.holding), 400_000, "only the 80% burn-share left insurance");
     assert_eq!(token_amount(&svm, &env.perc_vault), 1_100_000, "20% retained stays in insurance");
