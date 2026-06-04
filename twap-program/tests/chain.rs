@@ -1064,8 +1064,8 @@ fn gv_config_pda_e2e(coin_mint: &Pubkey, pool: &Pubkey) -> Pubkey {
 }
 fn gv_id_e2e() -> Pubkey { Pubkey::from_str("GenesisVote11111111111111111111111111111111").unwrap() }
 fn dist_id_e2e() -> Pubkey { Pubkey::from_str("D1str1but1on11111111111111111111111111111111").unwrap() }
-fn dist_config_pda_e2e(coin_mint: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref()], &dist_id_e2e()).0
+fn dist_config_pda_e2e(coin_mint: &Pubkey, authority: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref(), authority.as_ref()], &dist_id_e2e()).0
 }
 
 fn create_real_mint(svm: &mut LiteSVM, payer: &Keypair, authority: &Pubkey) -> Pubkey {
@@ -1628,7 +1628,7 @@ fn e2e_fresh_position_has_no_vote_weight() {
     set_token(&mut svm, &perc_vault, &collateral_mint, &vault_authority, 0);
     let pool = sub_pool_pda(&collateral_mint, 0, &slab, &perc_id());
     let gv_config = gv_config_pda_e2e(&coin_mint, &pool);
-    let dist_config = dist_config_pda_e2e(&coin_mint);
+    let dist_config = dist_config_pda_e2e(&coin_mint, &gv_config);
 
     let mut dp = vec![3u8]; dp.extend_from_slice(&0u64.to_le_bytes()); dp.push(0);
     let init_pool = Instruction { program_id: sub_id(), accounts: vec![
@@ -1809,7 +1809,7 @@ fn setup_genesis(svm: &mut LiteSVM, payer: &Keypair) -> GenesisEnv {
     set_token(svm, &perc_vault, &collateral_mint, &vault_authority, 0);
     let pool = sub_pool_pda(&collateral_mint, 0, &slab, &perc_id());
     let gv_config = gv_config_pda_e2e(&coin_mint, &pool);
-    let dist_config = dist_config_pda_e2e(&coin_mint);
+    let dist_config = dist_config_pda_e2e(&coin_mint, &gv_config);
     let mut dp = vec![3u8]; dp.extend_from_slice(&0u64.to_le_bytes()); dp.push(0);
     let init_pool = Instruction { program_id: sub_id(), accounts: vec![
         AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(collateral_mint, false), AccountMeta::new(pool, false),
@@ -3160,7 +3160,7 @@ fn e2e_full_genesis_to_buy_burn() {
 
     let pool = sub_pool_pda(&collateral_mint, 0, &slab, &perc_id());
     let gv_config = gv_config_pda_e2e(&coin_mint, &pool);
-    let dist_config = dist_config_pda_e2e(&coin_mint);
+    let dist_config = dist_config_pda_e2e(&coin_mint, &gv_config);
 
     // subledger insurance pool (vote_authority = gv config PDA, per finding R).
     let mut d = vec![3u8];

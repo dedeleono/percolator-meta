@@ -49,8 +49,15 @@ const IX_BURN_UNCLAIMED: u8 = 5;
 #[cfg(not(feature = "no-entrypoint"))]
 solana_program::entrypoint!(process_instruction);
 
-fn config_seeds<'a>(coin_mint: &'a Pubkey) -> [&'a [u8]; 2] {
-    [b"dist_config", coin_mint.as_ref()]
+// The config PDA binds the AUTHORITY into its seed (finding P/AA), not just the coin_mint.
+// Otherwise init_config was front-run squattable: an attacker could init the per-mint config FIRST
+// with authority=themselves AND the deployer's already-funded vault (owned by the deterministic
+// PDA) — then seal a self-dealing proposal and CLAIM the entire COIN supply (theft). By folding the
+// authority into the seed, an attacker's authority lands at a DIFFERENT PDA whose vault they must
+// own + fund themselves (impossible without the COIN), so the legit (authority = gv config PDA)
+// config + funded vault are untouchable.
+fn config_seeds<'a>(coin_mint: &'a Pubkey, authority: &'a Pubkey) -> [&'a [u8]; 3] {
+    [b"dist_config", coin_mint.as_ref(), authority.as_ref()]
 }
 
 fn proposal_seeds<'a>(config: &'a Pubkey, id: &'a [u8; 8]) -> [&'a [u8]; 3] {
@@ -236,7 +243,7 @@ fn init_config(program_id: &Pubkey, accounts: &[AccountInfo], mut data: &[u8]) -
     }
 
     let (expected_config, bump) =
-        Pubkey::find_program_address(&config_seeds(coin_mint.key), program_id);
+        Pubkey::find_program_address(&config_seeds(coin_mint.key, authority.key), program_id);
     if *config_account.key != expected_config {
         return Err(ProgramError::InvalidSeeds);
     }
@@ -279,7 +286,7 @@ fn init_config(program_id: &Pubkey, accounts: &[AccountInfo], mut data: &[u8]) -
 
     let rent = solana_program::rent::Rent::get()?;
     let bump_arr = [bump];
-    let seeds: [&[u8]; 3] = [b"dist_config", coin_mint.key.as_ref(), &bump_arr];
+    let seeds: [&[u8]; 4] = [b"dist_config", coin_mint.key.as_ref(), authority.key.as_ref(), &bump_arr];
     invoke_signed(
         &system_instruction::create_account(
             payer.key,
@@ -526,7 +533,7 @@ fn claim(program_id: &Pubkey, accounts: &[AccountInfo], mut data: &[u8]) -> Prog
     }
 
     let bump_arr = [config.bump];
-    let seeds: [&[u8]; 3] = [b"dist_config", config.coin_mint.as_ref(), &bump_arr];
+    let seeds: [&[u8]; 4] = [b"dist_config", config.coin_mint.as_ref(), config.authority.as_ref(), &bump_arr];
     invoke_signed(
         &spl_token::instruction::transfer(
             token_program.key,
@@ -585,7 +592,7 @@ fn burn_unclaimed(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) ->
     let remaining = token_balance(vault, &config.coin_mint)?;
     if remaining > 0 {
         let bump_arr = [config.bump];
-        let seeds: [&[u8]; 3] = [b"dist_config", config.coin_mint.as_ref(), &bump_arr];
+        let seeds: [&[u8]; 4] = [b"dist_config", config.coin_mint.as_ref(), config.authority.as_ref(), &bump_arr];
         invoke_signed(
             &spl_token::instruction::burn(
                 token_program.key,

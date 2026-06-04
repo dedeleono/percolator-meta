@@ -68,6 +68,24 @@ sealed distribution is exactly what voters approved. Both guards were untested; 
 (all 4 genesis binaries) by `e2e_bait_and_switch_appended_entries_cannot_be_sealed` (community entry
 50/100, redirect 50 appends within supply, trigger rejected, dist config left unsealed).
 
+### [FIXED] AA. Distribution init front-run → THEFT of the entire COIN supply (distribution) — probe #7
+HIGH severity. The dist config PDA was `["dist_config", coin_mint]` (deterministic, authority NOT in
+the seed). The funded vault is owned by that deterministic PDA. So an attacker who front-runs
+`init_config` AFTER the deployer funds the vault could init the config with **authority=themselves**
+and pass the deployer's already-funded vault (all guards pass: vault owned by the PDA, mint.supply ==
+total_supply, mint revoked, solvency) — then seal a self-dealing proposal (signing as authority) and
+CLAIM the entire COIN supply. (My probe-#5 note that this was "DOS-only" was WRONG: using the funded
+vault makes it a theft.) This is the finding-P/Q/R class (init front-run) but UNBOUND here and the
+highest impact — the genesis COIN IS the MetaDAO.
+FIX: bind `authority` into the config PDA seed — `["dist_config", coin_mint, authority]`. An
+attacker's authority now derives a DIFFERENT PDA whose vault they must own + fund themselves
+(impossible without the COIN), so the legit (authority = gv config PDA) config + funded vault are
+untouchable. Updated all 4 program sites (config_seeds + the create_account + claim/burn_unclaimed
+CPI signer seeds) and every PDA derivation in the tests. Pinned by
+`init_config_authority_bound_blocks_funded_vault_hijack` (attacker's init over the legit funded vault
+rejected, supply intact; legit init succeeds). All suites green (dist 4+8, chain 39 incl. the full
+genesis→buy-burn E2E which now uses the bound derivation).
+
 ### [DESIGN] U. Buy/burn uniform-price (Dutch) auction — invariants (twap-program)
 The COIN buy/burn settlement is a permissionless, time-boxed uniform-price auction (twap-program
 tags 5-11). Security properties, each pinned by a chain.rs e2e against the real binaries:
