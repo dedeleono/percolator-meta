@@ -4,6 +4,27 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 
 ## Analyzed
 
+### [FIXED] AI. Lamport pre-fund permanently bricks every init (whole stack) — cheap griefing DOS
+REAL bug (HIGH), found via the PDA-creation discussion. Every init handler creates its PDA with the
+System `create_account`, which aborts with `AccountAlreadyInUse` (Custom(0)) on ANY pre-existing
+lamports — AND the handlers additionally guard `if lamports() != 0 -> AlreadyInitialized`. A PDA
+address is deterministic and public; a plain `transfer` to it needs NO signature. So an attacker
+sends 1 lamport to the address BEFORE the legit init and that init can NEVER succeed: the guard (and
+then create_account) reject it forever, and the lamports can't be swept (no one can sign for a
+system-owned PDA). Confirmed end-to-end against the real subledger binary
+(`lamport_prefund_cannot_brick_insurance_pool_init`): dusting the pool PDA made init fail first with
+the handler's own `AccountAlreadyInitialized`, and after relaxing that guard, with the System
+program's "account ... already in use" — BOTH causes proven empirically. Impact is critical on the
+genesis path: dusting the deterministic subledger POOL PDA bricks the whole bootstrap, and dusting a
+depositor's deterministic POSITION PDA bricks that specific user's first deposit (targeted LOF/DOS).
+FIX: `create_pda_robust` — reject re-init by `data_len() != 0` (NOT lamports), then top up the rent
+shortfall with a plain `transfer` and `allocate` + `assign` via invoke_signed; allocate/assign only
+require the account to be data-empty + system-owned, both true for a merely pre-funded address, so the
+dust is absorbed instead of fatal. Applied to all subledger create sites (insurance + own-vault pool
+inits, both position inits). The test now passes (init succeeds despite the dust). The SAME pattern
+must extend to the other init handlers (genesis-vote config/proposal/ballot, distribution
+config/proposal, twap config/book) — tracked as follow-up in the same finding.
+
 ### [VERIFIED] AH. Buyback-vs-burn is DAO-controllable ONLY via Squads (twap) — not via permissionless init
 Design confirmation prompted by the futarchy->Squads->twap authority arm: the buy/burn SINK MODE
 (burn vs buyback-to-treasury) and its destination must be settable AND changeable by the futarchy

@@ -809,6 +809,31 @@ fn impaired_insurance_exit_is_pro_rata() {
     assert_eq!(env.token_amount(&env.perc_vault.clone()), 0, "impaired insurance fully and fairly distributed");
 }
 
+// LAMPORT PRE-FUND INIT-DOS (finding AI): every init handler creates its PDA with the System
+// `create_account`, which FAILS with AccountAlreadyInUse if the destination already holds ANY
+// lamports — and the handlers additionally guard `lamports() != 0 -> AlreadyInitialized`. An attacker
+// can transfer 1 lamport to the deterministic pool PDA (a transfer needs NO destination signature)
+// BEFORE the genesis init, permanently bricking init_insurance_pool — and with it the whole genesis,
+// since the lamports can never be swept (no one can sign for a system-owned PDA, and the legit init
+// keeps rejecting). The robust create (top-up the rent shortfall, then allocate + assign via
+// invoke_signed) tolerates the pre-funding because allocate/assign only require data-empty +
+// system-owned, not zero lamports. This test dusts the PDA and asserts init STILL succeeds.
+#[test]
+fn lamport_prefund_cannot_brick_insurance_pool_init() {
+    let mut env = Env::new();
+    env.svm.set_account(env.pool, Account {
+        lamports: 1, // attacker dust
+        data: vec![],
+        owner: solana_sdk::system_program::ID,
+        executable: false,
+        rent_epoch: 0,
+    }).unwrap();
+    env.init_insurance_pool(); // must still succeed (robust create handles the pre-funded PDA)
+    let acc = env.svm.get_account(&env.pool).unwrap();
+    assert_eq!(acc.owner, sub_id(), "pool created + owned by subledger despite the dust");
+    assert!(acc.data.len() >= 88, "pool data initialized");
+}
+
 // CROSS-MARKET HAIRCUT-BASIS SUBSTITUTION (LOF): the pro-rata exit reads the live insurance basis
 // from the passed market_slab (findings L + T). If a depositor in an IMPAIRED pool could pass a
 // DIFFERENT, HEALTHY market's slab, payout() would read that market's full insurance and treat the

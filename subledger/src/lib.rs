@@ -400,7 +400,7 @@ fn process_init_pool(
     if *pool_account.key != expected_pool {
         return Err(ProgramError::InvalidSeeds);
     }
-    if pool_account.lamports() != 0 || pool_account.data_len() != 0 {
+    if pool_account.data_len() != 0 {
         return Err(ProgramError::AccountAlreadyInitialized);
     }
 
@@ -411,8 +411,6 @@ fn process_init_pool(
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let rent = solana_program::rent::Rent::get()?;
-    let lamports = rent.minimum_balance(POOL_SIZE);
     let bump_arr = [bump];
     let seeds: [&[u8]; 6] = [
         b"subledger_pool",
@@ -422,17 +420,7 @@ fn process_init_pool(
         no_market.as_ref(),
         &bump_arr,
     ];
-    invoke_signed(
-        &system_instruction::create_account(
-            payer.key,
-            pool_account.key,
-            lamports,
-            POOL_SIZE as u64,
-            program_id,
-        ),
-        &[payer.clone(), pool_account.clone(), system_program.clone()],
-        &[&seeds],
-    )?;
+    create_pda_robust(payer, pool_account, system_program, program_id, &seeds, POOL_SIZE)?;
 
     let pool = Pool {
         mint: *mint.key,
@@ -500,9 +488,7 @@ fn process_deposit(
     if *position_account.key != expected_pos {
         return Err(ProgramError::InvalidSeeds);
     }
-    let mut position = if position_account.data_len() == 0 || position_account.lamports() == 0 {
-        let rent = solana_program::rent::Rent::get()?;
-        let lamports = rent.minimum_balance(POSITION_SIZE);
+    let mut position = if position_account.data_len() == 0 {
         let bump_arr = [pos_bump];
         let seeds: [&[u8]; 4] = [
             b"subledger_position",
@@ -510,17 +496,7 @@ fn process_deposit(
             owner.key.as_ref(),
             &bump_arr,
         ];
-        invoke_signed(
-            &system_instruction::create_account(
-                owner.key,
-                position_account.key,
-                lamports,
-                POSITION_SIZE as u64,
-                program_id,
-            ),
-            &[owner.clone(), position_account.clone(), system_program.clone()],
-            &[&seeds],
-        )?;
+        create_pda_robust(owner, position_account, system_program, program_id, &seeds, POSITION_SIZE)?;
         Position {
             pool: *pool_account.key,
             owner: *owner.key,
@@ -688,6 +664,43 @@ fn perc_vault_authority(market_slab: &Pubkey, percolator_program: &Pubkey) -> Pu
     Pubkey::find_program_address(&[b"vault", market_slab.as_ref()], percolator_program).0
 }
 
+/// Create a program-owned PDA, tolerating an attacker pre-funding the (deterministic) address.
+/// System `create_account` aborts with AccountAlreadyInUse on ANY pre-existing lamports, so a 1-
+/// lamport transfer to the address — which needs no signature — would PERMANENTLY brick init (the
+/// lamports can never be swept from a system-owned PDA). Instead top up the rent shortfall (a plain
+/// transfer) then allocate + assign via invoke_signed; allocate/assign only require the account to be
+/// data-empty + system-owned, both true for a merely pre-funded address. Callers must still reject an
+/// already-initialized account up front via `data_len() != 0` (NOT `lamports() != 0`). (finding AI)
+fn create_pda_robust<'a>(
+    payer: &AccountInfo<'a>,
+    account: &AccountInfo<'a>,
+    system_program: &AccountInfo<'a>,
+    program_id: &Pubkey,
+    seeds: &[&[u8]],
+    size: usize,
+) -> ProgramResult {
+    let rent = solana_program::rent::Rent::get()?;
+    let required = rent.minimum_balance(size);
+    let current = account.lamports();
+    if current < required {
+        invoke(
+            &system_instruction::transfer(payer.key, account.key, required - current),
+            &[payer.clone(), account.clone(), system_program.clone()],
+        )?;
+    }
+    invoke_signed(
+        &system_instruction::allocate(account.key, size as u64),
+        &[account.clone(), system_program.clone()],
+        &[seeds],
+    )?;
+    invoke_signed(
+        &system_instruction::assign(account.key, program_id),
+        &[account.clone(), system_program.clone()],
+        &[seeds],
+    )?;
+    Ok(())
+}
+
 // init_insurance_pool accounts: [payer(s,w), mint, pool(w,pda), percolator_vault,
 //   market_slab, percolator_program, system_program, vote_authority]
 // data: asset_id (u64), policy (u8)
@@ -737,7 +750,7 @@ fn process_init_insurance_pool(
     if *pool_account.key != expected_pool {
         return Err(ProgramError::InvalidSeeds);
     }
-    if pool_account.lamports() != 0 || pool_account.data_len() != 0 {
+    if pool_account.data_len() != 0 {
         return Err(ProgramError::AccountAlreadyInitialized);
     }
 
@@ -757,8 +770,6 @@ fn process_init_insurance_pool(
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let rent = solana_program::rent::Rent::get()?;
-    let lamports = rent.minimum_balance(POOL_SIZE);
     let bump_arr = [bump];
     let seeds: [&[u8]; 6] = [
         b"subledger_pool",
@@ -768,17 +779,7 @@ fn process_init_insurance_pool(
         percolator_program.key.as_ref(),
         &bump_arr,
     ];
-    invoke_signed(
-        &system_instruction::create_account(
-            payer.key,
-            pool_account.key,
-            lamports,
-            POOL_SIZE as u64,
-            program_id,
-        ),
-        &[payer.clone(), pool_account.clone(), system_program.clone()],
-        &[&seeds],
-    )?;
+    create_pda_robust(payer, pool_account, system_program, program_id, &seeds, POOL_SIZE)?;
 
     let pool = Pool {
         mint: *mint.key,
@@ -860,9 +861,7 @@ fn process_insurance_deposit(
     if *position_account.key != expected_pos {
         return Err(ProgramError::InvalidSeeds);
     }
-    let mut position = if position_account.data_len() == 0 || position_account.lamports() == 0 {
-        let rent = solana_program::rent::Rent::get()?;
-        let lamports = rent.minimum_balance(POSITION_SIZE);
+    let mut position = if position_account.data_len() == 0 {
         let pbump = [pos_bump];
         let seeds: [&[u8]; 4] = [
             b"subledger_position",
@@ -870,17 +869,7 @@ fn process_insurance_deposit(
             owner.key.as_ref(),
             &pbump,
         ];
-        invoke_signed(
-            &system_instruction::create_account(
-                owner.key,
-                position_account.key,
-                lamports,
-                POSITION_SIZE as u64,
-                program_id,
-            ),
-            &[owner.clone(), position_account.clone(), system_program.clone()],
-            &[&seeds],
-        )?;
+        create_pda_robust(owner, position_account, system_program, program_id, &seeds, POSITION_SIZE)?;
         Position {
             pool: *pool_account.key,
             owner: *owner.key,
