@@ -27,6 +27,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED-COVERED] gv->distribution offsets verified — completes the finding-T-family cross-program audit
+Closed the last raw-byte-offset cross-program read I had not explicitly checked: genesis-vote reads the
+distribution proposal by hardcoded offsets in register_proposal (creator-binding + snapshot) and trigger
+(bait-and-switch snapshot). Cross-checked ALL of them against the REAL distribution ProposalHeader
+(distribution/src/lib.rs): disc `DISTPRP1` @ [0..8], config [8..40], creator [48..80], entry_count [84..88],
+total_amount [88..96] — gv reads (lib.rs:456/459/470/474-475/727-728) MATCH exactly. e2e-validated: the
+full-genesis chain/subledger tests create REAL distribution proposals via the real distribution program, so a
+distribution layout drift would make register/trigger mis-read and fail (drift-catching — unlike the
+hand-edited percolator slab, no separate canary is required).
+This completes the finding-T-family audit of every cross-program raw-offset read:
+  twap->percolator insurance@749     — own offset_of! canary (e2e hand-edits, canary required)
+  subledger->percolator insurance@749 — own offset_of! canary (e2e hand-edits, canary required)
+  gv->subledger Position/Pool         — e2e-validated with real positions (drift-catching)
+  gv->distribution ProposalHeader     — e2e-validated with real proposals (drift-catching)
+Verdict: every foreign-struct raw-offset read is either canaried against the real struct or e2e-validated
+with real data; no silent-drift gap. No code change, no new test.
+
 ### [VERIFIED-COVERED] Deposit/withdraw validation-parity sweep complete — holding was the only asymmetry
 Swept the paired subledger operations for validation asymmetries (the class that surfaced the deposit-holding
 hardening below — the kind the external auditor flags):
