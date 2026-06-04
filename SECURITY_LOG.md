@@ -106,6 +106,22 @@ bypass retract (which would re-open finding B). genesis-vote `vote` propagates t
 voter's signature into the SetVoteLock CPI. Test (KEPT, real-percolator e2e):
 insurance_percolator.rs::hostile_vote_authority_cannot_freeze_a_depositor.
 
+### [FIXED] H. genesis-vote init_config didn't bind its wired dependencies
+`init_config` stored `distribution_config` and `subledger_pool` as-is, with NO
+check that they bind back to the config being created. An honest orchestrator could
+thus wire the genesis to a poisoned/foreign pool or distribution config (e.g. the
+front-run pool of finding G), silently bricking it: a subledger pool whose
+vote_authority != this config PDA makes every vote's SetVoteLock CPI fail (no one
+can vote), and a distribution config whose seal authority != this config PDA (or
+for another mint) makes trigger's SealWinner always fail (finalize DOS). FIX: init
+now requires, for this coin_mint, that (a) distribution_config is a real DISTCFG1
+owned by distribution_program with coin_mint match and authority == config PDA, and
+(b) subledger_pool is a real SUBPOOL1 owned by subledger_program with mint match and
+vote_authority == config PDA. The config can only be created against dependencies
+that recognize it — fail-fast at init instead of a mysterious brick at vote/trigger.
+Complements finding G (G stops the freeze; H stops building on a poisoned pool).
+Test (KEPT): seal.rs::init_config_rejects_pool_not_bound_to_this_config.
+
 ### [BLOCKED] vote_weight arithmetic overflow (genesis-vote)
 `vote_weight = floor(log2(age)) * principal` uses `saturating_mul` (no wrap/panic)
 and accumulation uses `checked_add` (graceful error). Saturating to u64::MAX needs

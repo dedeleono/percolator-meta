@@ -61,7 +61,29 @@ impl Env {
         let mut env = Env { svm, payer, coin_mint, mint_auth, gv_config, dist_config, vault, sub_pid, sub_pool };
         env.set_pool_outstanding(0);
         env.init_distribution();
-        env.init_gv();
+        env.init_gv().expect("gv init");
+        env
+    }
+
+    /// Everything except the genesis-vote InitConfig (so a test can poison a wired
+    /// dependency and assert init refuses to bind to it).
+    fn new_unwired() -> Self {
+        let mut svm = LiteSVM::new();
+        svm.add_program_from_file(gv_id(), so("genesis_vote_program")).unwrap();
+        svm.add_program_from_file(dist_id(), so("distribution_program")).unwrap();
+        let payer = Keypair::new();
+        svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+        let mint_auth = Keypair::new();
+        let coin_mint = create_mint(&mut svm, &payer, &mint_auth.pubkey());
+        let gv_config = Pubkey::find_program_address(&[b"gv_config", coin_mint.as_ref()], &gv_id()).0;
+        let dist_config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref()], &dist_id()).0;
+        let vault = create_token_account(&mut svm, &payer, &coin_mint, &dist_config);
+        mint_to(&mut svm, &payer, &coin_mint, &mint_auth, &vault, 100);
+        let sub_pid = Pubkey::new_from_array([7u8; 32]);
+        let sub_pool = Pubkey::new_from_array([8u8; 32]);
+        let mut env = Env { svm, payer, coin_mint, mint_auth, gv_config, dist_config, vault, sub_pid, sub_pool };
+        env.set_pool_outstanding(0);
+        env.init_distribution();
         env
     }
 
@@ -69,9 +91,14 @@ impl Env {
     /// subledger program) with the given `outstanding_principal` at offset 80..88
     /// and the SUBPOOL1 discriminator. This is what the trigger reads live.
     fn set_pool_outstanding(&mut self, outstanding: u64) {
-        let mut data = vec![0u8; 160];
+        // 192-byte SUBPOOL1: mint at [8..40], outstanding at [80..88], and the
+        // vote_authority at [160..192] = this gv config PDA (init_config now binds
+        // the pool to the config, so the fixture must satisfy that).
+        let mut data = vec![0u8; 192];
         data[..8].copy_from_slice(b"SUBPOOL1");
+        data[8..40].copy_from_slice(self.coin_mint.as_ref());
         data[80..88].copy_from_slice(&outstanding.to_le_bytes());
+        data[160..192].copy_from_slice(self.gv_config.as_ref());
         let acc = solana_sdk::account::Account {
             lamports: 1_000_000,
             data,
@@ -152,7 +179,7 @@ impl Env {
         proposal
     }
 
-    fn init_gv(&mut self) {
+    fn init_gv(&mut self) -> Result<(), String> {
         let dummy = Pubkey::new_unique();
         let ix = Instruction {
             program_id: gv_id(),
@@ -169,7 +196,15 @@ impl Env {
             ],
             data: vec![0u8],
         };
-        self.send(&[ix], &[]).expect("gv init");
+        self.send(&[ix], &[])
+    }
+
+    /// Overwrite the fake pool's vote_authority (bytes 160..192) with an arbitrary
+    /// key, leaving everything else valid.
+    fn poison_pool_vote_authority(&mut self, bad: &Pubkey) {
+        let mut acc = self.svm.get_account(&self.sub_pool).unwrap();
+        acc.data[160..192].copy_from_slice(bad.as_ref());
+        self.svm.set_account(self.sub_pool, acc).unwrap();
     }
 
     fn gv_proposal_pda(&self, dist_proposal: &Pubkey) -> Pubkey {
@@ -314,4 +349,24 @@ fn trigger_uses_live_pool_outstanding_not_stale_cache() {
     env.set_pool_outstanding(10);
     env.trigger(&gv_proposal, &dist_proposal).expect("trigger seals at real quorum");
     assert_eq!(env.dist_sealed_proposal(), dist_proposal);
+}
+
+// Setup-integrity: InitConfig must refuse to wire the genesis to a subledger pool
+// whose vote_authority is NOT this config's PDA. Otherwise an honest orchestrator
+// could bind to a poisoned/foreign pool (cf. finding G): votes' SetVoteLock CPI
+// would fail (vote_authority mismatch), bricking the whole genesis. Failing fast at
+// init makes the misconfiguration impossible to miss.
+#[test]
+fn init_config_rejects_pool_not_bound_to_this_config() {
+    let mut env = Env::new_unwired();
+
+    // Pool's vote_authority is an attacker key, not this gv config PDA.
+    let attacker = Pubkey::new_unique();
+    env.poison_pool_vote_authority(&attacker);
+    assert!(env.init_gv().is_err(), "must refuse a pool not bound to this config");
+
+    // Repair the binding -> init now succeeds.
+    let gv = env.gv_config;
+    env.poison_pool_vote_authority(&gv);
+    env.init_gv().expect("a correctly-bound pool is accepted");
 }

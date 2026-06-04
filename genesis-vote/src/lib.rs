@@ -56,6 +56,8 @@ const SUB_POOL_DISC: [u8; 8] = *b"SUBPOOL1";
 // Distribution proposal: disc[8], config[8..40]. Used to bind a registered vote to
 // the genesis's OWN distribution config (so a winning vote is always sealable).
 const DIST_PROPOSAL_DISC: [u8; 8] = *b"DISTPRP1";
+// Distribution config: disc[8], coin_mint[8..40], vault[40..72], authority[72..104].
+const DIST_CONFIG_DISC: [u8; 8] = *b"DISTCFG1";
 
 // Distribution program: SealWinner.
 const DIST_IX_SEAL_WINNER: u8 = 3;
@@ -323,6 +325,40 @@ fn init_config<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>]) -> Prog
     if config_account.lamports() != 0 || config_account.data_len() != 0 {
         return Err(ProgramError::AccountAlreadyInitialized);
     }
+
+    // Bind the wired dependencies back to THIS config so a genesis can never be
+    // built on poisoned or foreign accounts. Without these, an honest orchestrator
+    // could unknowingly point the config at:
+    //  - a subledger pool whose vote_authority is NOT this config PDA -> every vote's
+    //    SetVoteLock CPI fails -> voting bricks (and the pool may be attacker-set,
+    //    cf. finding G); or
+    //  - a distribution config whose seal authority is NOT this config PDA, or for a
+    //    different mint -> trigger's SealWinner can never succeed -> finalize DOS.
+    // The config PDA (`expected`) must be the distribution seal authority AND the
+    // subledger pool's vote_authority, both for this coin_mint.
+    {
+        let dc = distribution_config.try_borrow_data()?;
+        if distribution_config.owner != distribution_program.key
+            || dc.len() < 104
+            || dc[..8] != DIST_CONFIG_DISC
+            || Pubkey::new_from_array(dc[8..40].try_into().unwrap()) != *coin_mint.key
+            || Pubkey::new_from_array(dc[72..104].try_into().unwrap()) != expected
+        {
+            return Err(ProgramError::InvalidAccountData);
+        }
+    }
+    {
+        let sp = subledger_pool.try_borrow_data()?;
+        if subledger_pool.owner != subledger_program.key
+            || sp.len() < 192
+            || sp[..8] != SUB_POOL_DISC
+            || Pubkey::new_from_array(sp[8..40].try_into().unwrap()) != *coin_mint.key
+            || Pubkey::new_from_array(sp[160..192].try_into().unwrap()) != expected
+        {
+            return Err(ProgramError::InvalidAccountData);
+        }
+    }
+
     let bump_arr = [bump];
     let seeds: [&[u8]; 3] = [b"gv_config", coin_mint.key.as_ref(), &bump_arr];
     create_pda(payer, config_account, system_program, program_id, &seeds, CONFIG_SIZE)?;
