@@ -908,6 +908,12 @@ fn process_init_book(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
     // In SEND mode, validate + record the COIN sink (a COIN token account); BURN mode ignores it.
     let coin_sink_key = if sink_mode == SINK_SEND {
         let coin_sink = next_account_info(iter)?;
+        // The sink must be EXTERNAL to the auction — never the shared coin_escrow (which is also a
+        // coin-mint account), or execute's SEND would loop escrow -> escrow and strand the bought
+        // COIN forever. (finding AS)
+        if *coin_sink.key == *coin_escrow.key {
+            return Err(ProgramError::InvalidAccountData);
+        }
         let s = spl_token::state::Account::unpack(&coin_sink.try_borrow_data()?)?;
         if s.mint != *coin_mint.key {
             return Err(ProgramError::InvalidAccountData);
@@ -1012,6 +1018,13 @@ fn process_set_coin_sink(program_id: &Pubkey, accounts: &[AccountInfo], data: &[
     }
     let sink_key = if sink_mode == SINK_SEND {
         let coin_sink = next_account_info(iter)?;
+        // The sink must be EXTERNAL to the auction. The shared coin_escrow is also a coin-mint
+        // account, so without this a SEND sink set to it would make execute's transfer a no-op
+        // (escrow -> escrow), silently STRANDING every bought COIN in the escrow forever (fixed
+        // supply) instead of reaching the treasury — the buyback nullified. (finding AS)
+        if *coin_sink.key == book.coin_escrow {
+            return Err(ProgramError::InvalidAccountData);
+        }
         let s = spl_token::state::Account::unpack(&coin_sink.try_borrow_data()?)?;
         if s.mint != book.coin_mint {
             return Err(ProgramError::InvalidAccountData);

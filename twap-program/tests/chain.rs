@@ -4672,3 +4672,42 @@ fn e2e_parasite_config_on_same_market_cannot_drain_insurance() {
     assert_eq!(token_amount(&svm, &env.perc_vault), insurance_before, "victim insurance fully intact");
     assert_eq!(token_amount(&svm, &holding_a), 0, "parasite pulled nothing");
 }
+
+// SELF-LOOP SINK (finding AS): the SEND (buyback) sink must be EXTERNAL to the auction. The shared
+// coin_escrow is also a coin-mint account, so a sink set to it would make execute's SEND transfer a
+// no-op (escrow -> escrow) and silently STRAND every bought COIN in the escrow forever (fixed supply)
+// instead of reaching the treasury. set_coin_sink (and init_book) must reject coin_sink == coin_escrow.
+#[test]
+fn e2e_send_sink_cannot_be_the_coin_escrow() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0 /* BURN */, None, 0); // Squads tx idx 5
+
+    // ATTACK: flip to SEND with the sink pointed at the shared coin_escrow (would strand bought COIN).
+    let bad = build_set_coin_sink_send_message(&env.squads_vault, &env.twap_cfg, &bk.book, &bk.coin_escrow);
+    let bad_rem = vec![
+        AccountMeta::new_readonly(env.squads_vault, false), AccountMeta::new(bk.book, false),
+        AccountMeta::new_readonly(env.twap_cfg, false), AccountMeta::new_readonly(bk.coin_escrow, false),
+        AccountMeta::new_readonly(twap_id(), false),
+    ];
+    assert!(squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 6, &bad, &bad_rem).is_err(),
+        "SEND sink == coin_escrow must be rejected (self-loop strands the buyback)");
+
+    // A genuine EXTERNAL treasury is accepted.
+    let treasury = Pubkey::new_unique();
+    set_token(&mut svm, &treasury, &env.coin_mint, &payer.pubkey(), 0);
+    let ok = build_set_coin_sink_send_message(&env.squads_vault, &env.twap_cfg, &bk.book, &treasury);
+    let ok_rem = vec![
+        AccountMeta::new_readonly(env.squads_vault, false), AccountMeta::new(bk.book, false),
+        AccountMeta::new_readonly(env.twap_cfg, false), AccountMeta::new_readonly(treasury, false),
+        AccountMeta::new_readonly(twap_id(), false),
+    ];
+    squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 7, &ok, &ok_rem).expect("external treasury sink accepted");
+}

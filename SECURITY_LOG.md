@@ -4,6 +4,20 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 
 ## Analyzed
 
+### [FIXED] AS. SEND (buyback) sink could be set to the coin_escrow — self-loop strands the buyback
+Duplicate-account self-loop. `set_coin_sink` and `init_book` validated only `coin_sink.mint ==
+coin_mint`, but the shared COIN escrow (`coin_escrow`) is ALSO a coin-mint account. If a SEND-mode sink
+were set to it, `execute`'s SEND step does `spl_transfer(coin_escrow -> coin_sink, total_coin)` =
+escrow -> escrow, a no-op: the bought COIN stays in the escrow and is STRANDED forever (a fixed-supply
+COIN, and the escrow only ever pays bidders' recorded `coin_refund`), so the DAO's buyback is silently
+nullified and the COIN is locked. Not an external-attacker LOF (the sink is Squads-vault-gated +
+timelock'd), but a real correctness loss reachable via a buggy proposal-generation tool or a confused
+DAO. FIX: both `set_coin_sink` and `init_book` now reject `coin_sink == coin_escrow` in SEND mode (the
+other internal token accounts — settlement_usd, holding — are already excluded by the
+`mint == coin_mint` check, being collateral-mint). Pinned by `e2e_send_sink_cannot_be_the_coin_escrow`:
+flipping to SEND with the sink == coin_escrow is rejected via Squads, while a genuine external treasury
+sink is accepted. 57 chain tests green.
+
 ### [STATE] Tick constrained by a broken read-only sibling — six-binary e2e unbuildable
 The `percolator-prog` sibling (read-only to this repo) is mid-edit and currently fails to compile
 (`error[E0308]` in `src/v16_program.rs`, uncommitted). The two e2e harnesses that link percolator's
