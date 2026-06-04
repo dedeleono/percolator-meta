@@ -1279,3 +1279,50 @@ fn init_insurance_pool_rejects_non_canonical_vault() {
     assert!(env.svm.get_account(&env.pool).map_or(true, |a| a.data.is_empty()));
     env.init_insurance_pool();
 }
+
+// Verify the percolator UpdateAssetAuthority encoding the TWAP handoff bridge
+// (twap-program IX_ACCEPT_OPERATOR) relies on — tag 65, asset_index 0,
+// kind=INSURANCE_OPERATOR(2), accounts [current(signer), new(signer), market(w)] —
+// against the REAL percolator binary, so the handoff can't silently fail.
+#[test]
+fn percolator_update_asset_authority_operator_encoding_is_accepted() {
+    let mut svm = LiteSVM::new().with_compute_budget(ComputeBudget {
+        compute_unit_limit: 1_400_000,
+        heap_size: 256 * 1024,
+        ..ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let mint_auth = Keypair::new();
+    let mint = create_mint(&mut svm, &payer, &mint_auth.pubkey());
+
+    let admin = Keypair::new(); // marketauth -> asset-0 asset_admin
+    let slab = Pubkey::new_unique();
+    let init_slot = 100u64;
+    let slab_data = make_live_market(&slab, &mint, &admin.pubkey(), init_slot);
+    svm.set_account(
+        slab,
+        Account { lamports: 1_000_000_000, data: slab_data, owner: perc_id(), executable: false, rent_epoch: 0 },
+    )
+    .unwrap();
+    svm.set_sysvar(&Clock { slot: init_slot, unix_timestamp: 100, ..Clock::default() });
+
+    let new_op = Keypair::new();
+    let mut data = vec![65u8]; // IX_UPDATE_ASSET_AUTHORITY
+    data.extend_from_slice(&0u16.to_le_bytes()); // asset_index 0
+    data.push(2u8); // ASSET_AUTH_INSURANCE_OPERATOR
+    data.extend_from_slice(new_op.pubkey().as_ref());
+    let ix = Instruction {
+        program_id: perc_id(),
+        accounts: vec![
+            AccountMeta::new_readonly(admin.pubkey(), true),
+            AccountMeta::new_readonly(new_op.pubkey(), true),
+            AccountMeta::new(slab, false),
+        ],
+        data,
+    };
+    let bh = svm.latest_blockhash();
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, &admin, &new_op], bh);
+    svm.send_transaction(tx).expect("real percolator accepts the operator rotation encoding");
+}

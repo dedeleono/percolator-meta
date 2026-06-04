@@ -379,3 +379,16 @@ non-vault signer cannot trigger the rotation; same proven gate as the reconfigur
 keystone). NEXT SLICE: the positive real-percolator e2e — a market with asset_admin
 = the squads vault, squads execute -> accept_operator -> operator rotates
 subledger->twap, and the subledger can no longer withdraw.
+
+### [COVERAGE/OPS] Percolator interface coupling — drift caught + handoff CPI verified
+The genesis is tightly coupled to percolator's exact per-instruction account lists.
+A percolator .so rebuild mid-session silently broke EVERY subledger insurance CPI
+with NotEnoughAccountKeys (the deployed binary briefly wanted more accounts); a later
+rebuild restored it. Operational risk: a percolator upgrade can break the insurance
+CPIs in lockstep — the subledger/twap CPIs must be re-synced on any percolator
+interface change. Now that percolator is back in sync, pinned the TWAP handoff
+bridge's percolator CPI encoding against the REAL binary:
+insurance_percolator.rs::percolator_update_asset_authority_operator_encoding_is_accepted
+(UpdateAssetAuthority tag 65, asset 0, kind INSURANCE_OPERATOR=2, [current(signer),
+new(signer), market(w)] accepted). This both verifies accept_operator's CPI and acts
+as an early-warning canary for future percolator drift on that instruction.
