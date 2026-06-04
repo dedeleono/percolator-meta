@@ -25,6 +25,26 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [SCOPE] Timelock guarantee — enforced at bind, NOT durable; bind surface is complete (follow-up to the FIXED entry)
+Two follow-ups to the init_config time_lock fix below, to bound exactly what the 1-week guarantee covers:
+1. BIND SURFACE COMPLETE: init_config is the ONLY place the twap reads/binds a Squads multisig (sole
+   SQUADS_MULTISIG_DISC + MIN_TIMELOCK_SECS site; squads_multisig is then immutable — it is folded into the
+   config PDA seed). So there is no second, unchecked path that could bind a short-timelock multisig. The
+   subledger pool init has no multisig at all (its vote_authority is the gv config, validated gv-side); it
+   instead pins the canonical percolator insurance vault (F-VAULT: vault.mint==mint && vault.owner==
+   perc_vault_authority(slab)), which transitively validates the slab. No sibling gap.
+2. DURABILITY IS A GOVERNANCE PROPERTY, NOT A CODE GUARANTEE: the multisig's `time_lock` is enforced at
+   bind, but Squads lets the `config_authority` (= the DAO) change multisig config (incl. time_lock) via a
+   CONFIG instruction, which is NOT itself gated by the vault timelock. So the DAO can shorten its own
+   window after the fact; require_squads_vault only checks the vault PDA identity, never the CURRENT
+   time_lock. This is intentional and not a fixable code vuln (the twap cannot police Squads' own config
+   authority, and the elected futarchy IS the config_authority). The 1-week window therefore protects
+   depositors against NON-DAO actors and against a SLOW DAO that doesn't actively reconfigure — NOT against
+   the futarchy deliberately collapsing its own timelock. Documented so future readers/auditors don't assume
+   the on-chain check makes the window tamper-proof against the DAO itself.
+Verdict: no new test (the bind point is already pinned by `twap_config_rejects_a_multisig_below_the_one_week_
+timelock`; the durability limitation is by-design and not a guard to pin). No code change.
+
 ### [FIXED] twap init_config — bound a sub-1-week-timelock Squads multisig, voiding the depositor exit window
 Vector: the security model is DAO -> Squads (1-week timelock) -> TWAP -> percolator insurance. The 1-week
 delay is the depositor-protection window: time to react/exit before any insurance-affecting DAO action lands.
