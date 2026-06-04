@@ -4,6 +4,22 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 
 ## Analyzed
 
+### [BLOCKED] AG. Winner re-seal / winner-take-all override (distribution + genesis-vote)
+Probe: two genesis proposals compete; A reaches a weighted majority and is sealed (COIN becomes
+claimable to A's recipients). Later, vote shifts (retract from A, back B) push B over the majority.
+Can B's permissionless `trigger` re-seal the distribution to B — changing the winner after A's COIN
+is already claimable (double-distribution / theft of the COIN supply)? BLOCKED at two independent
+points: (1) `distribution::seal_winner` is ONE-SHOT — `if config.is_sealed() return Err` (it records
+`sealed_proposal` + `seal_slot` on first seal and refuses any later seal), and `claim` only pays
+`config.sealed_proposal`; (2) `genesis-vote::trigger` sets `pv.executed = true` and refuses to act on
+an already-executed proposal, and its seal CPI is signed by the gv config as the distribution's bound
+authority. So the FIRST proposal to reach quorum+majority wins immutably; a later majority swing
+cannot override it (B's trigger fails at the seal CPI). Note this is a deliberate
+first-past-the-post: quorum + strict-majority can be met by at most one proposal at a time (they share
+`total_cast_weight`), and the winner is locked the instant it seals. No new test — the one-shot guard
+is explicit and the property is an extension of the existing winner-take-all/no-new-proposal coverage
+(`only_the_winning_proposals_recipients_can_claim`, `no new proposal after finalize`).
+
 ### [BLOCKED] AF. Cross-market haircut-basis substitution (subledger) — pro-rata exit reads a pinned slab
 Probe: a depositor in an IMPAIRED genesis pool tries to inflate their pro-rata exit by passing a
 DIFFERENT, HEALTHY market's slab as `market_slab`. `withdraw`'s pro-rata haircut reads the live
