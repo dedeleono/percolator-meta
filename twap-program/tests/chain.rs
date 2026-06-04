@@ -3036,3 +3036,62 @@ fn e2e_cannot_vote_without_a_position() {
     assert!(svm.send_transaction(Transaction::new_signed_with_payer(&[vote], Some(&payer.pubkey()), &[&payer, &attacker], bh)).is_err(),
         "an account with no subledger position (no capital at risk) cannot vote");
 }
+
+// ATTACK PROBE (Sybil split — the core resistance property): vote weight = floor(log2(age)) *
+// principal is LINEAR in principal, so splitting capital across many positions/identities must
+// give NO weight advantage over depositing it all at once. Here an attacker splits 1,000,000
+// into 4 identities of 250,000, all deposited at the same slot and voting the same proposal at
+// the same age: the total support_weight equals exactly what a SINGLE 1,000,000 position would
+// produce (floor(log2(age)) * 1,000,000). So you cannot multiply governance power by Sybiling.
+#[test]
+fn e2e_sybil_splitting_gives_no_vote_advantage() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(sub_id(), so_deploy("subledger_program")).unwrap();
+    svm.add_program_from_file(gv_id_e2e(), so_deploy("genesis_vote_program")).unwrap();
+    svm.add_program_from_file(dist_id_e2e(), so_deploy("distribution_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_genesis(&mut svm, &payer);
+    let recipient = Pubkey::new_unique();
+    let (_dp, gv_proposal) = register_proposal(&mut svm, &payer, &env, 1, &recipient, 100);
+
+    let split = 250_000u64;
+    let n = 4u64; // total = 1,000,000
+    let mut voters = Vec::new();
+    for _ in 0..n {
+        let who = Keypair::new(); svm.airdrop(&who.pubkey(), 1_000_000_000).unwrap();
+        let ata = Pubkey::new_unique(); set_token(&mut svm, &ata, &env.collateral_mint, &who.pubkey(), split);
+        let holding = Pubkey::new_unique(); set_token(&mut svm, &holding, &env.collateral_mint, &env.pool, 0);
+        let position = sub_position_pda(&env.pool, &who.pubkey());
+        let mut d = vec![4u8]; d.extend_from_slice(&split.to_le_bytes());
+        let ix = Instruction { program_id: sub_id(), accounts: vec![
+            AccountMeta::new(who.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(position, false), AccountMeta::new(ata, false),
+            AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false),
+            AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(system_program::ID, false)], data: d };
+        svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, &who], bh)).expect("deposit");
+        voters.push((who, position));
+    }
+    // All positions share the same start_slot; warp once so every vote is at age 16 (log2 = 4).
+    let mut c = svm.get_sysvar::<Clock>(); c.slot += 16; svm.set_sysvar::<Clock>(&c);
+    for (who, position) in &voters {
+        let ballot = Pubkey::find_program_address(&[b"gv_ballot", env.gv_config.as_ref(), who.pubkey().as_ref()], &gv_id_e2e()).0;
+        let ix = Instruction { program_id: gv_id_e2e(), accounts: vec![
+            AccountMeta::new(who.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(ballot, false), AccountMeta::new(gv_proposal, false),
+            AccountMeta::new(*position, false), AccountMeta::new_readonly(env.pool, false), AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(sub_id(), false)], data: vec![3u8, 1u8] };
+        svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, who], bh)).expect("vote");
+    }
+
+    let support = u64::from_le_bytes(svm.get_account(&gv_proposal).unwrap().data[72..80].try_into().unwrap());
+    // A single 1,000,000 position at age 16 would weigh floor(log2(16)) * 1,000,000 = 4,000,000.
+    let single_position_weight = 4u64 * (split * n);
+    assert_eq!(support, single_position_weight, "splitting capital across {} identities gives no weight advantage", n);
+    // Quorum denominator (voted principal) is likewise just the summed capital, not multiplied.
+    let voted = u64::from_le_bytes(svm.get_account(&env.gv_config).unwrap().data[200..208].try_into().unwrap());
+    assert_eq!(voted, split * n, "voted principal is the summed capital — Sybiling does not inflate quorum either");
+}

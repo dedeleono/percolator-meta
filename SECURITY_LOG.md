@@ -1021,3 +1021,15 @@ who deposited nothing tries to vote -> rejected; their position PDA is empty. So
 governance influence without putting capital at risk. Distinct from e2e_fresh_position_has_no_
 vote_weight (account-doesn't-exist vs weight-0 paths). Test: twap-program/tests/chain.rs
 `e2e_cannot_vote_without_a_position`. KEPT.
+
+### [BLOCKED] E2E probe: Sybil-splitting capital gives no vote advantage (core resistance property)
+The whole premise is "Sybil-resistant governance": influence must scale ONLY with capital
+at risk, not with the number of identities. Vote weight = floor(log2(age)) * principal is LINEAR
+in principal, so splitting capital across many positions yields the SAME total as one large
+position. Proven end-to-end against the real binaries: an attacker splits 1,000,000 into 4
+identities of 250,000, all deposited at the same slot and voting the same proposal at the same
+age (16, log2=4); the proposal's total support_weight == 4,000,000 == exactly what a single
+1,000,000 position would produce, and the quorum denominator (total_voted_principal) == 1,000,000
+(summed, not multiplied). So Sybiling neither inflates weight nor quorum — capital is the only
+lever. This is the foundational property the design rests on; it was previously unpinned. Test:
+twap-program/tests/chain.rs `e2e_sybil_splitting_gives_no_vote_advantage`. KEPT.
