@@ -1848,3 +1848,40 @@ fn cannot_vote_with_a_withdrawn_position() {
     assert!(gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).is_err(),
         "voting with a fully-withdrawn (zero-principal) position must be rejected");
 }
+
+// OWN-VAULT WITHDRAW vs INSURANCE pool (instruction isolation; closes finding AR's 2nd path): the
+// own-vault withdraw (IX 2, process_withdraw) sets `withdrawn=true` and pays out WITHOUT decrementing
+// principal. If it could run against the genesis INSURANCE pool, a voter could "exit" via it, leave
+// principal intact, and re-vote with phantom capital (finding AR). Guarded three independent ways:
+// (a) `if pool.is_insurance() -> reject` up front, (b) the percolator insurance vault is owned by the
+// market vault_authority not the pool, so the pool can't sign its transfer, (c) the position is
+// mutated only AFTER the payout transfer, so any failure reverts it. Pinned: IX 2 on the genesis
+// insurance position is rejected and the position is left fully intact (no phantom withdrawn state).
+#[test]
+fn own_vault_withdraw_is_rejected_on_an_insurance_pool() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("deposit");
+
+    let attack = Instruction {
+        program_id: sub_id(),
+        accounts: vec![
+            AccountMeta::new(alice.pubkey(), true),
+            AccountMeta::new(pool, false),
+            AccountMeta::new(env.position_pda(&alice.pubkey()), false),
+            AccountMeta::new(alice_ata, false),
+            AccountMeta::new(env.perc_vault, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+        ],
+        data: vec![2u8], // IX_WITHDRAW (own-vault)
+    };
+    assert!(env.send(&[attack], &[&alice]).is_err(), "own-vault withdraw must be rejected on an insurance pool");
+    let (principal, _start, withdrawn) = env.read_position(&alice.pubkey());
+    assert_eq!(principal, amount, "position principal intact after the rejected own-vault withdraw");
+    assert!(!withdrawn, "position not retired (no phantom withdrawn state)");
+    assert_eq!(env.pool_outstanding(), amount, "pool outstanding intact");
+}

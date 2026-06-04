@@ -32,8 +32,8 @@ reverts the whole instruction (no partial `withdrawn=true`). So the only exit re
 pool remains `process_insurance_withdraw` (IX 5), which decrements `principal` (finding AR). No new test
 this tick: the subledger integration tests link the percolator-prog LIB, and that sibling is currently
 mid-edit / fails to compile (uncommitted changes, read-only to this repo), so a new e2e test cannot be
-build-verified right now. Recorded so the boundary is captured; a follow-up tick can add
-`own_vault_withdraw_is_rejected_on_an_insurance_pool` once the sibling compiles.
+build-verified right now. Pinned by `own_vault_withdraw_is_rejected_on_an_insurance_pool`: IX 2 on the genesis insurance position
+is rejected and the position is left fully intact (principal unchanged, not retired).
 
 ### [BLOCKED] AR. Phantom-capital vote with a withdrawn position (Sybil bypass) — withdraw decrements live principal
 Probe: vote weight must reflect capital genuinely at risk. genesis-vote `read_sub_position` reads the
