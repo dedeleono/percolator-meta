@@ -598,3 +598,30 @@ Confirmed sound; no test added (would be marginal — the boundaries are already
   Covered by `principal_only_owner_exit_returns_funds_and_guards` and
   `init_pool_rejects_a_vault_not_owned_by_the_pool`.
 Subledger suites green (own-vault subledger.rs 5 + insurance_percolator 15).
+
+### [FIXED] P. init_config front-run squat -> permanent deployment DOS (twap-program)
+twap-program init_config is PERMISSIONLESS and its bindings (squads_multisig,
+metadao_futarchy, coin_mint, percolator_program) were caller-supplied with only an
+INTERNAL consistency check (squads_multisig owned by Squads + its config_authority ==
+metadao_futarchy). The config PDA was keyed on `market_slab` ALONE. So an attacker could
+stand up a throwaway Squads multisig (config_authority = an attacker key they also name
+as metadao_futarchy — cheap, one multisig_create_v2), pass the consistency check, and
+init the per-market config FIRST with their own bindings. The squatted config is inert
+(accept_operator/reconfigure are gated on the squatted multisig's vault, which is NOT
+the market's asset_admin, so it can never rotate the real operator) — but the per-market
+config PDA is now TAKEN and cannot be re-initialized (AccountAlreadyInitialized), so the
+real DAO's buy/burn deployment for that market is permanently bricked. A post-genesis,
+no-fund-loss, permanent griefing DOS; the market_slab is public so the front-run is easy.
+Fix: fold the caller-set bindings into the config PDA seed — now
+[CONFIG_SEED, market_slab, squads_multisig, coin_mint, percolator_program]. The legit
+config PDA = f(market, real_ms, real_coin, real_perc); to land an account THERE an
+attacker must pass exactly those, which forces the real metadao_futarchy (via the
+config_authority check) and yields the CORRECT config (no harm). Any attacker variation
+lands at a different PDA the real deployment ignores. No percolator slab read needed (so
+NOT blocked on finding O's accessor), no owner check (keeps fake-market unit tests valid).
+reconfigure/accept_operator/pull_surplus never re-derive the config PDA (they trust
+owner==program_id + bindings), so the seed change is safe for them. Regression:
+twap-program/tests/chain.rs `init_config_front_run_with_attacker_multisig_cannot_block_the_real_deployment`
+(attacker front-runs with their own multisig; lands at a different PDA; the real DAO's
+init still succeeds and the live config is bound to the real multisig/DAO). Against the
+real Squads v4 binary. twap-program suite green (lib 2 + chain 5).

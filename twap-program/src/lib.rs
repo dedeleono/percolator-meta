@@ -75,8 +75,30 @@ const IX_ACCEPT_OPERATOR: u8 = 3;
 #[cfg(not(feature = "no-entrypoint"))]
 solana_program::entrypoint!(process_instruction);
 
-fn config_seeds<'a>(market: &'a Pubkey) -> [&'a [u8]; 2] {
-    [CONFIG_SEED, market.as_ref()]
+// The config PDA commits to ALL caller-supplied bindings, not just the market. Keying
+// it on market alone made init_config (which is permissionless) front-run squattable:
+// an attacker could stand up a throwaway Squads multisig (config_authority = itself),
+// pass the internal consistency check, and init the per-market config first with their
+// own bindings — permanently blocking the real DAO's deployment for that market (the
+// squatted config is inert, but the PDA is taken and cannot be re-initialized). By
+// folding squads_multisig + coin_mint + percolator_program into the seed, the only
+// config that can exist at the legit address is one carrying the legit bindings (which
+// in turn forces the real metadao_futarchy via the config_authority check) — so a
+// front-run at that address merely reproduces the correct config and does no harm; any
+// attacker variation lands at a different PDA the real deployment ignores. (finding P)
+fn config_seeds<'a>(
+    market: &'a Pubkey,
+    squads_multisig: &'a Pubkey,
+    coin_mint: &'a Pubkey,
+    percolator_program: &'a Pubkey,
+) -> [&'a [u8]; 5] {
+    [
+        CONFIG_SEED,
+        market.as_ref(),
+        squads_multisig.as_ref(),
+        coin_mint.as_ref(),
+        percolator_program.as_ref(),
+    ]
 }
 
 fn authority_seeds<'a>(market: &'a Pubkey) -> [&'a [u8]; 2] {
@@ -227,8 +249,10 @@ fn process_init_config(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8
         }
     }
 
-    let (expected_config, config_bump) =
-        Pubkey::find_program_address(&config_seeds(market_slab.key), program_id);
+    let (expected_config, config_bump) = Pubkey::find_program_address(
+        &config_seeds(market_slab.key, squads_multisig.key, coin_mint.key, percolator_program.key),
+        program_id,
+    );
     if *config_account.key != expected_config {
         return Err(ProgramError::InvalidSeeds);
     }
@@ -240,7 +264,14 @@ fn process_init_config(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8
 
     let rent = solana_program::rent::Rent::get()?;
     let bump_arr = [config_bump];
-    let seeds: [&[u8]; 3] = [CONFIG_SEED, market_slab.key.as_ref(), &bump_arr];
+    let seeds: [&[u8]; 6] = [
+        CONFIG_SEED,
+        market_slab.key.as_ref(),
+        squads_multisig.key.as_ref(),
+        coin_mint.key.as_ref(),
+        percolator_program.key.as_ref(),
+        &bump_arr,
+    ];
     invoke_signed(
         &system_instruction::create_account(
             payer.key,

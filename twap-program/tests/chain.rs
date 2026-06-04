@@ -113,8 +113,23 @@ fn multisig_create_v2_ix(
     }
 }
 
-fn twap_config_pda(market: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"twap_config", market.as_ref()], &twap_id()).0
+fn twap_config_pda(
+    market: &Pubkey,
+    squads_multisig: &Pubkey,
+    coin_mint: &Pubkey,
+    percolator_program: &Pubkey,
+) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            b"twap_config",
+            market.as_ref(),
+            squads_multisig.as_ref(),
+            coin_mint.as_ref(),
+            percolator_program.as_ref(),
+        ],
+        &twap_id(),
+    )
+    .0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -132,7 +147,7 @@ fn init_config_ix(
             AccountMeta::new(*payer, true),
             AccountMeta::new_readonly(*coin_mint, false),
             AccountMeta::new_readonly(*market, false),
-            AccountMeta::new(twap_config_pda(market), false),
+            AccountMeta::new(twap_config_pda(market, squads_multisig, coin_mint, percolator_program), false),
             AccountMeta::new_readonly(*squads_multisig, false),
             AccountMeta::new_readonly(*dao, false),
             AccountMeta::new_readonly(*percolator_program, false),
@@ -210,7 +225,7 @@ fn twap_config_binds_only_to_a_real_squads_multisig_controlled_by_the_dao() {
     svm.send_transaction(tx).expect("genuine Squads controller accepted");
 
     // TWAP -> (Squads, DAO): the config pins the chain.
-    let cfg = svm.get_account(&twap_config_pda(&market)).unwrap();
+    let cfg = svm.get_account(&twap_config_pda(&market, &multisig, &coin_mint, &percolator_program)).unwrap();
     assert_eq!(cfg.owner, twap_id());
     let stored_squads = Pubkey::new_from_array(cfg.data[104..136].try_into().unwrap());
     let stored_dao = Pubkey::new_from_array(cfg.data[136..168].try_into().unwrap());
@@ -233,7 +248,7 @@ fn twap_config_binds_only_to_a_real_squads_multisig_controlled_by_the_dao() {
     // Squads -> TWAP gating: reconfigure is restricted to the multisig's default
     // vault PDA (the executor of a multisig vault-transaction, reachable only after a
     // DAO proposal clears the timelock). A random signer must be rejected.
-    let cfg_pda = twap_config_pda(&market);
+    let cfg_pda = twap_config_pda(&market, &multisig, &coin_mint, &percolator_program);
     let squads_vault = Pubkey::find_program_address(
         &[b"multisig", multisig.as_ref(), b"vault", &[0u8]],
         &squads,
@@ -385,6 +400,78 @@ fn read_bps(svm: &LiteSVM, config: &Pubkey) -> u16 {
     u16::from_le_bytes(d[168..170].try_into().unwrap())
 }
 
+// Finding P regression: init_config is permissionless, so before the PDA committed to
+// the bindings an attacker could front-run the real DAO's deployment for a market by
+// init'ing the per-market config first with their own throwaway Squads multisig —
+// permanently squatting the (market-only) config PDA and bricking the legit deployment.
+// Now the config PDA commits to (market, squads_multisig, coin_mint, percolator_program),
+// so an attacker's own-multisig config lands at a DIFFERENT address and the real DAO's
+// config PDA stays free. (And the only config that CAN exist at the legit address must
+// carry the real multisig, which forces the real DAO via the config_authority check —
+// covered by the mismatched-DAO negative in the binding test.)
+#[test]
+fn init_config_front_run_with_attacker_multisig_cannot_block_the_real_deployment() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(
+        twap_id(),
+        format!("{}/../target/deploy/twap_program.so", env!("CARGO_MANIFEST_DIR")),
+    )
+    .unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let squads = squads_id();
+    let treasury = install_squads(&mut svm, &squads, &payer.pubkey());
+
+    // Helper: stand up a real Squads multisig whose config_authority is `dao`.
+    let mut make_ms = |svm: &mut LiteSVM, dao: &Pubkey| -> Pubkey {
+        let create_key = Keypair::new();
+        let multisig = multisig_pda(&squads, &create_key.pubkey());
+        let ix = multisig_create_v2_ix(
+            &squads, &treasury, &multisig, &create_key.pubkey(), &payer.pubkey(),
+            Some(dao), 1, &[(*dao, PERM_ALL)], TIMELOCK_1_WEEK_SECS,
+        );
+        let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, &create_key], bh))
+            .expect("create multisig");
+        multisig
+    };
+
+    // The intended deployment bindings (all public).
+    let coin_mint = Keypair::new().pubkey();
+    let market = Keypair::new().pubkey();
+    let percolator_program = Keypair::new().pubkey();
+
+    // The real DAO + its multisig, and an attacker DAO + its own throwaway multisig.
+    let real_dao = Keypair::new().pubkey();
+    let real_ms = make_ms(&mut svm, &real_dao);
+    let attacker_dao = Keypair::new().pubkey();
+    let attacker_ms = make_ms(&mut svm, &attacker_dao);
+
+    // ATTACKER FRONT-RUNS: init the config for the REAL market with their OWN multisig.
+    // This passes the internal consistency check (their multisig IS config-controlled by
+    // their DAO), so it succeeds — but lands at a PDA keyed on the attacker multisig.
+    let squat = init_config_ix(&payer.pubkey(), &coin_mint, &market, &attacker_ms, &attacker_dao, &percolator_program);
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[squat], Some(&payer.pubkey()), &[&payer], bh))
+        .expect("attacker can init their own config (permissionless) — but at their own PDA");
+    let attacker_pda = twap_config_pda(&market, &attacker_ms, &coin_mint, &percolator_program);
+    let real_pda = twap_config_pda(&market, &real_ms, &coin_mint, &percolator_program);
+    assert_ne!(attacker_pda, real_pda, "the bindings are part of the PDA, so the addresses differ");
+    assert!(svm.get_account(&attacker_pda).is_some_and(|a| !a.data.is_empty()), "attacker squatted only their own PDA");
+    assert!(svm.get_account(&real_pda).map_or(true, |a| a.data.is_empty()), "the real config PDA is untouched");
+
+    // THE REAL DEPLOYMENT STILL SUCCEEDS: the attacker's front-run did not block it.
+    let real = init_config_ix(&payer.pubkey(), &coin_mint, &market, &real_ms, &real_dao, &percolator_program);
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[real], Some(&payer.pubkey()), &[&payer], bh))
+        .expect("real DAO deployment is NOT bricked by the front-run (finding P fixed)");
+    let cfg = svm.get_account(&real_pda).unwrap();
+    let stored_squads = Pubkey::new_from_array(cfg.data[104..136].try_into().unwrap());
+    let stored_dao = Pubkey::new_from_array(cfg.data[136..168].try_into().unwrap());
+    assert_eq!(stored_squads, real_ms, "the live config is controlled by the REAL multisig");
+    assert_eq!(stored_dao, real_dao, "and records the REAL DAO");
+}
+
 // KEYSTONE Squads -> TWAP: the surplus buy/burn share can be reconfigured ONLY by a
 // DAO proposal that clears the 1-week Squads timelock and is executed by the multisig
 // vault. Proven end-to-end against the real Squads v4 binary.
@@ -420,7 +507,7 @@ fn reconfigure_only_via_squads_vault_execute_after_timelock() {
     let init = init_config_ix(&payer.pubkey(), &coin_mint, &market, &multisig, &dao.pubkey(), &percolator_program);
     let bh = svm.latest_blockhash();
     svm.send_transaction(Transaction::new_signed_with_payer(&[init], Some(&payer.pubkey()), &[&payer], bh)).expect("init twap config");
-    let cfg_pda = twap_config_pda(&market);
+    let cfg_pda = twap_config_pda(&market, &multisig, &coin_mint, &percolator_program);
     assert_eq!(read_bps(&svm, &cfg_pda), 8_000, "default buy/burn share");
 
     // DAO proposes: the vault reconfigures the share to 5000.
@@ -606,7 +693,7 @@ fn handoff_rotates_operator_to_twap_only_after_timelock() {
     let init = init_config_ix(&payer.pubkey(), &dummy_mint, &slab, &multisig, &dao.pubkey(), &perc_id());
     let bh = svm.latest_blockhash();
     svm.send_transaction(Transaction::new_signed_with_payer(&[init], Some(&payer.pubkey()), &[&payer], bh)).expect("twap init");
-    let cfg = twap_config_pda(&slab);
+    let cfg = twap_config_pda(&slab, &multisig, &dummy_mint, &perc_id());
     let twap_authority = Pubkey::find_program_address(&[b"market-0-twap", slab.as_ref()], &twap_id()).0;
 
     // DAO proposes: accept_operator (rotate the operator to twap_authority).
