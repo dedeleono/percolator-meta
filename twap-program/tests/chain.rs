@@ -3347,3 +3347,66 @@ fn e2e_non_creator_cannot_append_to_a_proposal() {
     svm.expire_blockhash(); let bh = svm.latest_blockhash();
     svm.send_transaction(Transaction::new_signed_with_payer(&[append(&creator, &Pubkey::new_unique(), 100)], Some(&payer.pubkey()), &[&payer, &creator], bh)).expect("the creator can append to their own proposal");
 }
+
+// ATTACK PROBE (post-finalization proposal injection): the genesis is winner-take-all and
+// one-shot. Once the winning distribution is sealed, no NEW proposal may be created — distribution
+// create_proposal rejects when config.is_sealed(). Otherwise an attacker could keep spawning
+// proposals after the outcome is decided (clutter / confusion / attempts to re-contest a closed
+// genesis). Pinned end-to-end: a winner is voted + sealed, then create_proposal for a fresh id is
+// rejected, and the original sealed winner is unchanged.
+#[test]
+fn e2e_no_new_proposal_after_genesis_finalizes() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(sub_id(), so_deploy("subledger_program")).unwrap();
+    svm.add_program_from_file(gv_id_e2e(), so_deploy("genesis_vote_program")).unwrap();
+    svm.add_program_from_file(dist_id_e2e(), so_deploy("distribution_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_genesis(&mut svm, &payer);
+    let recipient = Pubkey::new_unique();
+    let (dist_proposal, gv_proposal) = register_proposal(&mut svm, &payer, &env, 1, &recipient, 100);
+
+    // A voter backs it to quorum + majority and seals.
+    let alice = Keypair::new(); svm.airdrop(&alice.pubkey(), 1_000_000_000).unwrap();
+    let amount = 1_000_000u64;
+    let alice_ata = Pubkey::new_unique(); set_token(&mut svm, &alice_ata, &env.collateral_mint, &alice.pubkey(), amount);
+    let holding = Pubkey::new_unique(); set_token(&mut svm, &holding, &env.collateral_mint, &env.pool, 0);
+    let position = sub_position_pda(&env.pool, &alice.pubkey());
+    let mut dep = vec![4u8]; dep.extend_from_slice(&amount.to_le_bytes());
+    let deposit = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(position, false), AccountMeta::new(alice_ata, false),
+        AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(system_program::ID, false)], data: dep };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[deposit], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("deposit");
+    let mut c = svm.get_sysvar::<Clock>(); c.slot += 8; svm.set_sysvar::<Clock>(&c);
+    let ballot = Pubkey::find_program_address(&[b"gv_ballot", env.gv_config.as_ref(), alice.pubkey().as_ref()], &gv_id_e2e()).0;
+    let vote = Instruction { program_id: gv_id_e2e(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(ballot, false), AccountMeta::new(gv_proposal, false),
+        AccountMeta::new(position, false), AccountMeta::new_readonly(env.pool, false), AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(sub_id(), false)], data: vec![3u8, 1u8] };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[vote], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("vote");
+    let trigger = Instruction { program_id: gv_id_e2e(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(gv_proposal, false),
+        AccountMeta::new_readonly(dist_id_e2e(), false), AccountMeta::new(env.dist_config, false), AccountMeta::new(dist_proposal, false),
+        AccountMeta::new_readonly(env.pool, false)], data: vec![4u8] };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[trigger], Some(&payer.pubkey()), &[&payer], bh)).expect("seal the winner");
+
+    // POST-SEAL: creating a fresh proposal on the now-sealed config is rejected.
+    let id2 = 99u64;
+    let dist_proposal2 = Pubkey::find_program_address(&[b"dist_proposal", env.dist_config.as_ref(), &id2.to_le_bytes()], &dist_id_e2e()).0;
+    let mut cd = vec![1u8]; cd.extend_from_slice(&id2.to_le_bytes()); cd.extend_from_slice(&4u32.to_le_bytes());
+    let create = Instruction { program_id: dist_id_e2e(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(env.dist_config, false), AccountMeta::new(dist_proposal2, false), AccountMeta::new_readonly(system_program::ID, false)], data: cd };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    assert!(svm.send_transaction(Transaction::new_signed_with_payer(&[create], Some(&payer.pubkey()), &[&payer], bh)).is_err(),
+        "no new proposal can be created after the genesis distribution is sealed");
+    // The sealed winner is unchanged.
+    let dist_cfg = svm.get_account(&env.dist_config).unwrap();
+    assert_eq!(Pubkey::new_from_array(dist_cfg.data[120..152].try_into().unwrap()), dist_proposal, "sealed winner unchanged");
+}

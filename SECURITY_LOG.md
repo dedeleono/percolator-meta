@@ -1076,3 +1076,13 @@ exercised on the positive path (creator appends); the non-creator REJECTION was 
 end-to-end: a creator creates a proposal, an attacker's append of a self-allocation is REJECTED,
 and the creator's own append succeeds. Complements finding M2 (creator-gated register). Test:
 twap-program/tests/chain.rs `e2e_non_creator_cannot_append_to_a_proposal`. KEPT.
+
+### [BLOCKED] E2E probe: no new proposal after the genesis finalizes (one-shot)
+The genesis is winner-take-all and one-shot. Once the winning distribution is sealed,
+distribution create_proposal rejects (config.is_sealed()), so no NEW proposal can be created on
+the finalized config — preventing post-decision clutter or attempts to re-contest a closed
+genesis. Proven end-to-end against the real binaries: a voter backs a proposal to quorum +
+majority and the trigger seals it; a subsequent create_proposal for a fresh id is REJECTED, and
+the sealed winner is unchanged. Complements the seal-irreversibility (finding R / seal.rs) — that
+blocks re-sealing, this blocks creating new contenders after the outcome is decided. Test:
+twap-program/tests/chain.rs `e2e_no_new_proposal_after_genesis_finalizes`. KEPT.
