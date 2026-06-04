@@ -145,6 +145,12 @@ tags 5-11). Security properties, each pinned by a chain.rs e2e against the real 
 - COIN escrow is pooled in ONE book-escrow account so `execute` burns/pays in O(1) CPIs regardless of
   bid count; the book is a fixed 32-slot array with O(n) worst-bid eviction; the canonical USD
   `holding` is pinned in the book so the rolled-over budget can't be fragmented.
+- **No cancel/claim double-spend** (probe #14): `cancel_bid` refunds the FULL escrowed COIN while
+  `claim` pays the settled `usd_owed` + `coin_refund`; if a SETTLED bid could also be cancelled, the
+  bidder would get the full COIN back AND their settled payout (escrow double-spend). `cancel` rejects
+  any settled slot (`settled != 0`), early, before the cooldown. Pinned by
+  `e2e_cancel_cannot_double_spend_a_settled_bid` (cancel of a settled loser slot rejected, escrow
+  untouched; the loser's COIN is refunded exactly once via claim, escrow drains exactly).
 - **Permissionless-claim anti-theft** (probe #13): `claim` is permissionless (any cranker turns it),
   so the only guard against a cranker redirecting a winner's USD/COIN to itself is that `usd_dest` /
   `coin_ata` must equal the bid's recorded canonical destinations. Pinned by

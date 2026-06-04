@@ -4092,3 +4092,44 @@ fn e2e_claim_cannot_redirect_a_winners_payout() {
     assert_eq!(token_amount(&svm, &w_usd), 400_000, "winner receives their USD");
     let _ = winner;
 }
+
+// DOUBLE-SPEND (cancel a settled bid): cancel_bid refunds the FULL escrowed COIN, while claim pays
+// the bid's settled usd_owed + coin_refund. If a settled bid could be cancelled too, the bidder
+// would get the full COIN back AND their settled payout — a double-spend of the escrow. cancel must
+// reject any SETTLED slot (those use claim). Previously untested.
+#[test]
+fn e2e_cancel_cannot_double_spend_a_settled_bid() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+
+    // A loser leaves a full coin_refund in escrow after settle (so a rogue cancel would over-refund).
+    let (winner, w_src, w_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    let (loser, l_src, l_usd) = new_bidder(&mut svm, &payer, &env, 7);
+    send(&mut svm, &[&winner], place_bid_ix(&winner.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &w_src, &w_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("winner bid");
+    send(&mut svm, &[&loser], place_bid_ix(&loser.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &l_src, &l_usd, &env.coin_mint, &env.collateral_mint, 7, 400_000, None)).expect("loser bid");
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute settles");
+    let escrow_after_settle = token_amount(&svm, &bk.coin_escrow); // = loser's 7 (winner's 400k burned)
+    assert_eq!(escrow_after_settle, 7);
+
+    // ATTACK: cancel the SETTLED loser slot (slot 1) — must be rejected (settled bids use claim).
+    assert!(send(&mut svm, &[&loser], cancel_ix(&loser.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &l_src, 1)).is_err(),
+        "a settled bid cannot be cancelled (would double-spend vs claim)");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), escrow_after_settle, "escrow untouched by the rejected cancel");
+    assert_eq!(token_amount(&svm, &l_src), 0, "loser got nothing from the rejected cancel");
+
+    // The loser's funds come ONLY via the single settled path (claim refunds exactly the 7 COIN).
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &l_usd, &l_src, 1)).expect("loser claims refund");
+    assert_eq!(token_amount(&svm, &l_src), 7, "loser refunded exactly their 7 COIN — once");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 0, "escrow drained exactly");
+    let _ = (winner, loser);
+}
