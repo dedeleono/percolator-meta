@@ -6,8 +6,8 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 Reachable six-binary surface is exhausted: 53 vectors recorded (A–AX), of which 3 were real CRITICAL
 bugs found + fixed by this loop (AD signer-seed-binding, AI lamport-prefund init-DOS, AQ parasite-config
 insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full regression GREEN at this
-checkpoint: 123 tests across every harness (subledger insurance 23 + own-vault 5 + lib 6; genesis-vote
-seal 7 + lib 3; distribution 10 + lib 4; twap chain 60 + lib 4) and all four programs build-sbf clean.
+checkpoint: 124 tests across every harness (subledger insurance 23 + own-vault 5 + lib 6; genesis-vote
+seal 7 + lib 3; distribution 10 + lib 4; twap chain 61 + lib 4) and all four programs build-sbf clean.
 The percolator dep is pinned to committed revs (percolator-prog c050578, percolator 76d0e75), so a
 sibling mid-edit no longer breaks the build. Recent ticks are confirmations, not new findings; the
 remaining surface is runtime-guaranteed (e.g. AU SPL-authority), DAO-footgun hardening, or OFF this
@@ -16,6 +16,25 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [BLOCKED] twap claim — replaying a settled slot to drain other winners' parked USD (double-spend LOF)
+Vector: after `execute`, every winner's `usd_owed` is parked together in ONE shared settlement-USD account
+and pulled per-slot by the permissionless `claim`. Hostile idea: claim a settled slot, then call `claim`
+on the SAME slot again — each replay pays `usd_owed` (+ `coin_refund`) once more out of the shared pool,
+draining the OTHER winners' parked payouts (a direct LOF against co-winners).
+Analysis (twap-program/src/lib.rs process_claim): claim requires `SL_OCCUPIED==1 && SL_SETTLED==1`
+(line ~48), pays out, then ZEROES the slot (`*b = 0`, line ~71) clearing SL_OCCUPIED — so a second claim
+sees OCCUPIED==0 and is refused. BLOCKED. (Cancel-vs-claim double-spend is separately blocked by
+`e2e_cancel_cannot_double_spend_a_settled_bid`.)
+Coverage gap closed: the happy-path `e2e_buy_burn_uniform_price_dutch_auction` claims each slot ONCE but
+never replays — and there every winner claims, draining the pool to 0, so a replay would fail on pool
+EXHAUSTION even if the slot-zero guard regressed (it didn't isolate the guard). Added
+`e2e_claim_cannot_be_replayed_to_drain_other_winners`: two SYMMETRIC bidders (400k COIN/200k USD each)
+clear at P*=2, settlement parks 400k = two equal 200k shares; alice claims slot 0 once, then a REPLAY of
+slot 0 is refused while bob's 200k is still parked (so only the slot-zero guard can block it, not
+exhaustion); alice never double-collects; bob then claims his intact share. KEPT — pins the claim
+double-spend with the pool deliberately still funded. INVARIANT: process_claim must keep gating on
+SL_OCCUPIED/SL_SETTLED and zeroing the slot after payout; never pay a slot whose OCCUPIED flag is clear.
 
 ### [VERIFIED-COVERED] Sweep tick — seven boundaries probed, each already pinned by a named test (no new test, no redundancy)
 A breadth tick: picked seven plausible LOF/DOS vectors across the repo and traced each to the ACTUAL

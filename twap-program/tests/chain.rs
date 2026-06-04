@@ -3014,6 +3014,58 @@ fn e2e_buy_burn_uniform_price_dutch_auction() {
     let _ = (&alice, &bob, &carol);
 }
 
+// DOUBLE-SPEND (claim twice, LOF): after a winner claims, the slot is zeroed (lib.rs process_claim
+// clears SL_OCCUPIED), so a second claim of the SAME slot must be refused. If it weren't, a winner
+// could re-claim their `usd_owed` repeatedly out of the shared settlement-USD pool — draining the OTHER
+// winners' parked payouts. Two SYMMETRIC bidders make the isolation exact: after bidder A claims, the
+// pool still holds bidder B's identical share, so a re-claim of A would (with a broken guard) succeed and
+// drain B — the slot-zero guard is the ONLY thing that can block it (not pool exhaustion).
+#[test]
+fn e2e_claim_cannot_be_replayed_to_drain_other_winners() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+
+    // surplus 500k, budget 400k. Two IDENTICAL bids 400k COIN / 200k USD (rate 2). Cumulative USD
+    // 200k+200k = 400k = budget -> both fully fill at P*=2, each owed 200k USD, each sells its full
+    // 400k COIN (refund 0). Settlement parks 400k = exactly the two equal shares.
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    let (bob, b_src, b_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 200_000, None)).expect("alice bid");
+    send(&mut svm, &[&bob], place_bid_ix(&bob.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &b_src, &b_usd, &env.coin_mint, &env.collateral_mint, 400_000, 200_000, None)).expect("bob bid");
+
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 400_000, "two equal 200k shares parked");
+
+    // Alice claims her slot 0 once -> 200k USD; settlement still holds bob's 200k.
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &a_usd, &a_src, 0)).expect("alice claim");
+    assert_eq!(token_amount(&svm, &a_usd), 200_000, "alice paid once");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 200_000, "bob's share still parked");
+
+    // ATTACK: re-claim slot 0. The slot was zeroed -> refused. Bob's parked USD is untouched.
+    assert!(
+        send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &a_usd, &a_src, 0)).is_err(),
+        "a claimed slot cannot be claimed again"
+    );
+    assert_eq!(token_amount(&svm, &a_usd), 200_000, "alice did NOT double-collect");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 200_000, "bob's parked share was not drained by the replay");
+
+    // Bob still gets his full, protected share.
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &b_usd, &b_src, 1)).expect("bob claim");
+    assert_eq!(token_amount(&svm, &b_usd), 200_000, "bob collects his intact share");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 0, "settlement fully and exactly distributed");
+    let _ = (&alice, &bob);
+}
+
 // ANTI-SPOOF: a placed bid cannot be cancelled. There is no withdraw instruction; the only way a
 // bid leaves the book early is eviction by a STRICTLY better bid (which refunds the evictee), and
 // a not-better bid against a full book is rejected.
