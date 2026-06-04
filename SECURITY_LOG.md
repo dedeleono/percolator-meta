@@ -97,6 +97,22 @@ claim → reopen), not a brick. Pinned: `e2e_closing_usd_dest_cannot_permanently
 (winner closes the USD ATA → claim fails + book blocked → recreate → claim succeeds + 400k USD
 delivered + book reopens). All suites green (chain 40, lib 4).
 
+### [FIXED] AC. Compute-budget DOS via O(N²) Euclidean bid ranking (twap-program) — probe #9
+HIGH-value DOS, CONFIRMED. The auction ranks bids with an O(N²) insertion sort, and bid-vs-bid
+comparison used `cmp_rate` — a continued-fraction (Euclidean) loop whose length grows with the
+operands' continued-fraction expansion. `usdc_atoms` was also UNBOUNDED (parsed as u128). A hostile
+bidder who fills all 32 slots with close, long-CF (Fibonacci-ratio) rates makes `execute` exceed the
+1.4M compute budget — `ProgramFailedToComplete` — a PERMANENT buy/burn DOS (execute always fails, and
+a committed book can't be cleared except by waiting out the cancel cooldown). Confirmed empirically:
+a 32-Fibonacci-bid book made execute FAIL before the fix.
+FIX: (1) bound BOTH legs to u64 at place_bid (`as_u64(usdc_atoms)`); (2) rank bid-vs-bid with a
+CONSTANT-TIME cross-multiply `cmp_bid` = `(coin_a*usdc_b).cmp(coin_b*usdc_a)` (u64*u64 < 2^128, exact,
+no loop) in both the eviction scan and the execute sort. `cmp_rate` (Euclidean) is kept only for the
+O(N) bid-vs-reserve check (reserve may be a large u128). After the fix the same worst-case full book
+clears in **278K CU** (was: budget-exhaustion failure). Pinned:
+`e2e_full_book_of_worst_case_rates_cannot_dos_execute` (32 Fibonacci bids → execute succeeds at
+< 500K CU; a u128-huge usdc_atoms bid is rejected).
+
 ### [DESIGN] U. Buy/burn uniform-price (Dutch) auction — invariants (twap-program)
 The COIN buy/burn settlement is a permissionless, time-boxed uniform-price auction (twap-program
 tags 5-11). Security properties, each pinned by a chain.rs e2e against the real binaries:

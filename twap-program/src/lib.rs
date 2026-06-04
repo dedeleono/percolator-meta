@@ -677,6 +677,16 @@ fn load_book_header(d: &[u8]) -> Result<BookHeader, ProgramError> {
     })
 }
 
+// CONSTANT-TIME comparison of two bid rates coin_a/usdc_a vs coin_b/usdc_b. Both legs are token
+// amounts bounded to u64 at place_bid, so the cross-products fit in u128 exactly (u64*u64 < 2^128) —
+// no continued-fraction loop. This is what bid-vs-bid ranking uses, so a hostile full book of
+// close, long-continued-fraction rates can NOT make the O(N^2) sort blow the compute budget (the
+// finding-AC DOS). cmp_rate (Euclidean) is kept only for the O(N) bid-vs-reserve check, where the
+// DAO-set reserve may be a large u128.
+fn cmp_bid(coin_a: u128, usdc_a: u128, coin_b: u128, usdc_b: u128) -> core::cmp::Ordering {
+    (coin_a * usdc_b).cmp(&(coin_b * usdc_a))
+}
+
 // Compare a_num/a_den vs b_num/b_den as exact rationals using the continued-fraction (Euclidean)
 // algorithm — overflow-safe, no floats. All denominators must be > 0. Ported from the twap lib's
 // `compare_fraction`. Returns the ordering of the first rate relative to the second.
@@ -1033,10 +1043,14 @@ fn process_place_bid(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
     }
     let coin_atoms = u128::from_le_bytes(data[..16].try_into().unwrap());
     let usdc_atoms = u128::from_le_bytes(data[16..32].try_into().unwrap());
-    if coin_atoms == 0 || usdc_atoms == 0 || coin_atoms.checked_mul(usdc_atoms).is_none() {
+    if coin_atoms == 0 || usdc_atoms == 0 {
         return Err(ProgramError::InvalidInstructionData);
     }
+    // Both legs are token amounts and MUST fit u64 — this bounds the constant-time bid-vs-bid
+    // cross-multiply (u64*u64 < 2^128) so a full book can never blow execute's compute budget
+    // (finding AC). It also subsumes the old coin_atoms*usdc_atoms overflow check.
     let coin_atoms_u64 = as_u64(coin_atoms)?;
+    let _ = as_u64(usdc_atoms)?;
     if !bidder.is_signer {
         return Err(ProgramError::MissingRequiredSignature);
     }
@@ -1104,7 +1118,7 @@ fn process_place_bid(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
                 for i in 1..MAX_BIDS {
                     let oi = slot_off(i);
                     let ow = slot_off(weakest);
-                    if cmp_rate(
+                    if cmp_bid(
                         book_rd_u128(&d, oi + SL_COIN),
                         book_rd_u128(&d, oi + SL_USDC),
                         book_rd_u128(&d, ow + SL_COIN),
@@ -1115,7 +1129,7 @@ fn process_place_bid(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
                     }
                 }
                 let ow = slot_off(weakest);
-                if cmp_rate(
+                if cmp_bid(
                     coin_atoms,
                     usdc_atoms,
                     book_rd_u128(&d, ow + SL_COIN),
@@ -1370,7 +1384,7 @@ fn process_execute(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
             let mut b = a;
             while b > 0 {
                 let po = slot_off(idx[b - 1]);
-                if cmp_rate(book_rd_u128(&d, po + SL_COIN), book_rd_u128(&d, po + SL_USDC), kc, ku)
+                if cmp_bid(book_rd_u128(&d, po + SL_COIN), book_rd_u128(&d, po + SL_USDC), kc, ku)
                     == Ordering::Less
                 {
                     idx[b] = idx[b - 1];

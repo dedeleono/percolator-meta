@@ -3887,3 +3887,49 @@ fn e2e_closing_usd_dest_cannot_permanently_brick_the_book() {
     send(&mut svm, &[&late], place_bid_ix(&late.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &l_src, &l_usd, &env.coin_mint, &env.collateral_mint, 5_000, 5_000, None)).expect("book reopened");
     let _ = (winner, late);
 }
+
+// ADVERSARIAL CU-DOS (finding AC): the bid ranking is O(N^2) comparisons. When bid-vs-bid used the
+// continued-fraction (Euclidean) cmp_rate over attacker-controlled rates, a full 32-slot book of
+// close, long-continued-fraction (Fibonacci-ratio) bids made execute EXCEED the 1.4M compute budget
+// — a permanent buy/burn DOS (execute always fails; bids can't be cleared except by the cancel
+// cooldown). FIX: bid-vs-bid ranking uses a CONSTANT-TIME cross-multiply (legs bounded to u64), so
+// the worst-case full book clears in a small, bounded compute. This pins that.
+#[test]
+fn e2e_full_book_of_worst_case_rates_cannot_dos_execute() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+
+    // usdc_atoms must fit u64 (this bounds the cross-multiply); a u128-huge usdc bid is rejected.
+    let (z, zs, zu) = new_bidder(&mut svm, &payer, &env, 1);
+    let huge = (u64::MAX as u128) + 1;
+    assert!(send(&mut svm, &[&z], place_bid_ix(&z.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &zs, &zu, &env.coin_mint, &env.collateral_mint, 1, huge, None)).is_err(),
+        "a usdc_atoms exceeding u64 must be rejected");
+    let _ = z;
+
+    // Fill all 32 slots with consecutive-Fibonacci (coin,usdc) pairs — close golden-ratio rates,
+    // the worst case for a continued-fraction comparator.
+    let mut fib: Vec<u64> = vec![1, 1];
+    while fib.len() < 70 { let n = fib[fib.len()-1] + fib[fib.len()-2]; fib.push(n); }
+    for i in 0..32u64 {
+        let coin = fib[20 + i as usize];
+        let usdc = fib[21 + i as usize];
+        let (b, s, u) = new_bidder(&mut svm, &payer, &env, coin);
+        send(&mut svm, &[&b], place_bid_ix(&b.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &s, &u, &env.coin_mint, &env.collateral_mint, coin as u128, usdc as u128, None)).expect("bid");
+    }
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    let ix = execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None);
+    svm.expire_blockhash();
+    let bh = svm.latest_blockhash();
+    let m = svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&cranker.pubkey()), &[&cranker], bh))
+        .expect("execute must clear a full worst-case book without exhausting compute");
+    assert!(m.compute_units_consumed < 500_000, "execute compute must stay bounded (constant-time ranking), got {}", m.compute_units_consumed);
+}
