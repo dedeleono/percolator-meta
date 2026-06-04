@@ -4,6 +4,28 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 
 ## Analyzed
 
+### [BLOCKED] AU. insurance_deposit holding-intermediate substitution/duplicate — SPL authority is the boundary
+`insurance_deposit` routes funds user_ata -> `holding` (user-signed) -> percolator insurance vault
+(`TopUpInsurance`, signed by the pool PDA). The subledger does NOT explicitly check `holding.owner ==
+pool`; it relies on SPL authority at the CPI. Probed every substitution/duplicate of `holding`:
+ - Foreign (non-pool-owned) holding: step 1 lands the user's funds there, but step 2's
+   `TopUpInsurance` is the pool moving funds OUT of the holding — only the holding's authority can
+   authorize that, and the pool's signature only covers pool-owned accounts, so the SPL transfer
+   fails and the whole instruction REVERTS (step 1 rolled back, user funds safe). The position is
+   credited only AFTER both transfers (lines 941-953), so a failed deposit never credits.
+ - Attacker-created pool-owned holding, optionally pre-funded: harmless — the user's `amount` still
+   flows to the vault and the position is credited exactly `amount` (the `amount`-consistency: step1,
+   step2, and the credit are all the same `amount`); any pre-funding is stranded in the holding
+   (attacker self-loss), never an over-credit or inflation.
+ - holding == owner_ata (duplicate): contradictory — step 1 needs owner-signable, step 2 needs
+   pool-owned; no account is both, so it always fails.
+ - holding == percolator_vault: step 1 funds the vault directly and step 2's vault->vault no-op still
+   increments the insurance counter by the same `amount` — consistent (counter and balance both +amount;
+   and a direct TopUpInsurance to inflate the counter without funding is impossible since only the
+   subledger can sign as the pool operator).
+No code change / no test: the boundary is the SPL token program's authority check (a runtime
+invariant), so any negative test would be tautological. Recorded so future ticks don't re-derive it.
+
 ### [STATE] Audit sweep — input-validation, retract/re-back, clearing math, remaining-account smuggling
 Iteration with no fresh reachable gap; re-confirmed (so future ticks skip them):
  - `set_reserve` input validation matches `init_book`: it rejects `reserve_den == 0` (twap
