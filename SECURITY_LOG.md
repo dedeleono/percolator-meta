@@ -9,7 +9,8 @@ insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full r
 checkpoint: 134 tests across every harness (subledger insurance 25 + own-vault 5 + lib 6 = 36; genesis-vote
 seal 9 + lib 3 = 12; distribution 13 + lib 4 = 17; twap chain 65 + lib 4 = 69; 36+12+17+69 = 134), full
 suite green, and all four programs build-sbf clean.
-This tick added an on-chain FIX: twap init_config now enforces the bound Squads multisig's time_lock >= 1 week.
+On-chain FIXES this run: twap init_config enforces the bound Squads multisig time_lock >= 1 week; twap
+cancel_bid no longer lets a no-op roll unlock the anti-spoof cooldown early (external issue #28).
 Missing-signer guards pinned across the stack: twap reconfigure, subledger set_vote_lock, distribution
 seal_winner (each verified that a privileged KEY match without a SIGNATURE is rejected).
 Config-mutator auth fully covered: set_reserved_floor / set_reserve / set_coin_sink / shutdown / reconfigure
@@ -25,6 +26,32 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [FIXED] twap cancel_bid — no-op roll unlocked the anti-spoof cooldown early (external issue #28)
+Vector (external report, issue #28 by SrMessiSOL — same filer as the PR #27 regression trap, so reviewed
+adversarially): process_cancel_bid gated cancel on `cleared || aged`, where `cleared = book.round_end !=
+place_round_end` and `aged = now >= place_slot + 2*round_length`. The intent of `cleared` was "a settlement
+cleared the book," but process_execute advances round_end on EVERY run — including a no-op ROLL (total_coin
+== 0, routine at surplus 0) that leaves the bid OCCUPIED + unsettled. So a bidder could post a bid to shape
+the book, crank a permissionless no-op roll (advancing round_end), and yank the bid well INSIDE the intended
+2*round_length window — re-opening the last-second-cancel manipulation the cooldown was built (vs the old
+library's withdraw_bid) to prevent. Net: a shape-the-book-then-yank seller-griefing (other sellers, reacting
+to the fake supply, bid aggressively and clear at a worse price next round); the report confirms NO
+third-party theft (only the attacker's own escrow moves), so it is a low-severity anti-spoof weakening, not
+a LOF — but it is a genuine deviation from the design's explicit "committed until settled" guarantee.
+Adversarial review of the report + its fix: the report is technically SOUND (verified: after a roll,
+round_end moved so `cleared` is true while `aged` is false, and `!cleared && !aged` does not fire). Unlike
+PR #27, the recommended fix is SAFE and not a trap: removing the `cleared` shortcut makes cancel STRICTER
+(gate on `aged` alone) — it cannot open any hole (removing a cancel-escape only makes bids MORE committed),
+cannot strand funds (`aged` always eventually fires), and `cleared` only ever mattered for rolled bids
+anyway (settled bids are already rejected by SL_SETTLED). Cost: a rolled bid waits ~1 extra round to cancel.
+FIX APPLIED (twap-program/src/lib.rs process_cancel_bid): dropped the round_end-delta `cleared` shortcut;
+cancel now gates on `aged` (2*round_length) alone (eviction by a strictly-better bid remains the only other
+early exit). Re-pointed the test: `e2e_roll_opens_the_cleared_cancel_path` -> `e2e_roll_does_not_unlock_
+cancel_before_aging` — same setup, but now asserts the post-roll cancel is REJECTED and only succeeds after
+the full aging window (escrow returned). Full chain suite 65/65 green; the aged-path + settled-bid + anti-
+spoof cancel tests all still pass. INVARIANT: a bid is committed until SETTLED or 2*round_length aged (or
+evicted by a strictly-better bid); a round_end change from a no-op roll must NOT count as a release.
 
 ### [VERIFIED-COVERED] Init-validation negative-half sweep — remaining untested clauses are marginal
 Build health: re-ran `cargo build-sbf` for all four programs — clean. Then swept the init/validation guards

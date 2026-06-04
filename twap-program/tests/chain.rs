@@ -4775,15 +4775,14 @@ fn e2e_closed_weakest_ata_cannot_permanently_block_eviction() {
     let _ = bidders;
 }
 
-// CANCEL via the CLEARED path: a committed bid becomes reclaimable after a ROLL (an execute that buys
-// nothing) advances round_end — the primary "one round of twap clears the book" release. This is a
-// DISTINCT cancel_bid branch from the AGED (2*round_length) path that e2e_bid_cancellable_after_cooldown
-// covers; a regression breaking `cleared` would lock a committed bidder's COIN after a roll (a DOS)
-// yet still pass the aged-path test. Isolation: at the SAME slot E1 (= round_end), cancel is REJECTED
-// before the roll (cleared=false, aged=false) and ALLOWED right after the roll (cleared=true, aged
-// still false) — so the ONLY thing that opened cancel is the roll moving round_end.
+// ANTI-SPOOF COMMITMENT (issue #28 fix): a permissionless no-op ROLL advances round_end but must NOT
+// unlock cancel inside the aging window. process_cancel_bid now gates on `aged` (2*round_length) ALONE —
+// the old `round_end`-delta "cleared" shortcut let a spoofer post a bid to shape the book, crank a no-op
+// roll, and yank it mid-cooldown (the last-second-cancel manipulation the gate exists to stop). Isolation:
+// at slot E1 (= round_end) cancel is REJECTED before the roll, STILL REJECTED right after the roll (the
+// roll moved round_end but aging hasn't elapsed), and only succeeds once 2*round_length has passed.
 #[test]
-fn e2e_roll_opens_the_cleared_cancel_path() {
+fn e2e_roll_does_not_unlock_cancel_before_aging() {
     let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
         compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
         ..solana_program_runtime::compute_budget::ComputeBudget::default()
@@ -4810,15 +4809,24 @@ fn e2e_roll_opens_the_cleared_cancel_path() {
     assert!(send(&mut svm, &[&alice], cancel_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, 0)).is_err(),
         "cancel rejected at round_end before any execute (neither cleared nor aged)");
 
-    // The roll-execute advances round_end (nothing bought).
+    // A permissionless roll-execute advances round_end (nothing bought) — the issue-#28 lever.
     let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
     send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("roll execute (no purchase)");
     assert_eq!(token_amount(&svm, &bk.holding), 0, "below floor -> nothing pulled (a roll)");
 
-    // SAME slot region, AFTER the roll: cancel now succeeds via the CLEARED path (round_end moved),
-    // even though 2*round_length has NOT elapsed (the aged path is still closed).
-    send(&mut svm, &[&alice], cancel_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, 0)).expect("cancel via the cleared path after the roll");
-    assert_eq!(token_amount(&svm, &a_src), 400_000, "alice reclaimed her full escrowed COIN");
+    // FIX (issue #28): a no-op roll moving round_end MUST NOT unlock cancel inside the aging window.
+    // The cooldown gates on `aged` alone now, so the same-slot cancel is still REJECTED — closing the
+    // shape-the-book-then-yank manipulation the cooldown exists to prevent.
+    assert!(
+        send(&mut svm, &[&alice], cancel_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, 0)).is_err(),
+        "a no-op roll must NOT unlock cancel before the 2*round_length aging window"
+    );
+    assert_eq!(token_amount(&svm, &a_src), 0, "escrow still committed after the roll");
+
+    // Once the full 2*round_length aging window elapses, the legit cancel returns the escrow.
+    warp_to(&mut svm, e1 + 2 * 10 + 1); // e1 >= place_slot, so e1 + 2*round_length > place_slot + 2*round_length = aged
+    send(&mut svm, &[&alice], cancel_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, 0)).expect("cancel via the aging path");
+    assert_eq!(token_amount(&svm, &a_src), 400_000, "alice reclaimed her full escrowed COIN after aging");
     let _ = a_usd;
 }
 

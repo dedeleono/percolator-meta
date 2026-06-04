@@ -1698,12 +1698,18 @@ fn process_cancel_bid(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]
             return Err(ProgramError::IllegalOwner); // only the bidder may cancel their own bid
         }
         // Cooldown: an execute has cleared the book since placement, OR 2*round_length slots passed.
+        // Anti-spoof commitment (issue #28): a bid is committed until it is SETTLED (then it leaves
+        // via claim, not cancel — settled slots are rejected above) or until the full 2*round_length
+        // aging window elapses. We deliberately do NOT shortcut on a `round_end` delta: process_execute
+        // advances round_end on EVERY run, including a no-op roll (total_coin == 0, routine at surplus 0)
+        // that leaves the bid OCCUPIED + unsettled. Treating that as "cleared" let a spoofer post a bid
+        // to shape the book, crank a permissionless no-op roll, and yank it well inside the cooldown —
+        // re-opening the very last-second-cancel manipulation this gate exists to stop. Gate on aging
+        // alone (eviction by a strictly-better bid remains the only other early exit).
         let place_slot = book_rd_u64(&d, o + SL_PLACE_SLOT);
-        let place_round_end = book_rd_u64(&d, o + SL_PLACE_ROUND_END);
         let now = solana_program::clock::Clock::get()?.slot;
-        let cleared = book.round_end != place_round_end;
         let aged = now >= place_slot.saturating_add(book.round_length.saturating_mul(2));
-        if !cleared && !aged {
+        if !aged {
             return Err(ProgramError::Custom(ERR_ROUND_ACTIVE));
         }
         (book_rd_u128(&d, o + SL_COIN), book_rd_key(&d, o + SL_COIN_ATA))
