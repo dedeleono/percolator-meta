@@ -6,7 +6,7 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 Reachable six-binary surface is exhausted: 53 vectors recorded (A–AX), of which 3 were real CRITICAL
 bugs found + fixed by this loop (AD signer-seed-binding, AI lamport-prefund init-DOS, AQ parasite-config
 insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full regression GREEN at this
-checkpoint: 130 tests across every harness (subledger insurance 23 + own-vault 5 + lib 6; genesis-vote
+checkpoint: 131 tests across every harness (subledger insurance 24 + own-vault 5 + lib 6; genesis-vote
 seal 9 + lib 3; distribution 11 + lib 4; twap chain 64 + lib 4) and all four programs build-sbf clean.
 Config-mutator auth fully covered: set_reserved_floor / set_reserve / set_coin_sink / shutdown / reconfigure
 all have a direct non-Squads (or non-signing) rejection test.
@@ -21,6 +21,26 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [BLOCKED] subledger set_vote_lock — owner self-unlocking a live vote to exit capital (the core Sybil hole)
+Vector: the whole bootstrap's Sybil resistance rests on "a vote can never outlive the capital backing it":
+a live ballot vote-LOCKS the depositor's principal, and the lock is cleared ONLY by the gv vote-RETRACT CPI
+(which also removes the ballot's weight/principal). set_vote_lock requires BOTH the owner AND the
+vote_authority (gv config PDA) to sign. Hostile idea: the owner calls set_vote_lock(0) DIRECTLY on their own
+position, NAMING the gv config as a read-only (unsigned) account — clearing the lock without retracting —
+then withdraws their principal while the ballot stays live: a vote backed by capital no longer at risk.
+Analysis (subledger/src/lib.rs process_set_vote_lock): `!vote_authority.is_signer -> MissingRequiredSignature`
+(plus owner.is_signer, plus pool.vote_authority == vote_authority.key). The gv config PDA only signs via the
+gv vote-retract CPI, so a bare owner cannot toggle the lock — the self-unlock is rejected. BLOCKED.
+Coverage gap closed: `hostile_vote_authority_cannot_freeze_a_depositor` pins the OWNER-sig half (can't LOCK
+a victim without their signature). `vote_locked_principal_cannot_exit_until_retracted` pins the withdraw-side
+guard (locked -> can't exit). But the vote_authority-SIG half — owner can't SELF-UNLOCK — was untested. Added
+`owner_cannot_self_unlock_a_live_vote_to_exit_capital`: alice votes (locks), then directly calls
+set_vote_lock(0) naming the gv config UNSIGNED -> rejected, position stays locked, withdraw still refused,
+capital still at risk. MUTATION-VERIFIED against the real .so: removing the `!vote_authority.is_signer` check
+lets the self-unlock succeed and the test FAILS (sharp single-guard). KEPT. INVARIANT: set_vote_lock must keep
+requiring BOTH the owner AND the vote_authority signatures — the lock toggles only inside the gv vote CPI,
+never by the owner alone; a vote_authority KEY match without its SIGNATURE is not authorization.
 
 ### [BLOCKED] twap reconfigure — missing-signer bypass of the burn-share gate (Squads/timelock bypass DOS)
 Vector: `reconfigure` (IX 2) changes the DAO's burn share (surplus_buy_burn_bps), Squads-vault-gated behind

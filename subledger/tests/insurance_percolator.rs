@@ -1388,6 +1388,62 @@ fn hostile_vote_authority_cannot_freeze_a_depositor() {
     assert_eq!(env.token_amount(&victim_ata), amount, "depositor funds were never frozen");
 }
 
+// SYBIL HOLE (vote outlives capital): set_vote_lock requires BOTH the owner AND the vote_authority
+// (the gv config PDA) to sign. The freeze test above pins the owner-sig half. THIS pins the
+// vote_authority-sig half — the one that stops an owner from SELF-UNLOCKING. The lock is only ever
+// cleared by the gv vote-RETRACT CPI (which makes the config PDA sign and also removes the ballot's
+// weight/principal). If an owner could clear the lock directly — by naming the gv config as a
+// read-only (unsigned) account — they would withdraw their principal while their ballot stays live:
+// a vote backed by capital that is no longer at risk (the core Sybil break the whole bootstrap rests
+// on). The vote_authority.is_signer check rejects it.
+#[test]
+fn owner_cannot_self_unlock_a_live_vote_to_exit_capital() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("deposit");
+    let dest = Pubkey::new_unique();
+    let (_dp, gv_proposal) = create_and_register_proposal(&mut env, &ve, 1, &dest);
+
+    let vote_locked = |env: &Env| -> bool {
+        env.svm.get_account(&env.position_pda(&alice.pubkey())).unwrap().data[97] == 1
+    };
+
+    env.warp_slot(1124);
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("vote backs proposal");
+    assert!(vote_locked(&env), "voting locks the principal");
+
+    // ATTACK: alice calls set_vote_lock(0) on her OWN position, naming the gv config as the
+    // vote_authority but WITHOUT its signature (only alice signs as the owner).
+    let attack = Instruction {
+        program_id: sub_id(),
+        accounts: vec![
+            AccountMeta::new_readonly(ve.gv_config, false), // gv config NAMED but NOT signing
+            AccountMeta::new_readonly(env.pool, false),
+            AccountMeta::new(env.position_pda(&alice.pubkey()), false),
+            AccountMeta::new_readonly(alice.pubkey(), true), // owner signs
+        ],
+        data: vec![6u8, 0u8], // IX_SET_VOTE_LOCK, locked = 0 (unlock)
+    };
+    assert!(
+        env.send(&[attack], &[&alice]).is_err(),
+        "owner cannot self-unlock without the gv authority's signature"
+    );
+    assert!(vote_locked(&env), "position stays locked — self-unlock refused");
+
+    // The capital still cannot leave while the ballot is live.
+    assert!(
+        env.insurance_withdraw(&alice, &alice_ata, &holding, &alice, amount).is_err(),
+        "vote-locked principal still cannot exit"
+    );
+    assert_eq!(env.token_amount(&env.perc_vault.clone()), amount, "capital still at risk");
+}
+
 #[test]
 fn principal_only_owner_exit_returns_funds_and_guards() {
     let mut env = Env::new();
