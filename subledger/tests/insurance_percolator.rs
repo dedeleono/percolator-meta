@@ -593,6 +593,25 @@ fn gv_vote(
     env.send(&[ix], &[voter])
 }
 
+// Permissionless winner-take-all trigger: seals the distribution to the winning
+// proposal. One voter holding 100% trivially clears quorum + majority.
+fn gv_trigger(env: &mut Env, ve: &VoteEnv, gv_proposal: &Pubkey, dist_proposal: &Pubkey) -> Result<(), String> {
+    let ix = Instruction {
+        program_id: gv_id(),
+        accounts: vec![
+            AccountMeta::new(env.payer.pubkey(), true),
+            AccountMeta::new(ve.gv_config, false),
+            AccountMeta::new(*gv_proposal, false),
+            AccountMeta::new_readonly(dist_id(), false),
+            AccountMeta::new(ve.dist_config, false),
+            AccountMeta::new(*dist_proposal, false),
+            AccountMeta::new_readonly(env.pool, false), // live quorum denominator
+        ],
+        data: vec![4u8],
+    };
+    env.send(&[ix], &[])
+}
+
 fn gv_proposal_support(env: &Env, gv_proposal: &Pubkey) -> (u64, u64) {
     let acc = env.svm.get_account(gv_proposal).unwrap();
     let support_weight = u64::from_le_bytes(acc.data[72..80].try_into().unwrap());
@@ -710,6 +729,45 @@ fn vote_locked_principal_cannot_exit_until_retracted() {
     env.insurance_withdraw(&alice, &alice_ata, &holding, &alice, amount).expect("exit after retract");
     assert_eq!(env.token_amount(&alice_ata), amount, "principal returned post-retract");
     assert_eq!(env.token_amount(&env.perc_vault.clone()), 0, "insurance drained");
+}
+
+// The vote-lock must not become a permanent freeze. After the winner is sealed
+// (pv.executed), a WINNING voter's position is still locked — they must be able to
+// RETRACT post-seal to release the lock and exit their principal. (The seal is
+// immutable; only NEW backing is forbidden post-seal.) Without this, the very
+// voters who carried the winning proposal would have their capital frozen forever.
+#[test]
+fn winning_voter_can_retract_and_exit_after_finalize() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("deposit");
+
+    let dest = Pubkey::new_unique();
+    let (dist_proposal, gv_proposal) = create_and_register_proposal(&mut env, &ve, 1, &dest);
+
+    env.warp_slot(1124);
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("vote");
+
+    // Finalize: the single voter holds 100%, so quorum + majority both hold.
+    gv_trigger(&mut env, &ve, &gv_proposal, &dist_proposal).expect("trigger seals the winner");
+
+    // Still locked immediately post-seal: capital can't sneak out without retracting.
+    let err = env.insurance_withdraw(&alice, &alice_ata, &holding, &alice, amount);
+    assert!(err.is_err(), "still vote-locked post-seal until retracted");
+
+    // The freeze fix: a winning voter can retract AFTER finalize (only new backing
+    // is forbidden once sealed), which clears the subledger lock.
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 2).expect("retract must be allowed post-seal");
+
+    // ...and then recover their principal. No permanent freeze.
+    env.insurance_withdraw(&alice, &alice_ata, &holding, &alice, amount).expect("exit after finalize+retract");
+    assert_eq!(env.token_amount(&alice_ata), amount, "principal recovered after finalize");
 }
 
 #[test]

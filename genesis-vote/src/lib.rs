@@ -424,7 +424,15 @@ fn vote<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>], data: &[u8]) -
     }
     let mut config = Config::deserialize(&config_account.try_borrow_data()?)?;
     let mut pv = ProposalVote::deserialize(&proposal_account.try_borrow_data()?)?;
-    if pv.config != *config_account.key || pv.executed {
+    if pv.config != *config_account.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    // Once the winner is sealed, no NEW backing — but a voter must always be able to
+    // RETRACT, even post-seal: retract clears the subledger vote-lock so they can
+    // exit their principal. Blocking retract here would freeze winning voters'
+    // capital forever (their proposal is the executed one). The seal is immutable;
+    // post-seal tally mutations are harmless (nothing reads them after execution).
+    if pv.executed && action == VOTE_BACK {
         return Err(ProgramError::InvalidAccountData);
     }
 
