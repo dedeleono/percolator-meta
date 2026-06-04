@@ -3,11 +3,11 @@
 Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdict.
 
 ## Checkpoint (latest)
-Reachable six-binary surface is exhausted: 51 vectors recorded (A–AV), of which 3 were real CRITICAL
+Reachable six-binary surface is exhausted: 52 vectors recorded (A–AW), of which 3 were real CRITICAL
 bugs found + fixed by this loop (AD signer-seed-binding, AI lamport-prefund init-DOS, AQ parasite-config
 insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full regression GREEN at this
 checkpoint: 119 tests across every harness (subledger insurance 23 + own-vault 5 + lib 6; genesis-vote
-seal 5 + lib 3; distribution 8 + lib 4; twap chain 58 + lib 4) and all four programs build-sbf clean.
+seal 5 + lib 3; distribution 8 + lib 4; twap chain 59 + lib 4) and all four programs build-sbf clean.
 The percolator dep is pinned to committed revs (percolator-prog c050578, percolator 76d0e75), so a
 sibling mid-edit no longer breaks the build. Recent ticks are confirmations, not new findings; the
 remaining surface is runtime-guaranteed (e.g. AU SPL-authority), DAO-footgun hardening, or OFF this
@@ -16,6 +16,19 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [BLOCKED] AW. Permissionless cranker redirects a loser's COIN refund via a substituted coin_ata (external LOF)
+Sibling of AV on the claim path. `claim` is PERMISSIONLESS and pays a settled bid's `coin_refund`
+(coin_escrow -> coin_ata); for a LOSER (eligible but unfilled because the budget ran out) the refund is
+the FULL escrowed COIN. If `coin_ata` weren't pinned, a cranker would claim the loser's slot with THEIR
+OWN COIN account and steal the refund. BLOCKED: claim requires `coin_ata == the bid's recorded canonical
+COIN ATA` (and `usd_dest == the recorded canonical collateral ATA`) — findings V/AB — so a substituted
+account is rejected and the refund stays claimable to the bidder. The pre-existing
+`e2e_claim_cannot_redirect_a_winners_payout` only covered the USD side AND its winner sold all its COIN
+(coin_refund == 0), so the COIN-refund redirect with a NON-ZERO refund was untested. Pinned by
+`e2e_claim_cannot_redirect_a_losers_coin_refund`: alice wins and takes the 400k budget, bob loses
+(rate 0.25, unfilled) and is owed a full 100k COIN refund; a cranker claiming bob's slot with their own
+coin account is rejected (0 redirected), then the honest claim delivers bob's 100k to his canonical ATA.
 
 ### [BLOCKED] AV. Permissionless cranker redirects the SEND buyback via a substituted coin_sink (external LOF)
 `execute` is PERMISSIONLESS (any cranker turns it). In SEND (buyback) mode it transfers the bought COIN

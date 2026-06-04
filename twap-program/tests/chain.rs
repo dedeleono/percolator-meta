@@ -4750,3 +4750,46 @@ fn e2e_execute_send_cranker_cannot_redirect_the_buyback() {
     assert_eq!(token_amount(&svm, &treasury), 400_000, "bought COIN routed to the DAO treasury, not the cranker");
     let _ = (alice, a_src, a_usd);
 }
+
+// CLAIM COIN-REFUND REDIRECT BY A PERMISSIONLESS CRANKER (external LOF): claim is permissionless and
+// pays a bid's coin_refund (coin_escrow -> coin_ata). For a LOSER (unfilled) bid the refund is the
+// FULL escrowed COIN. If coin_ata weren't pinned, a cranker could claim the loser's slot with THEIR
+// OWN COIN account and steal the refund. claim pins coin_ata == the bid's recorded canonical COIN ATA
+// (findings V/AB). The existing redirect test only covers the USD side (its winner sold all its COIN,
+// so coin_refund was 0) — this exercises a non-zero refund.
+#[test]
+fn e2e_claim_cannot_redirect_a_losers_coin_refund() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0); // BURN; budget = 400k
+
+    // alice WINS (rate 1, takes the whole 400k budget); bob LOSES (rate 0.25, unfilled -> full refund).
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("alice bid");
+    let (bob, b_src, b_usd) = new_bidder(&mut svm, &payer, &env, 100_000);
+    send(&mut svm, &[&bob], place_bid_ix(&bob.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &b_src, &b_usd, &env.coin_mint, &env.collateral_mint, 100_000, 400_000, None)).expect("bob bid");
+    assert_eq!(token_amount(&svm, &b_src), 0, "bob's 100k COIN escrowed");
+
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute settles");
+
+    // ATTACK: the cranker claims bob's loser slot (index 1) but substitutes bob's coin_ata with theirs.
+    let thief = Pubkey::new_unique();
+    set_token(&mut svm, &thief, &env.coin_mint, &cranker.pubkey(), 0);
+    assert!(send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &b_usd, &thief, 1)).is_err(),
+        "claim must reject a coin_ata != the bid's recorded refund target");
+    assert_eq!(token_amount(&svm, &thief), 0, "no COIN refund redirected to the cranker");
+
+    // Honest claim -> bob gets his full COIN refund.
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &b_usd, &b_src, 1)).expect("honest claim");
+    assert_eq!(token_amount(&svm, &b_src), 100_000, "bob's full COIN refund delivered to his canonical ATA");
+    let _ = (alice, a_src, a_usd);
+}
