@@ -442,7 +442,45 @@ fn init_config_rejects_a_mintable_coin() {
 
     // Mint authority still live: rejected.
     assert!(send(&mut svm, build()).is_err(), "must reject a still-mintable COIN");
-    // After revoking the mint authority, the same fixed-supply COIN is accepted.
+
+    // Pre-mint extra COIN to the attacker (supply 150 > distributed pool 100), THEN
+    // revoke. Must still be rejected: undistributed COIN outside the pool would
+    // dominate governance.
+    let attacker_ata = create_token_account(&mut svm, &payer, &coin_mint, &Pubkey::new_unique());
+    mint_to(&mut svm, &payer, &coin_mint, &mint_authority, &attacker_ata, 50);
     revoke_mint_authority(&mut svm, &payer, &coin_mint, &mint_authority);
-    send(&mut svm, build()).expect("fixed-supply COIN accepted once mint authority is revoked");
+    assert!(send(&mut svm, build()).is_err(), "must reject a COIN with supply > the distributed pool");
+}
+
+// Once the entire COIN supply is the distribution pool (and mint authority revoked),
+// the config is accepted — proving every COIN that exists is in this vault.
+#[test]
+fn init_config_accepts_a_fully_in_vault_fixed_supply_coin() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(pid(), so_path()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let mint_authority = Keypair::new();
+    let coin_mint = create_mint(&mut svm, &payer, &mint_authority.pubkey());
+    let config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref()], &pid()).0;
+    let vault = create_token_account(&mut svm, &payer, &coin_mint, &config);
+    mint_to(&mut svm, &payer, &coin_mint, &mint_authority, &vault, 100); // entire supply -> vault
+    revoke_mint_authority(&mut svm, &payer, &coin_mint, &mint_authority);
+    let mut data = vec![0u8];
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&100u64.to_le_bytes());
+    let ix = Instruction {
+        program_id: pid(),
+        accounts: vec![
+            AccountMeta::new(payer.pubkey(), true),
+            AccountMeta::new_readonly(coin_mint, false),
+            AccountMeta::new(config, false),
+            AccountMeta::new_readonly(vault, false),
+            AccountMeta::new_readonly(Pubkey::new_unique(), false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        ],
+        data,
+    };
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer], svm.latest_blockhash());
+    svm.send_transaction(tx).expect("entire-supply-in-vault COIN accepted");
 }

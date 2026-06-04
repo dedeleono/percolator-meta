@@ -340,3 +340,13 @@ exploitable (a non-canonical pool is simply inert — every deposit/withdraw CPI
 reverts with InvalidVaultAccount), but a fail-fast pin is correct. FIX: added
 `canonical_vault_address` to subledger and pinned it in init_insurance_pool.
 Test (KEPT): insurance_percolator.rs::init_insurance_pool_rejects_non_canonical_vault.
+
+### [FIXED] N. Fixed-supply COIN: pre-mint dilution (finding K gap)
+Finding K required mint_authority==None (no FUTURE minting) but not that the mint's
+CURRENT supply equals the distributed pool. An attacker could pre-mint extra COIN to
+themselves BEFORE revoking, then fund the vault with only total_supply — holding
+undistributed COIN that dominates governance (the COIN IS the MetaDAO). FIX: init
+also requires `mint.supply == total_supply`; with the vault-funding check (E) this
+proves every COIN that exists is in the distribution vault. Regressions:
+distribution.rs::init_config_rejects_a_mintable_coin (now also pre-mint extra ->
+rejected) + init_config_accepts_a_fully_in_vault_fixed_supply_coin.

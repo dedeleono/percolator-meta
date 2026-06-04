@@ -253,6 +253,15 @@ fn init_config(program_id: &Pubkey, accounts: &[AccountInfo], mut data: &[u8]) -
     if mint.mint_authority.is_some() || mint.freeze_authority.is_some() {
         return Err(ProgramError::InvalidAccountData);
     }
+    // ...and the mint's ENTIRE supply must equal the distributed pool. Revoking the
+    // mint authority only stops FUTURE minting; without this an attacker could
+    // pre-mint extra COIN to themselves before revoking and fund the vault with just
+    // total_supply, holding undistributed COIN that dominates governance (the COIN IS
+    // the MetaDAO). Combined with the vault-funding check below, this proves every
+    // COIN that exists is in this distribution vault.
+    if mint.supply != total_supply {
+        return Err(ProgramError::InvalidAccountData);
+    }
 
     // Vault is the COIN holding account, authority = config PDA.
     let vault_state = spl_token::state::Account::unpack(&vault.try_borrow_data()?)?;
