@@ -914,3 +914,12 @@ once bob (600k) also votes does the trigger seal the winner. Distinct from the s
 injected-tally quorum test — this exercises the full real path (two deposits -> outstanding ->
 vote -> quorum) plus the positive case. Closes the "low-turnout capture" governance attack.
 Test: twap-program/tests/chain.rs `e2e_minority_turnout_cannot_reach_quorum`. KEPT.
+
+### [BLOCKED] E2E probe: a voter cannot vote with another voter's position (no vote-power theft)
+Voting power is the voter's OWN capital. The gv `vote` derives the subledger position PDA from
+the SIGNER (sub_position_seeds(pool, voter)) and pins the passed account to it, so a voter
+cannot substitute someone else's (larger) position to vote with their weight. Proven end-to-end
+against the real subledger + genesis-vote binaries: alice (100k) signs and passes BOB's (900k)
+position account — REJECTED (the PDA derived from alice mismatches the passed account); alice
+voting with her OWN position works. Closes the position-substitution / vote-power-theft vector.
+Test: twap-program/tests/chain.rs `e2e_voter_cannot_vote_with_another_voters_position`. KEPT.
