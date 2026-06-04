@@ -289,6 +289,28 @@ fn payout(policy: u8, balance: u64, outstanding: u64, principal: u64) -> Result<
     }
 }
 
+// Byte offset of the asset-0 `insurance` u128 inside a percolator market slab. Solana
+// account data is globally readable, so the LIVE insurance is read straight from the slab
+// bytes — no accessor API. The zero-copy MarketGroupV16 header is a repr(C) Pod of `[u8;N]`
+// newtypes (align 1) at MARKET_GROUP_OFF = HEADER_LEN(16)+WRAPPER_CONFIG_LEN(432)=448;
+// `insurance` sits at +301 within it (== offset_of!(MarketGroupV16HeaderAccount, insurance)).
+// NOTE: the adjacent `vault` field is at +285 (slab 733) and holds total tokens (insurance +
+// trader capital + pnl); reading vault would over-count the fund and under-charge the haircut.
+// Pinned exactly against the real percolator struct by the insurance_offset canary in the tests.
+const PERC_INSURANCE_OFFSET: usize = 448 + 301;
+
+/// The market's LIVE asset-0 insurance, read straight from the slab account bytes. This is
+/// the authoritative figure (not the shared vault token balance) — it shrinks when the
+/// market draws on insurance to cover losses, which is exactly the impairment the pro-rata
+/// haircut must price in.
+fn read_asset0_insurance(slab_data: &[u8]) -> Result<u64, ProgramError> {
+    let b = slab_data
+        .get(PERC_INSURANCE_OFFSET..PERC_INSURANCE_OFFSET + 16)
+        .ok_or(ProgramError::InvalidAccountData)?;
+    let v = u128::from_le_bytes(b.try_into().unwrap());
+    Ok(u64::try_from(v).unwrap_or(u64::MAX))
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -1034,6 +1056,17 @@ fn process_insurance_withdraw(
         return Err(ProgramError::InsufficientFunds);
     }
 
+    // PRO-RATA HAIRCUT under impairment (finding L): read the LIVE asset-0 insurance straight
+    // from the slab. When it can still fully back `outstanding`, the exit pays `amount` 1:1;
+    // when the market has drawn insurance below outstanding, every exit instead receives
+    // insurance*amount/outstanding — the loss is shared PROPORTIONALLY and the exit is
+    // ORDER-INDEPENDENT (no first-come race that strands late exiters; cf. the own-vault
+    // payout). The full `amount` always leaves the outstanding accounting; the owner collects
+    // only their pro-rata share `owed`. (POLICY_WITH_SURPLUS pools always pro-rata, returning
+    // any yield too.)
+    let insurance = read_asset0_insurance(&market_slab.try_borrow_data()?)?;
+    let owed = payout(pool.policy, insurance, pool.outstanding_principal, amount)?;
+
     // The pool PDA (asset-0 insurance operator) signs WithdrawInsuranceLimited,
     // moving Percolator insurance -> pool-PDA-owned holding.
     let seeds: [&[u8]; 6] = [
@@ -1044,54 +1077,59 @@ fn process_insurance_withdraw(
         pool.percolator_program.as_ref(),
         core::slice::from_ref(&pool.bump),
     ];
-    let mut ix_data = vec![PERC_IX_WITHDRAW_INSURANCE_LIMITED];
-    ix_data.extend_from_slice(&(amount as u128).to_le_bytes());
-    invoke_signed(
-        &Instruction {
-            program_id: *percolator_program.key,
-            accounts: vec![
-                AccountMeta::new_readonly(*pool_account.key, true),
-                AccountMeta::new(*market_slab.key, false),
-                AccountMeta::new(*holding.key, false),
-                AccountMeta::new(*percolator_vault.key, false),
-                AccountMeta::new_readonly(*vault_authority.key, false),
-                AccountMeta::new_readonly(*token_program.key, false),
+    // A fully-impaired exit (owed == 0, insurance wiped) still retires the position below; only
+    // move tokens when there is something to pay (percolator rejects a zero-amount withdraw).
+    if owed > 0 {
+        let mut ix_data = vec![PERC_IX_WITHDRAW_INSURANCE_LIMITED];
+        ix_data.extend_from_slice(&(owed as u128).to_le_bytes());
+        invoke_signed(
+            &Instruction {
+                program_id: *percolator_program.key,
+                accounts: vec![
+                    AccountMeta::new_readonly(*pool_account.key, true),
+                    AccountMeta::new(*market_slab.key, false),
+                    AccountMeta::new(*holding.key, false),
+                    AccountMeta::new(*percolator_vault.key, false),
+                    AccountMeta::new_readonly(*vault_authority.key, false),
+                    AccountMeta::new_readonly(*token_program.key, false),
+                ],
+                data: ix_data,
+            },
+            &[
+                pool_account.clone(),
+                market_slab.clone(),
+                holding.clone(),
+                percolator_vault.clone(),
+                vault_authority.clone(),
+                token_program.clone(),
+                percolator_program.clone(),
             ],
-            data: ix_data,
-        },
-        &[
-            pool_account.clone(),
-            market_slab.clone(),
-            holding.clone(),
-            percolator_vault.clone(),
-            vault_authority.clone(),
-            token_program.clone(),
-            percolator_program.clone(),
-        ],
-        &[&seeds],
-    )?;
+            &[&seeds],
+        )?;
 
-    // holding -> owner's ATA, signed by the pool PDA. This is the only path out and
-    // it is bounded by the owner's recorded principal, so the program can never pay
-    // the owner more than they put in.
-    invoke_signed(
-        &spl_token::instruction::transfer(
-            token_program.key,
-            holding.key,
-            owner_ata.key,
-            pool_account.key,
-            &[],
-            amount,
-        )?,
-        &[holding.clone(), owner_ata.clone(), pool_account.clone(), token_program.clone()],
-        &[&seeds],
-    )?;
+        // holding -> owner's ATA, signed by the pool PDA. The only path out, bounded by the
+        // owner's pro-rata share, so the program can never pay more than is owed.
+        invoke_signed(
+            &spl_token::instruction::transfer(
+                token_program.key,
+                holding.key,
+                owner_ata.key,
+                pool_account.key,
+                &[],
+                owed,
+            )?,
+            &[holding.clone(), owner_ata.clone(), pool_account.clone(), token_program.clone()],
+            &[&seeds],
+        )?;
+    }
 
+    // The full requested principal leaves the outstanding accounting (the loss, if any, is
+    // realized); the owner collected `owed` (their pro-rata share).
     pool.outstanding_principal -= amount;
     position.principal -= amount;
     position.withdrawn_amount = position
         .withdrawn_amount
-        .checked_add(amount)
+        .checked_add(owed)
         .ok_or(ProgramError::ArithmeticOverflow)?;
     if position.principal == 0 {
         position.withdrawn = true;

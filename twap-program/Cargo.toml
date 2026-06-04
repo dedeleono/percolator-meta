@@ -22,4 +22,5 @@ solana-sdk = { workspace = true }
 litesvm = { workspace = true }
 spl-token = { version = "4.0", features = ["no-entrypoint"] }
 percolator-prog = { workspace = true }
+percolator = { path = "../../percolator" }
 solana-program-runtime = "1.18"

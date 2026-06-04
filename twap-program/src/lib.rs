@@ -128,11 +128,13 @@ fn perc_vault_authority(market_slab: &Pubkey, percolator_program: &Pubkey) -> Pu
 // account data is globally readable, so we read it straight from the slab bytes — no
 // accessor API, no percolator linkage. The slab's zero-copy MarketGroupV16 header is a
 // repr(C) Pod of `[u8;N]` newtypes (align 1, no padding) at MARKET_GROUP_OFF =
-// HEADER_LEN(16)+WRAPPER_CONFIG_LEN(432)=448; `insurance` sits at +285 within it
-// (market_group_id 32 + V16ConfigAccount 233 + asset_slot_capacity 4 + vault 16; it is the
-// field right after `vault` and before `c_tot`). The
-// `insurance_offset_matches_real_percolator_slab` canary pins this against the live binary.
-const INSURANCE_OFFSET: usize = 448 + 285;
+// HEADER_LEN(16)+WRAPPER_CONFIG_LEN(432)=448; `insurance` sits at +301 within it
+// (== offset_of!(MarketGroupV16HeaderAccount, insurance)). CRITICAL: the adjacent `vault`
+// field at +285 (slab 733) holds total tokens (insurance + trader capital + pnl) — reading
+// vault here would let the surplus pull treat live trader/depositor capital as "surplus"
+// (the finding-O failure class). The `insurance_offset_matches_real_percolator_slab` canary
+// pins this exactly against the real percolator struct via offset_of!.
+const INSURANCE_OFFSET: usize = 448 + 301;
 
 /// Read the market's asset-0 insurance balance directly from the slab account bytes.
 fn read_asset0_insurance(slab_data: &[u8]) -> Result<u128, ProgramError> {

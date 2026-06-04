@@ -1591,11 +1591,20 @@ fn e2e_finding_o_floor_blocks_principal_drain() {
 
 // CANARY: the twap reads the asset-0 `insurance` u128 straight from the market slab at a
 // hardcoded offset (twap src INSURANCE_OFFSET). Pin that offset against the REAL percolator
-// binary: fund insurance with a unique value via a Squads TopUp, then assert the bytes at
-// the offset equal it. If percolator's slab layout drifts, this fails loudly.
+// binary two ways: (1) it must equal MARKET_GROUP_OFF + offset_of!(header, insurance) computed
+// from the real percolator struct; (2) fund insurance with a unique value via a Squads TopUp,
+// then bump the ADJACENT `vault` field to a different sentinel and assert the read still returns
+// the insurance value — proving we read `insurance`, not the (larger) `vault` total. Reading
+// `vault` is the finding-O failure class: trader capital would be pulled as "surplus".
 #[test]
 fn insurance_offset_matches_real_percolator_slab() {
-    const INSURANCE_OFFSET: usize = 448 + 285; // must match twap src
+    const INSURANCE_OFFSET: usize = 448 + 301; // must match twap src
+    // (1) pin against the real percolator struct.
+    use percolator::MarketGroupV16HeaderAccount as H;
+    assert_eq!(INSURANCE_OFFSET, 448 + core::mem::offset_of!(H, insurance),
+        "INSURANCE_OFFSET drifted from real percolator MarketGroupV16HeaderAccount::insurance");
+    let vault_offset = 448 + core::mem::offset_of!(H, vault);
+    assert_ne!(vault_offset, INSURANCE_OFFSET, "vault must not alias insurance");
     let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
         compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
         ..solana_program_runtime::compute_budget::ComputeBudget::default()
@@ -1635,11 +1644,20 @@ fn insurance_offset_matches_real_percolator_slab() {
     ];
     squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 1, &msg, &remaining).expect("topup insurance");
 
+    // (2) Bump the adjacent `vault` field to a DISTINCT sentinel (modelling live trader capital
+    // sitting in the vault on top of the insurance fund), then confirm the read still returns the
+    // insurance value — not the vault total.
+    let mut acct = svm.get_account(&slab).unwrap();
+    let vault_sentinel: u128 = (unique as u128) + 0x7777_7777;
+    acct.data[vault_offset..vault_offset + 16].copy_from_slice(&vault_sentinel.to_le_bytes());
+    svm.set_account(slab, acct).unwrap();
+
     let data = svm.get_account(&slab).unwrap().data;
     let read = u128::from_le_bytes(data[INSURANCE_OFFSET..INSURANCE_OFFSET + 16].try_into().unwrap());
     assert_eq!(read, unique as u128,
-        "insurance offset {} drifted — slab byte read does not match the funded insurance ({}); rescan the layout",
-        INSURANCE_OFFSET, unique);
+        "insurance offset {} drifted — slab byte read ({}) does not match the funded insurance ({}); \
+         if it matches the vault sentinel ({}) the offset is reading `vault`, not `insurance`",
+        INSURANCE_OFFSET, read, unique, vault_sentinel);
 }
 
 // ATTACK PROBE (finding O fix integrity): the surplus floor (reserved_floor) is the only

@@ -4,6 +4,28 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 
 ## Analyzed
 
+### [FIXED] T. Insurance slab offset read `vault`, not `insurance` (subledger + twap) — finding-O class LOF
+Both the subledger pro-rata haircut (`subledger/src/lib.rs PERC_INSURANCE_OFFSET`) and the twap
+surplus pull (`twap-program/src/lib.rs INSURANCE_OFFSET`) read the asset-0 insurance fund straight
+from the percolator market slab at a hardcoded byte offset. Both used `448 + 285`, derived from a
+hand-counted struct layout that assumed `V16ConfigAccount` was 233 bytes. It is actually **249**,
+so `+285` is the `vault` field; `insurance` is at **`448 + 301`** (slab offset 749, confirmed by
+`core::mem::offset_of!(MarketGroupV16HeaderAccount, insurance)` against the real percolator crate,
+and by scanning a live slab: vault@733, insurance@749, remaining_budget_total@893).
+`vault` = total tokens in the market = `insurance + trader capital + pnl`, so it is `>= insurance`
+and equal only when there is NO trading capital (exactly the case in every prior test, which is why
+the old `insurance_offset_matches_real_percolator_slab` canary — funding via TopUp, which bumps BOTH
+vault and insurance equally — could not tell them apart and the bug shipped).
+Impact (both the finding-O failure class): with live trader capital in the market,
+(a) the twap `pull_surplus` would treat trader/depositor capital as withdrawable "surplus" above the
+reserved floor, and (b) the subledger pro-rata haircut would over-count the fund and under-charge the
+haircut (paying early exiters too much, stranding late ones). FIX: both constants → `448 + 301`.
+Pinned now by: (1) twap canary asserting `INSURANCE_OFFSET == 448 + offset_of!(.., insurance)` AND
+bumping the adjacent `vault` field to a distinct sentinel to prove the read returns `insurance` not
+`vault`; (2) subledger `impair_market` helper deriving every loss-coupled offset from the real struct
+via `offset_of!`/value canaries. Tests: subledger `impaired_insurance_exit_is_pro_rata` (order-
+independent 50% haircut against the real binary) + full twap chain (33) green.
+
 ### [FIXED] A. Stale quorum denominator → minority capture (genesis-vote trigger)
 `trigger` checked quorum against `config.outstanding_principal`, a CACHE synced
 only on `vote`. Attack: vote early when the subledger pool is tiny (cache=6), let

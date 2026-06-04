@@ -338,6 +338,62 @@ fn create_holding(env: &mut Env, owner_pool: &Pubkey) -> Pubkey {
     acc.pubkey()
 }
 
+/// Slab base offset of the percolator `MarketGroupV16` header
+/// (HEADER_LEN 16 + WRAPPER_CONFIG_LEN 432).
+const MARKET_GROUP_OFF: usize = 448;
+
+/// Drive the live asset-0 insurance down to `new_insurance` *consistently*, exactly as a real
+/// venue loss would: insurance, vault, the per-domain budgets and the remaining-budget total
+/// all drop together so percolator's `validate_shape` invariants still hold. Every offset is
+/// pinned against the REAL percolator struct (`offset_of!`) or canaried by value, so a layout
+/// change in the percolator binary fails loudly here instead of silently mis-reading the fund.
+fn impair_market(env: &mut Env, new_insurance: u128) {
+    use percolator::MarketGroupV16HeaderAccount as H;
+    let off_vault = MARKET_GROUP_OFF + core::mem::offset_of!(H, vault);
+    let off_ins = MARKET_GROUP_OFF + core::mem::offset_of!(H, insurance);
+    let off_rem = MARKET_GROUP_OFF + core::mem::offset_of!(H, insurance_domain_budget_remaining_total);
+    // The exact constant the subledger ships must equal offset_of(insurance) — the whole point
+    // of the pro-rata feature is reading the insurance fund, NOT the (larger) vault total.
+    assert_eq!(off_ins, MARKET_GROUP_OFF + 301, "insurance offset drifted from real percolator struct");
+    assert_ne!(off_ins, off_vault, "insurance must not alias vault");
+
+    // The asset-0 domain budgets live in the first asset slot (Market<T>), which the real
+    // percolator binary packs immediately after the header. Locate the [long, short] u128 pair
+    // by value (both == half the funded insurance after the 50/50 credit split) and canary that
+    // they reconcile to the header's remaining-budget total.
+    let mut acct = env.svm.get_account(&env.slab).unwrap();
+    let rd = |d: &[u8], o: usize| u128::from_le_bytes(d[o..o + 16].try_into().unwrap());
+    let rem = rd(&acct.data, off_rem);
+    let mut off_long = None;
+    let slot0 = MARKET_GROUP_OFF + core::mem::size_of::<H>();
+    for o in slot0..acct.data.len().saturating_sub(48) {
+        if rd(&acct.data, o) == rem / 2
+            && rd(&acct.data, o + 16) == rem - rem / 2
+            && rd(&acct.data, o + 32) == 0  // spent_long
+            && rd(&acct.data, o + 48) == 0  // spent_short
+        {
+            off_long = Some(o);
+            break;
+        }
+    }
+    let off_long = off_long.expect("locate asset-0 domain budget pair in slab");
+    let off_short = off_long + 16;
+    assert_eq!(
+        rd(&acct.data, off_long) + rd(&acct.data, off_short),
+        rem,
+        "domain budgets must sum to remaining-budget total (layout canary)"
+    );
+
+    let long = new_insurance / 2;
+    let short = new_insurance - long;
+    acct.data[off_vault..off_vault + 16].copy_from_slice(&new_insurance.to_le_bytes());
+    acct.data[off_ins..off_ins + 16].copy_from_slice(&new_insurance.to_le_bytes());
+    acct.data[off_rem..off_rem + 16].copy_from_slice(&new_insurance.to_le_bytes());
+    acct.data[off_long..off_long + 16].copy_from_slice(&long.to_le_bytes());
+    acct.data[off_short..off_short + 16].copy_from_slice(&short.to_le_bytes());
+    env.svm.set_account(env.slab, acct).unwrap();
+}
+
 fn make_live_market(slab: &Pubkey, mint: &Pubkey, marketauth: &Pubkey, init_slot: u64) -> Vec<u8> {
     let initial_price = 1_000_000u64;
     let mut wrapper = percolator_prog::state::WrapperConfigV16::default();
@@ -688,20 +744,20 @@ fn deposit_into_real_percolator_insurance_records_position() {
     assert_eq!(env.pool_outstanding(), amount);
 }
 
-// Venue haircut + surplus behaviour of the insurance exit, against real percolator.
+// Venue haircut behaviour of the insurance exit, against real percolator (finding L FIXED).
 //
 // SURPLUS: correctly EXCLUDED. percolator caps each WithdrawInsuranceLimited to
 // `insurance*max_bps/1e4` then `min(deposit_remaining)`; with deposits_only=1 the cap
 // is the deposited principal, so market profit/surplus is never withdrawable here.
 //
-// HAIRCUT: NOT pro-rata — FIRST-COME. The cap tracks the LIVE insurance/vault, so
-// under an impairment (a venue loss that drops the vault below total deposited
-// principal) an early depositor withdraws their FULL principal and drains the pool,
-// stranding a later depositor. The subledger requests the full `amount` and computes
-// no health-ratio haircut. This pins that behaviour so any future pro-rata fix is a
-// deliberate, tested change.
+// HAIRCUT: now PRO-RATA, not first-come. insurance_withdraw reads the LIVE asset-0 insurance
+// straight from the slab; under an impairment (a venue loss that draws insurance below total
+// outstanding principal) every exit receives insurance*amount/outstanding instead of the full
+// principal. So a loss is shared proportionally and the exit is ORDER-INDEPENDENT — both an
+// early and a late depositor take the SAME haircut; the first exit can no longer drain the
+// pool and strand the rest.
 #[test]
-fn impaired_insurance_exit_is_first_come_not_pro_rata() {
+fn impaired_insurance_exit_is_pro_rata() {
     let mut env = Env::new();
     env.init_insurance_pool();
 
@@ -714,9 +770,16 @@ fn impaired_insurance_exit_is_first_come_not_pro_rata() {
     env.insurance_deposit(&alice, &alice_ata, &a_hold, amount).expect("alice deposit");
     env.insurance_deposit(&bob, &bob_ata, &b_hold, amount).expect("bob deposit");
     assert_eq!(env.token_amount(&env.perc_vault.clone()), 2 * amount, "insurance funded by both");
+    assert_eq!(env.pool_outstanding(), 2 * amount, "outstanding = both deposits");
 
-    // Simulate a 50% venue loss: the insurance vault now holds only half (the slab's
-    // internal counters are unchanged, so the cap is bounded by `amount <= vault`).
+    // Simulate a 50% venue loss: the market drew half the insurance to cover trader losses.
+    // A real loss debits the insurance fund, the vault, the per-domain budgets and the
+    // remaining-budget total together, so we mirror that exactly against the real slab layout
+    // (otherwise percolator's `validate_shape` invariant insurance >= domain-budget-remaining
+    // rejects the next withdraw with EngineLockActive). After this the authoritative `insurance`
+    // figure is 1M < outstanding 2M -> impaired.
+    impair_market(&mut env, amount as u128);
+    // Vault token balance drops to the same 1M (the other 1M was paid out covering the loss).
     env.svm
         .set_account(
             env.perc_vault,
@@ -730,17 +793,18 @@ fn impaired_insurance_exit_is_first_come_not_pro_rata() {
         )
         .unwrap();
 
-    // Alice (early) withdraws her FULL principal — no haircut — and drains the pool.
-    env.insurance_withdraw(&alice, &alice_ata, &a_hold, &alice, amount).expect("alice exits whole");
-    assert_eq!(env.token_amount(&alice_ata), amount, "early depositor got FULL principal, no haircut");
-    assert_eq!(env.token_amount(&env.perc_vault.clone()), 0, "impaired pool drained by the first exit");
+    // Alice (early) exits her full principal but receives only her pro-rata share:
+    // insurance(1,000,000) * amount(1,000,000) / outstanding(2,000,000) = 500,000 (a 50% haircut).
+    env.insurance_withdraw(&alice, &alice_ata, &a_hold, &alice, amount).expect("alice exits");
+    assert_eq!(env.token_amount(&alice_ata), 500_000, "early depositor takes the 50% haircut, not the full principal");
+    assert_eq!(env.token_amount(&env.perc_vault.clone()), 500_000, "half the impaired insurance remains for bob");
+    assert_eq!(env.pool_outstanding(), amount, "alice's full principal left the outstanding accounting");
 
-    // Bob (late) is stranded — nothing left, and no pro-rata share was reserved.
-    assert!(
-        env.insurance_withdraw(&bob, &bob_ata, &b_hold, &bob, amount).is_err(),
-        "late depositor cannot exit: first-come, not pro-rata"
-    );
-    assert_eq!(env.token_amount(&bob_ata), 0, "stranded depositor received nothing");
+    // Bob (late) gets the SAME 50% haircut — the pool was NOT drained by the first exit.
+    // insurance now 500,000, outstanding now 1,000,000 -> 500,000 * 1,000,000 / 1,000,000 = 500,000.
+    env.insurance_withdraw(&bob, &bob_ata, &b_hold, &bob, amount).expect("bob exits with the same haircut");
+    assert_eq!(env.token_amount(&bob_ata), 500_000, "late depositor takes the SAME 50% haircut — order-independent");
+    assert_eq!(env.token_amount(&env.perc_vault.clone()), 0, "impaired insurance fully and fairly distributed");
 }
 
 // Full genesis lifecycle with ALL real programs (percolator + subledger +
