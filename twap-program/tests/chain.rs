@@ -4023,3 +4023,35 @@ fn e2e_full_book_evicts_only_for_a_strictly_better_bid() {
     assert_eq!(token_amount(&svm, &bk.coin_escrow), escrow_full - 1 + 50, "escrow reflects the swap");
     let _ = (spam, better, bidders);
 }
+
+// FINDING O (principal protection under loss): if a market loss drops live insurance BELOW the
+// reserved floor (the principal counter), surplus = insurance.saturating_sub(floor) = 0, so execute
+// pulls nothing — principal is never reachable and the subtraction can't underflow. (Lost coverage
+// when the standalone pull tests were removed; re-pinned on execute.)
+#[test]
+fn e2e_execute_pulls_nothing_when_insurance_below_floor() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer); // floor = principal = 1M, insurance = 1.5M
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+
+    // Simulate a venue loss: drop the live asset-0 insurance figure (slab offset 749) to 800k,
+    // BELOW the 1M reserved floor. (execute only READS the slab; with surplus 0 it makes no CPI.)
+    let mut slab = svm.get_account(&env.slab).unwrap();
+    slab.data[749..765].copy_from_slice(&800_000u128.to_le_bytes());
+    svm.set_account(env.slab, slab).unwrap();
+
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    let floor_before = read_reserved_floor(&svm, &env.twap_cfg);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute succeeds (no pull, no underflow)");
+    assert_eq!(token_amount(&svm, &bk.holding), 0, "insurance below the floor -> nothing pulled");
+    assert_eq!(token_amount(&svm, &env.perc_vault), 1_500_000, "the real insurance vault is untouched");
+    assert_eq!(read_reserved_floor(&svm, &env.twap_cfg), floor_before, "floor unchanged (retained = 0)");
+}

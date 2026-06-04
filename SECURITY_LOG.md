@@ -162,6 +162,11 @@ tags 5-11). Security properties, each pinned by a chain.rs e2e against the real 
 - **Full lifecycle**: `e2e_full_genesis_to_buy_burn` runs deposit → vote → distribute → claim →
   DAO/Squads handoff → buy/burn auction across all six real binaries; the COIN winner sells COIN
   back into the surplus buy/burn and it is really burned (mint supply drops), closing the loop.
+- **Principal protection under loss** (probe #12): if a market loss drops live insurance BELOW the
+  reserved floor (principal counter), `execute`'s `surplus = insurance.saturating_sub(floor) = 0` →
+  nothing is pulled and the subtraction can't underflow. (Lost coverage when the standalone pull tests
+  were removed.) Pinned by `e2e_execute_pulls_nothing_when_insurance_below_floor` (slab insurance
+  dropped to 800k < 1M floor → execute succeeds, holding stays 0, real vault untouched, floor unchanged).
 - **Multi-round ratchet liveness** (probe #10): each `execute` pulls the burn-share of the CURRENT
   surplus and ratchets the retained share into the principal counter; as FRESH surplus accrues, later
   rounds pull it too (no permanent lockout) and the principal is never pulled. Pinned by
