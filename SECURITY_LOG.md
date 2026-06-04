@@ -934,3 +934,16 @@ never-sealed proposal B (config.sealed_proposal == A != B) NOR from the winner A
 is not an entry there), and ends with zero. Distinct from the single-proposal distribution.rs
 claim tests. Closes the "losing-proposal recipient claims anyway" vector. Test:
 twap-program/tests/chain.rs `e2e_only_the_winning_proposal_can_be_claimed`. KEPT.
+
+### [BLOCKED] E2E probe: capital dominates hold time — no early-squatter governance capture
+Vote weight = floor(log2(age)) * principal: log-time is a SOFT, sub-linear (capped ~63)
+multiplier while capital is LINEAR. So an early SMALL depositor cannot sit accumulating
+time-weight to out-vote a later LARGE depositor and capture the COIN distribution cheaply.
+Proven end-to-end with two competing proposals and real deposits: an early voter (100k held
+~1500 slots, floor(log2)=10 -> weight ~1,000,000) backs proposal EARLY; a later voter
+(1,000,000 = 10x capital, held ~16 slots, floor(log2)=4 -> weight ~4,000,000) backs proposal
+LATE. The early-squatter proposal LACKS a weighted majority (1M*2 <= 5M cast) and cannot seal;
+the larger-capital proposal IS the majority and seals. Confirms the Sybil-resistance balance —
+capital (the at-risk cost) decides, with hold-time only a tie-tilting bonus. (Stayed inside the
+percolator oracle-staleness window so deposits remain Live.) Test: twap-program/tests/chain.rs
+`e2e_capital_outweighs_hold_time_no_early_squatter_capture`. KEPT.

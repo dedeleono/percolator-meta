@@ -2777,3 +2777,78 @@ fn e2e_only_the_winning_proposal_can_be_claimed() {
         "the loser is not an entry in the winning proposal and cannot claim from it");
     assert_eq!(token_amount(&svm, &loser_ata), 0, "the loser receives nothing");
 }
+
+// ATTACK PROBE (time-weighting balance / early-squatter capture): weight = floor(log2(age)) *
+// principal. log-time is a SOFT (capped, sub-linear) multiplier while capital is LINEAR — so
+// capital must dominate. Otherwise an early tiny depositor could sit and accumulate enough
+// time-weight to out-vote a later, much larger depositor, capturing governance cheaply. This
+// pins that a later 10x-capital voter out-weighs an early small voter despite less hold time:
+// the two back COMPETING proposals and the big-but-late voter's proposal wins.
+#[test]
+fn e2e_capital_outweighs_hold_time_no_early_squatter_capture() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(sub_id(), so_deploy("subledger_program")).unwrap();
+    svm.add_program_from_file(gv_id_e2e(), so_deploy("genesis_vote_program")).unwrap();
+    svm.add_program_from_file(dist_id_e2e(), so_deploy("distribution_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_genesis(&mut svm, &payer);
+    let early_dest = Pubkey::new_unique();
+    let late_dest = Pubkey::new_unique();
+    let (prop_early, gv_early) = register_proposal(&mut svm, &payer, &env, 1, &early_dest, 100);
+    let (prop_late, gv_late) = register_proposal(&mut svm, &payer, &env, 2, &late_dest, 100);
+
+    let deposit = |svm: &mut LiteSVM, who: &Keypair, amt: u64| -> Pubkey {
+        svm.airdrop(&who.pubkey(), 1_000_000_000).unwrap();
+        let ata = Pubkey::new_unique(); set_token(svm, &ata, &env.collateral_mint, &who.pubkey(), amt);
+        let holding = Pubkey::new_unique(); set_token(svm, &holding, &env.collateral_mint, &env.pool, 0);
+        let position = sub_position_pda(&env.pool, &who.pubkey());
+        let mut d = vec![4u8]; d.extend_from_slice(&amt.to_le_bytes());
+        let ix = Instruction { program_id: sub_id(), accounts: vec![
+            AccountMeta::new(who.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(position, false), AccountMeta::new(ata, false),
+            AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false),
+            AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(system_program::ID, false)], data: d };
+        svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, who], bh)).expect("deposit");
+        position
+    };
+    let vote = |svm: &mut LiteSVM, who: &Keypair, pos: &Pubkey, gv_prop: &Pubkey| {
+        let ballot = Pubkey::find_program_address(&[b"gv_ballot", env.gv_config.as_ref(), who.pubkey().as_ref()], &gv_id_e2e()).0;
+        let ix = Instruction { program_id: gv_id_e2e(), accounts: vec![
+            AccountMeta::new(who.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(ballot, false), AccountMeta::new(*gv_prop, false),
+            AccountMeta::new(*pos, false), AccountMeta::new_readonly(env.pool, false), AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(sub_id(), false)], data: vec![3u8, 1u8] };
+        svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, who], bh)).expect("vote");
+    };
+
+    // Early small voter: 100k deposited at slot 1000, holds a LONG time (large age — but we
+    // stay inside the percolator oracle-staleness window so the late deposit still lands).
+    let early = Keypair::new(); let early_pos = deposit(&mut svm, &early, 100_000);
+    let mut c = svm.get_sysvar::<Clock>(); c.slot += 1500; svm.set_sysvar::<Clock>(&c); // floor(log2(1500)) = 10
+    vote(&mut svm, &early, &early_pos, &gv_early);
+
+    // Later large voter: 1,000,000 (10x) deposited now, holds only a short time.
+    let late = Keypair::new(); let late_pos = deposit(&mut svm, &late, 1_000_000);
+    let mut c = svm.get_sysvar::<Clock>(); c.slot += 16; svm.set_sysvar::<Clock>(&c); // floor(log2(16)) = 4
+    vote(&mut svm, &late, &late_pos, &gv_late);
+    // early weight ~= 10 * 100k = 1,000,000 ; late weight ~= 4 * 1,000,000 = 4,000,000 (capital wins).
+
+    let trigger = |svm: &mut LiteSVM, gv_prop: &Pubkey, dist_prop: &Pubkey| -> Result<(), String> {
+        let ix = Instruction { program_id: gv_id_e2e(), accounts: vec![
+            AccountMeta::new(payer.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(*gv_prop, false),
+            AccountMeta::new_readonly(dist_id_e2e(), false), AccountMeta::new(env.dist_config, false), AccountMeta::new(*dist_prop, false),
+            AccountMeta::new_readonly(env.pool, false)], data: vec![4u8] };
+        svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer], bh)).map(|_| ()).map_err(|e| format!("{:?}", e))
+    };
+    // The early-squatter proposal lacks a weighted majority -> cannot seal.
+    assert!(trigger(&mut svm, &gv_early, &prop_early).is_err(), "an early small-capital voter must NOT out-weigh a later large-capital voter");
+    // The later large-capital proposal IS the weighted-majority winner -> seals.
+    trigger(&mut svm, &gv_late, &prop_late).expect("the larger-capital proposal wins despite less hold time");
+    let dist_cfg = svm.get_account(&env.dist_config).unwrap();
+    assert_eq!(Pubkey::new_from_array(dist_cfg.data[120..152].try_into().unwrap()), prop_late, "capital dominates the soft log-time weight");
+}
