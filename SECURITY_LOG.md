@@ -783,3 +783,18 @@ execute). The floor stays at its u128::MAX default. So the floor is lowerable ON
 timelock'd DAO/Squads execute, exactly like reconfigure/accept_operator. Test:
 twap-program/tests/chain.rs `e2e_attacker_cannot_lower_surplus_floor_without_squads`
 (real Squads v4 + percolator + twap). KEPT — pins the integrity of the finding-O floor.
+
+### [COVERAGE/SEQUENCING] E2E probe: the operator handoff closes the subledger exit path
+The operator handoff to the twap is a POINT OF NO RETURN for the subledger exit. The
+subledger insurance_withdraw signs as the pool, which is the asset-0 insurance OPERATOR only
+until the handoff; afterwards the operator is the twap, so percolator rejects a pool-signed
+WithdrawInsuranceLimited. Proven end-to-end: alice deposits, withdraws fine BEFORE the
+handoff, then her withdraw is REJECTED AFTER the operator rotates to the twap. Implication: a
+depositor who has not exited before the (1-week-timelock'd) handoff can no longer withdraw via
+the subledger. Their principal is NOT stealable — the finding-O floor stops the twap pulling
+it — but it is LOCKED until the DAO rotates the operator back to the subledger. This is a
+liveness/DOS consideration, not a theft vector: it enforces the design's "exit during the
+timelock window" requirement (README §3) and means a malicious DAO can at worst lock (not
+steal) a non-exiter's principal, and only after a 1-week public warning. Test:
+twap-program/tests/chain.rs `e2e_subledger_exit_blocked_after_operator_handoff`. KEPT — pins
+the handoff sequencing boundary against the real binaries.

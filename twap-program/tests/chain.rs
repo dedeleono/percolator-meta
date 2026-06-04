@@ -1706,3 +1706,111 @@ fn e2e_attacker_cannot_lower_surplus_floor_without_squads() {
     let floor = u128::from_le_bytes(svm.get_account(&twap_cfg).unwrap().data[173..189].try_into().unwrap());
     assert_eq!(floor, u128::MAX, "floor unchanged — only a timelock'd Squads execute can lower it");
 }
+
+// ATTACK PROBE (handoff sequencing / liveness): the operator handoff to the twap is a
+// point-of-no-return for the subledger exit path. insurance_withdraw signs as the pool,
+// which is the insurance OPERATOR only until the handoff; afterwards the operator is the
+// twap, so percolator rejects a pool-signed withdraw. A depositor who has NOT exited before
+// the (1-week-timelock'd) handoff can therefore no longer withdraw via the subledger — their
+// principal is protected by the floor (the twap can't pull it) but locked until the DAO
+// rotates the operator back. This pins the "exit during the timelock window" requirement.
+#[test]
+fn e2e_subledger_exit_blocked_after_operator_handoff() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(sub_id(), so_deploy("subledger_program")).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let squads = squads_id();
+    let treasury = install_squads(&mut svm, &squads, &payer.pubkey());
+    let dao = Keypair::new();
+    svm.airdrop(&dao.pubkey(), 1_000_000_000_000).unwrap();
+    let create_key = Keypair::new();
+    let multisig = multisig_pda(&squads, &create_key.pubkey());
+    let create_ix = multisig_create_v2_ix(&squads, &treasury, &multisig, &create_key.pubkey(), &payer.pubkey(),
+        Some(&dao.pubkey()), 1, &[(dao.pubkey(), PERM_ALL)], TIMELOCK_1_WEEK_SECS);
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[create_ix], Some(&payer.pubkey()), &[&payer, &create_key], bh)).expect("multisig");
+    let squads_vault = vault_pda(&squads, &multisig, 0);
+
+    let collateral_mint = Pubkey::new_unique();
+    let coin_mint = Pubkey::new_unique();
+    let slab = Pubkey::new_unique();
+    let slab_data = make_live_market(&slab, &collateral_mint, &squads_vault, 100);
+    svm.set_account(slab, Account { lamports: 1_000_000_000, data: slab_data, owner: perc_id(), executable: false, rent_epoch: 0 }).unwrap();
+    svm.set_sysvar(&Clock { slot: 100, unix_timestamp: 100, ..Clock::default() });
+    let vault_authority = perc_vault_authority(&slab, &perc_id());
+    let perc_vault = canonical_insurance_vault(&vault_authority, &collateral_mint);
+    set_token(&mut svm, &perc_vault, &collateral_mint, &vault_authority, 0);
+    let pool = sub_pool_pda(&collateral_mint, 0, &slab, &perc_id());
+    let mut dpool = vec![3u8]; dpool.extend_from_slice(&0u64.to_le_bytes()); dpool.push(0);
+    let init_pool = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(collateral_mint, false), AccountMeta::new(pool, false),
+        AccountMeta::new_readonly(perc_vault, false), AccountMeta::new_readonly(slab, false), AccountMeta::new_readonly(perc_id(), false),
+        AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(Pubkey::new_unique(), false),
+    ], data: dpool };
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[init_pool], Some(&payer.pubkey()), &[&payer], bh)).expect("init pool");
+
+    // Grant the operator to the pool, then a depositor funds insurance.
+    let grant_msg = build_subledger_accept_operator_message(&squads_vault, &pool, &slab, &perc_id());
+    let grant_remaining = vec![
+        AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(slab, false), AccountMeta::new_readonly(pool, false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(sub_id(), false),
+    ];
+    squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 1, &grant_msg, &grant_remaining).expect("grant operator to pool");
+    let alice = Keypair::new();
+    svm.airdrop(&alice.pubkey(), 1_000_000_000).unwrap();
+    let amount = 1_000_000u64;
+    let alice_ata = Pubkey::new_unique();
+    set_token(&mut svm, &alice_ata, &collateral_mint, &alice.pubkey(), amount);
+    let holding = Pubkey::new_unique();
+    set_token(&mut svm, &holding, &collateral_mint, &pool, 0);
+    let position = sub_position_pda(&pool, &alice.pubkey());
+    let mut dep = vec![4u8]; dep.extend_from_slice(&amount.to_le_bytes());
+    let deposit = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(pool, false), AccountMeta::new(position, false),
+        AccountMeta::new(alice_ata, false), AccountMeta::new(holding, false), AccountMeta::new(slab, false),
+        AccountMeta::new(perc_vault, false), AccountMeta::new_readonly(perc_id(), false),
+        AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(system_program::ID, false),
+    ], data: dep };
+    svm.expire_blockhash();
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[deposit], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("deposit");
+
+    // Sanity: BEFORE the handoff, alice can withdraw (the pool is the operator).
+    let withdraw = |amt: u64| Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(pool, false), AccountMeta::new(position, false),
+        AccountMeta::new(alice_ata, false), AccountMeta::new(holding, false), AccountMeta::new(slab, false),
+        AccountMeta::new(perc_vault, false), AccountMeta::new_readonly(vault_authority, false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false),
+    ], data: { let mut d = vec![5u8]; d.extend_from_slice(&amt.to_le_bytes()); d } };
+    svm.expire_blockhash();
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[withdraw(1)], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("pre-handoff exit works");
+
+    // Handoff: rotate the operator to the twap.
+    let twap_init = init_config_ix(&payer.pubkey(), &coin_mint, &slab, &multisig, &dao.pubkey(), &perc_id());
+    svm.expire_blockhash();
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[twap_init], Some(&payer.pubkey()), &[&payer], bh)).expect("twap init");
+    let twap_cfg = twap_config_pda(&slab, &multisig, &coin_mint, &perc_id());
+    let twap_authority = Pubkey::find_program_address(&[b"market-0-twap", slab.as_ref()], &twap_id()).0;
+    let op_msg = build_accept_operator_message(&squads_vault, &slab, &twap_cfg, &twap_authority, &perc_id(), &twap_id());
+    let op_remaining = vec![
+        AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(slab, false), AccountMeta::new_readonly(twap_cfg, false),
+        AccountMeta::new_readonly(twap_authority, false), AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(twap_id(), false),
+    ];
+    squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 2, &op_msg, &op_remaining).expect("operator -> twap");
+
+    // AFTER the handoff: alice's subledger exit is now rejected — the pool is no longer the
+    // insurance operator, so percolator refuses the pool-signed WithdrawInsuranceLimited.
+    svm.expire_blockhash();
+    let bh = svm.latest_blockhash();
+    assert!(svm.send_transaction(Transaction::new_signed_with_payer(&[withdraw(100)], Some(&payer.pubkey()), &[&payer, &alice], bh)).is_err(),
+        "post-handoff the subledger exit path is closed — depositors must exit during the timelock window");
+}
