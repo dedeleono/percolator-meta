@@ -97,8 +97,31 @@ const PERC_IX_WITHDRAW_INSURANCE_LIMITED: u8 = 23;
 #[cfg(not(feature = "no-entrypoint"))]
 solana_program::entrypoint!(process_instruction);
 
-fn pool_seeds<'a>(mint: &'a Pubkey, asset_id: &'a [u8; 8]) -> [&'a [u8]; 3] {
-    [b"subledger_pool", mint.as_ref(), asset_id]
+// The pool PDA commits to its market binding, not just (mint, asset_id). Keying it on
+// (mint, asset_id) alone made init_insurance_pool (permissionless) front-run squattable:
+// the genesis pool PDA = f(COIN_mint, 0) and the gv config PDA = f(COIN_mint) are both
+// predictable, so an attacker could init the pool FIRST bound to a percolator market
+// THEY control (passing that market's canonical insurance vault) with vote_authority set
+// to the predictable real gv config PDA — satisfying the gv binding check. Genesis would
+// then wire to a pool that routes every depositor's principal into the attacker's market
+// (TopUpInsurance), where the attacker (its marketauth) can strand or bleed it: LOF, not
+// just DOS. Folding market_slab + percolator_program into the seed means the only pool
+// that can exist at the legit address is bound to the legit market (own-vault pools use
+// Pubkey::default() for both, matching what they store). A squat with any other market
+// lands at a different PDA the genesis ignores. (finding Q; same class as finding P.)
+fn pool_seeds<'a>(
+    mint: &'a Pubkey,
+    asset_id: &'a [u8; 8],
+    market_slab: &'a Pubkey,
+    percolator_program: &'a Pubkey,
+) -> [&'a [u8]; 5] {
+    [
+        b"subledger_pool",
+        mint.as_ref(),
+        asset_id,
+        market_slab.as_ref(),
+        percolator_program.as_ref(),
+    ]
 }
 
 fn position_seeds<'a>(pool: &'a Pubkey, owner: &'a Pubkey) -> [&'a [u8]; 3] {
@@ -334,9 +357,14 @@ fn process_init_pool(
         return Err(ProgramError::IncorrectProgramId);
     }
 
+    // Own-vault pools have no percolator market, so the market-binding seed components
+    // are the default key (matching what the Pool stores below).
+    let no_market = Pubkey::default();
     let asset_id_bytes = asset_id.to_le_bytes();
-    let (expected_pool, bump) =
-        Pubkey::find_program_address(&pool_seeds(mint.key, &asset_id_bytes), program_id);
+    let (expected_pool, bump) = Pubkey::find_program_address(
+        &pool_seeds(mint.key, &asset_id_bytes, &no_market, &no_market),
+        program_id,
+    );
     if *pool_account.key != expected_pool {
         return Err(ProgramError::InvalidSeeds);
     }
@@ -354,7 +382,14 @@ fn process_init_pool(
     let rent = solana_program::rent::Rent::get()?;
     let lamports = rent.minimum_balance(POOL_SIZE);
     let bump_arr = [bump];
-    let seeds: [&[u8]; 4] = [b"subledger_pool", mint.key.as_ref(), &asset_id_bytes, &bump_arr];
+    let seeds: [&[u8]; 6] = [
+        b"subledger_pool",
+        mint.key.as_ref(),
+        &asset_id_bytes,
+        no_market.as_ref(),
+        no_market.as_ref(),
+        &bump_arr,
+    ];
     invoke_signed(
         &system_instruction::create_account(
             payer.key,
@@ -545,9 +580,12 @@ fn process_withdraw(
     }
 
     // Re-derive the pool PDA so the recorded vault and signing seeds are trusted.
+    // (own-vault: market_slab/percolator_program are the default key it stored.)
     let asset_id_bytes = pool.asset_id.to_le_bytes();
-    let (expected_pool, bump) =
-        Pubkey::find_program_address(&pool_seeds(&pool.mint, &asset_id_bytes), program_id);
+    let (expected_pool, bump) = Pubkey::find_program_address(
+        &pool_seeds(&pool.mint, &asset_id_bytes, &pool.market_slab, &pool.percolator_program),
+        program_id,
+    );
     if *pool_account.key != expected_pool || bump != pool.bump {
         return Err(ProgramError::InvalidSeeds);
     }
@@ -570,10 +608,12 @@ fn process_withdraw(
 
     if paid > 0 {
         let bump_arr = [pool.bump];
-        let seeds: [&[u8]; 4] = [
+        let seeds: [&[u8]; 6] = [
             b"subledger_pool",
             pool.mint.as_ref(),
             &asset_id_bytes,
+            pool.market_slab.as_ref(),
+            pool.percolator_program.as_ref(),
             &bump_arr,
         ];
         invoke_signed(
@@ -658,8 +698,10 @@ fn process_init_insurance_pool(
     }
 
     let asset_id_bytes = asset_id.to_le_bytes();
-    let (expected_pool, bump) =
-        Pubkey::find_program_address(&pool_seeds(mint.key, &asset_id_bytes), program_id);
+    let (expected_pool, bump) = Pubkey::find_program_address(
+        &pool_seeds(mint.key, &asset_id_bytes, market_slab.key, percolator_program.key),
+        program_id,
+    );
     if *pool_account.key != expected_pool {
         return Err(ProgramError::InvalidSeeds);
     }
@@ -686,7 +728,14 @@ fn process_init_insurance_pool(
     let rent = solana_program::rent::Rent::get()?;
     let lamports = rent.minimum_balance(POOL_SIZE);
     let bump_arr = [bump];
-    let seeds: [&[u8]; 4] = [b"subledger_pool", mint.key.as_ref(), &asset_id_bytes, &bump_arr];
+    let seeds: [&[u8]; 6] = [
+        b"subledger_pool",
+        mint.key.as_ref(),
+        &asset_id_bytes,
+        market_slab.key.as_ref(),
+        percolator_program.key.as_ref(),
+        &bump_arr,
+    ];
     invoke_signed(
         &system_instruction::create_account(
             payer.key,
@@ -759,8 +808,10 @@ fn process_insurance_deposit(
     }
     // Re-derive the pool PDA so the signing seeds are trusted.
     let asset_id_bytes = pool.asset_id.to_le_bytes();
-    let (expected_pool, bump) =
-        Pubkey::find_program_address(&pool_seeds(&pool.mint, &asset_id_bytes), program_id);
+    let (expected_pool, bump) = Pubkey::find_program_address(
+        &pool_seeds(&pool.mint, &asset_id_bytes, &pool.market_slab, &pool.percolator_program),
+        program_id,
+    );
     if *pool_account.key != expected_pool || bump != pool.bump {
         return Err(ProgramError::InvalidSeeds);
     }
@@ -833,10 +884,12 @@ fn process_insurance_deposit(
 
     // 2) holding -> Percolator insurance vault, signed by the pool PDA as the
     //    asset-0 insurance authority (TopUpInsurance, tag 9).
-    let seeds: [&[u8]; 4] = [
+    let seeds: [&[u8]; 6] = [
         b"subledger_pool",
         pool.mint.as_ref(),
         &asset_id_bytes,
+        pool.market_slab.as_ref(),
+        pool.percolator_program.as_ref(),
         core::slice::from_ref(&pool.bump),
     ];
     let mut ix_data = vec![PERC_IX_TOP_UP_INSURANCE];
@@ -928,8 +981,10 @@ fn process_insurance_withdraw(
     }
 
     let asset_id_bytes = pool.asset_id.to_le_bytes();
-    let (expected_pool, bump) =
-        Pubkey::find_program_address(&pool_seeds(&pool.mint, &asset_id_bytes), program_id);
+    let (expected_pool, bump) = Pubkey::find_program_address(
+        &pool_seeds(&pool.mint, &asset_id_bytes, &pool.market_slab, &pool.percolator_program),
+        program_id,
+    );
     if *pool_account.key != expected_pool || bump != pool.bump {
         return Err(ProgramError::InvalidSeeds);
     }
@@ -971,10 +1026,12 @@ fn process_insurance_withdraw(
 
     // The pool PDA (asset-0 insurance operator) signs WithdrawInsuranceLimited,
     // moving Percolator insurance -> pool-PDA-owned holding.
-    let seeds: [&[u8]; 4] = [
+    let seeds: [&[u8]; 6] = [
         b"subledger_pool",
         pool.mint.as_ref(),
         &asset_id_bytes,
+        pool.market_slab.as_ref(),
+        pool.percolator_program.as_ref(),
         core::slice::from_ref(&pool.bump),
     ];
     let mut ix_data = vec![PERC_IX_WITHDRAW_INSURANCE_LIMITED];

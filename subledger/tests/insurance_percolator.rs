@@ -108,16 +108,25 @@ impl Env {
         // setup_vote once the distribution vault is funded).
         let coin_mint = create_mint(&mut svm, &payer, &mint_auth.pubkey());
 
-        // The subledger insurance pool PDA: asset-0 insurance authority + operator.
+        // The market slab is chosen first; the pool PDA commits to it (finding Q).
+        let slab = Pubkey::new_unique();
+
+        // The subledger insurance pool PDA: asset-0 insurance authority + operator,
+        // bound to (mint, asset_id, market_slab, percolator_program).
         let pool = Pubkey::find_program_address(
-            &[b"subledger_pool", mint.as_ref(), &ASSET_ID.to_le_bytes()],
+            &[
+                b"subledger_pool",
+                mint.as_ref(),
+                &ASSET_ID.to_le_bytes(),
+                slab.as_ref(),
+                perc_id().as_ref(),
+            ],
             &sub_id(),
         )
         .0;
 
         // Build the real Live market-0 slab with marketauth = pool PDA and the
         // deposits-only principal-recovery insurance policy.
-        let slab = Pubkey::new_unique();
         let init_slot = 100u64;
         let slab_data = make_live_market(&slab, &mint, &pool, init_slot);
         svm.set_account(
@@ -1492,4 +1501,73 @@ fn only_the_proposal_creator_can_register_it() {
     // The creator can register their own.
     env.send(&[register(creator.pubkey())], &[&creator]).expect("creator registers");
     assert!(env.svm.get_account(&gv_proposal).is_some_and(|a| !a.data.is_empty()), "gv_proposal created by the creator");
+}
+
+// Finding Q regression: init_insurance_pool is permissionless, so before the pool PDA
+// committed to its market binding an attacker could grab the genesis pool PDA
+// (= f(COIN_mint, asset 0)) FIRST, bound to a percolator market THEY control, with
+// vote_authority set to the predictable real gv config PDA — passing the gv binding
+// check and routing every depositor's principal into the attacker's market (LOF). Now
+// the pool PDA commits to (mint, asset_id, market_slab, percolator_program), so an
+// attacker's pool lands at a DIFFERENT address and the genesis pool PDA — bound to the
+// real market — stays free and untouched.
+#[test]
+fn init_insurance_pool_cannot_be_squatted_to_misdirect_the_genesis_pool() {
+    let mut env = Env::new();
+
+    // The attacker stands up their OWN percolator market with a canonical insurance
+    // vault for the same COIN mint (marketauth is irrelevant to pool init).
+    let attacker_slab = Pubkey::new_unique();
+    let attacker_marketauth = Pubkey::new_unique();
+    let slab_data = make_live_market(&attacker_slab, &env.mint, &attacker_marketauth, 100);
+    env.svm.set_account(attacker_slab, Account {
+        lamports: 1_000_000_000, data: slab_data, owner: perc_id(), executable: false, rent_epoch: 0,
+    }).unwrap();
+    let attacker_vault_authority =
+        Pubkey::find_program_address(&[b"vault", attacker_slab.as_ref()], &perc_id()).0;
+    let attacker_vault = Pubkey::find_program_address(
+        &[attacker_vault_authority.as_ref(), spl_token::ID.as_ref(), env.mint.as_ref()],
+        &ATA_PROGRAM_ID,
+    ).0;
+    env.svm.set_account(attacker_vault, Account {
+        lamports: 1_000_000, data: token_account_data(&env.mint, &attacker_vault_authority, 0),
+        owner: spl_token::ID, executable: false, rent_epoch: 0,
+    }).unwrap();
+
+    // The attacker's pool PDA is bound to THEIR market — a different address from the
+    // genesis pool (env.pool), which is bound to the real market (env.slab).
+    let attacker_pool = Pubkey::find_program_address(
+        &[b"subledger_pool", env.mint.as_ref(), &ASSET_ID.to_le_bytes(), attacker_slab.as_ref(), perc_id().as_ref()],
+        &sub_id(),
+    ).0;
+    assert_ne!(attacker_pool, env.pool, "the market binding is part of the pool PDA");
+
+    // The attacker CAN init their own pool (init is permissionless) — but only at THEIR
+    // PDA, bound to THEIR market. It does NOT touch the genesis pool PDA.
+    let mut data = vec![3u8]; // IX_INIT_INSURANCE_POOL
+    data.extend_from_slice(&ASSET_ID.to_le_bytes());
+    data.push(POLICY_PRINCIPAL);
+    let squat = Instruction {
+        program_id: sub_id(),
+        accounts: vec![
+            AccountMeta::new(env.payer.pubkey(), true),
+            AccountMeta::new_readonly(env.mint, false),
+            AccountMeta::new(attacker_pool, false),
+            AccountMeta::new_readonly(attacker_vault, false),
+            AccountMeta::new_readonly(attacker_slab, false),
+            AccountMeta::new_readonly(perc_id(), false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(gv_config_pda(&env.coin_mint), false),
+        ],
+        data,
+    };
+    env.send(&[squat], &[]).expect("attacker may init their own pool, but at their own PDA");
+    assert!(env.svm.get_account(&env.pool).map_or(true, |a| a.data.is_empty()), "genesis pool PDA untouched");
+
+    // THE GENESIS POOL STILL INITS: the squat did not block it, and it binds the REAL
+    // market — depositor principal can only ever route into the real market.
+    env.init_insurance_pool();
+    let pool_acc = env.svm.get_account(&env.pool).unwrap();
+    let bound_market = Pubkey::new_from_array(pool_acc.data[96..128].try_into().unwrap());
+    assert_eq!(bound_market, env.slab, "genesis pool binds the REAL market, not the attacker's");
 }

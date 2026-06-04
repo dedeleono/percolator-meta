@@ -126,8 +126,16 @@ fn mint_to(svm: &mut LiteSVM, payer: &Keypair, mint: &Pubkey, authority: &Keypai
 }
 
 fn pool_pda(mint: &Pubkey, asset_id: u64) -> Pubkey {
+    // Own-vault pools commit to the default market binding (no percolator market).
+    let no_market = Pubkey::default();
     Pubkey::find_program_address(
-        &[b"subledger_pool", mint.as_ref(), &asset_id.to_le_bytes()],
+        &[
+            b"subledger_pool",
+            mint.as_ref(),
+            &asset_id.to_le_bytes(),
+            no_market.as_ref(),
+            no_market.as_ref(),
+        ],
         &program_id(),
     )
     .0

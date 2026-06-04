@@ -625,3 +625,39 @@ twap-program/tests/chain.rs `init_config_front_run_with_attacker_multisig_cannot
 (attacker front-runs with their own multisig; lands at a different PDA; the real DAO's
 init still succeeds and the live config is bound to the real multisig/DAO). Against the
 real Squads v4 binary. twap-program suite green (lib 2 + chain 5).
+
+### [FIXED] Q. init_insurance_pool front-run squat -> genesis deposits routed to attacker market (LOF)
+Same class as finding P, worse impact. subledger init_insurance_pool is PERMISSIONLESS
+and its market binding (market_slab, percolator_program, vault, vote_authority) was
+caller-supplied; the pool PDA was keyed on (mint, asset_id) ALONE. The genesis pool PDA
+= f(COIN_mint, 0) and the gv config PDA = f(COIN_mint) are BOTH predictable. So an
+attacker could:
+ 1. stand up their own percolator market MKT_a (they are its marketauth) with the
+    subledger pool PDA pre-set as MKT_a's asset-0 insurance authority/operator;
+ 2. front-run init_insurance_pool: pool=f(COIN_mint,0), market_slab=MKT_a, vault=MKT_a's
+    canonical insurance vault, vote_authority = the predictable real gv config PDA,
+    which PASSES init (vault is MKT_a's canonical vault) and later PASSES the gv
+    init_config binding check (pool.vote_authority == gv config PDA).
+Genesis then wires to a pool that routes every depositor's TopUpInsurance into MKT_a.
+The attacker (MKT_a's marketauth) can then strand or bleed that insurance (hostile
+policy / engineered market loss to their own trading account): depositor LOF, not just a
+setup DOS. The real orchestrator's pool init also fails (PDA taken) = DOS even without
+the LOF escalation.
+Fix: fold market_slab + percolator_program into the pool PDA seed — now
+[b"subledger_pool", mint, asset_id, market_slab, percolator_program]. The genesis pool
+address can only ever hold a pool bound to the real market; an attacker's pool (any other
+market) lands at a different PDA the genesis ignores. Own-vault pools pass Pubkey::default()
+for both seed components (matching what they store), so the own-vault path is unchanged.
+Threaded through every pool derive + invoke_signed seed set (init_pool, withdraw,
+init_insurance_pool, insurance_deposit, insurance_withdraw). genesis-vote is unaffected
+(it never derives the pool PDA; it trusts the stored config.subledger_pool key). No
+percolator slab read needed (NOT blocked on finding O). Regression:
+subledger/tests/insurance_percolator.rs `init_insurance_pool_cannot_be_squatted_to_misdirect_the_genesis_pool`
+(attacker inits a pool bound to their own market against the real percolator binary; it
+lands at a different PDA; the genesis pool still inits and binds the REAL market). On the
+old seed the attacker pool PDA would equal the genesis pool PDA — the assert_ne + the
+genesis re-init would both fail, so the test genuinely catches the regression. All suites
+green: subledger lib 6 + insurance 16 + own-vault 5; genesis-vote 3+4; distribution 4+7.
+NOTE: this is the same permissionless-init + caller-bindings + too-few-seeds pattern as
+finding P (twap). Pattern to watch in any future init: bind the PDA to ALL trust-relevant
+caller-supplied accounts, or land squats at harmless distinct addresses.
