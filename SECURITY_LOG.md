@@ -39,10 +39,16 @@ internal consistency (the named DAO really controls the multisig), but the orche
 Severity: defence-in-depth (no depositor principal at risk; the COIN supply is provably the genesis COIN via
 the distribution invariants + the place_bid coin pin). Not closeable cleanly on-chain: the twap is a separate
 program from genesis-vote/distribution and the "winner" is a COIN distribution to many recipients, not a
-single key the twap can compare to. This is the THIRD documented OFF-HARNESS ORCHESTRATION REQUIREMENT for
-the unbuilt tool (task #6), alongside the deposit-deadline/kickstart and the durable 1-week timelock: the
-orchestration MUST bind the Squads config_authority rotation + the twap's metadao_futarchy to the proposal
-the genesis vote sealed.
+single key the twap can compare to.
+NARROWING (the residual gap is small): the twap's MULTISIG identity is already on-chain-bound — the config
+PDA seed folds in `squads_multisig` (finding AQ, lib.rs:416), and accept_operator only completes the operator
+grant when `squads_default_vault(config.squads_multisig)` SIGNS (lib.rs accept_operator), so the bound multisig
+MUST be the genesis multisig that performed the handoff. And init_config pins `config_authority(multisig) ==
+metadao_futarchy`. So the ONLY orchestration-trusted step is rotating THAT genesis multisig's config_authority
+to the winning DAO before/at the twap binding — the multisig identity and the authority==DAO consistency are
+enforced on-chain. This is the THIRD OFF-HARNESS ORCHESTRATION REQUIREMENT for the unbuilt tool (task #6),
+alongside the deposit-deadline/kickstart and the durable 1-week timelock: the orchestration MUST rotate the
+genesis Squads config_authority to the futarchy of the COIN the genesis vote sealed.
 Verdict: not a current-design on-chain bug (the deprecated handover code is gone; the on-chain consistency
 check holds); recorded as an orchestration-tool requirement. No code change.
 
