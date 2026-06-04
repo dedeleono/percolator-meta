@@ -26,6 +26,24 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED-COVERED] Init-validation negative-half sweep — remaining untested clauses are marginal
+Build health: re-ran `cargo build-sbf` for all four programs — clean. Then swept the init/validation guards
+for more "negative half untested because the test helper can't make the bad input" gaps (the pattern that
+caught the freeze-authority clause). The remaining untested negatives are all marginal and deliberately not
+pinned:
+- distribution init_config `total_supply == 0` / `claim_window_slots == 0` (one line): obvious input-sanity.
+  A 0 window would make the whole distribution burn-only (claim window closes at seal); but it is a setup
+  value the orchestration controls, fail-fast-rejected, and a single missed config line, not an exploit.
+- subledger accept_operator on a NON-insurance (own-vault) pool: rejected by `is_insurance()` AND would fail
+  the percolator CPI anyway (default market_slab) — doubly-defended, non-sharp.
+- distribution claim `recipient.is_signer`: enforces the pull model, but removing it causes NO LOF (funds
+  still go to the recipient's recorded ATA, never an attacker) — low value.
+- seal_winner / register `entry_count == 0`: register already blocks an empty proposal up front, so the
+  seal-side check is an unreachable backstop (doubly-defended).
+Verdict: the init-validation surface's high-value negatives are now pinned (mintable + freezable + supply,
+finding-AA authority bind, finding-AI prefund, finding-AJ reinit); the residue is sanity/double-defense. No
+new test (would be marginal/tautological), no test deleted, build-sbf clean, full suite green at 134.
+
 ### [VERIFIED-COVERED] COIN-authority safety chain — enforced once (distribution), inherited everywhere
 Follow-up to the freeze-authority pin below: audited whether ANY other program needs its own non-mintable/
 non-freezable check on the genesis COIN. It does not — the safety is enforced at the single custody point and
