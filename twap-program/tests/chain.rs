@@ -4489,3 +4489,50 @@ fn e2e_closed_weakest_ata_cannot_permanently_block_eviction() {
     assert_eq!(token_amount(&svm, &bt_s), 0, "the better bid's 50 COIN now escrowed");
     let _ = bidders;
 }
+
+// CANCEL via the CLEARED path: a committed bid becomes reclaimable after a ROLL (an execute that buys
+// nothing) advances round_end — the primary "one round of twap clears the book" release. This is a
+// DISTINCT cancel_bid branch from the AGED (2*round_length) path that e2e_bid_cancellable_after_cooldown
+// covers; a regression breaking `cleared` would lock a committed bidder's COIN after a roll (a DOS)
+// yet still pass the aged-path test. Isolation: at the SAME slot E1 (= round_end), cancel is REJECTED
+// before the roll (cleared=false, aged=false) and ALLOWED right after the roll (cleared=true, aged
+// still false) — so the ONLY thing that opened cancel is the roll moving round_end.
+#[test]
+fn e2e_roll_opens_the_cleared_cancel_path() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("alice bid");
+    assert_eq!(token_amount(&svm, &a_src), 0, "alice's 400k COIN escrowed");
+    let e1 = u64::from_le_bytes(svm.get_account(&bk.book).unwrap().data[240..248].try_into().unwrap());
+
+    // Make the round a ROLL: drop live insurance below the floor so execute buys nothing.
+    let mut slab = svm.get_account(&env.slab).unwrap();
+    slab.data[749..765].copy_from_slice(&800_000u128.to_le_bytes());
+    svm.set_account(env.slab, slab).unwrap();
+
+    // At slot E1 (= round_end), BEFORE the roll: cancel rejected (cleared=false, aged=false).
+    warp_to(&mut svm, e1);
+    assert!(send(&mut svm, &[&alice], cancel_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, 0)).is_err(),
+        "cancel rejected at round_end before any execute (neither cleared nor aged)");
+
+    // The roll-execute advances round_end (nothing bought).
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("roll execute (no purchase)");
+    assert_eq!(token_amount(&svm, &bk.holding), 0, "below floor -> nothing pulled (a roll)");
+
+    // SAME slot region, AFTER the roll: cancel now succeeds via the CLEARED path (round_end moved),
+    // even though 2*round_length has NOT elapsed (the aged path is still closed).
+    send(&mut svm, &[&alice], cancel_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, 0)).expect("cancel via the cleared path after the roll");
+    assert_eq!(token_amount(&svm, &a_src), 400_000, "alice reclaimed her full escrowed COIN");
+    let _ = a_usd;
+}

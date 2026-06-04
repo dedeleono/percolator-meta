@@ -4,6 +4,21 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 
 ## Analyzed
 
+### [COVERAGE] AN. cancel_bid CLEARED-path release (anti-permanent-lock liveness) — distinct branch pinned
+The cancel_bid cooldown opens on `cleared` (an execute moved `round_end` since placement) OR `aged`
+(2*round_length elapsed). The aged branch is covered (`e2e_bid_cancellable_after_cooldown_keeps_fee`);
+the `cleared` branch — the PRIMARY "one round of twap clears the book" release — was untested. It is a
+liveness/DOS boundary: a regression breaking `cleared` would lock a committed bidder's COIN after a
+roll (an execute that buys nothing) until 2*round_length, yet still pass the aged-path test. Also a
+spoof-relevant edge (the anti-spoof design relies on cancel being gated until the bid has been exposed
+to at least one round). Pinned by `e2e_roll_opens_the_cleared_cancel_path`, which isolates the branch
+rigorously: at the SAME slot E1 (= round_end) cancel is REJECTED before the roll (cleared=false +
+aged=false) and ALLOWED immediately after the roll-execute (cleared=true, aged STILL false, since
+2*round_length has not elapsed) — so the only thing that opened cancel is the roll advancing
+round_end, and the bidder reclaims their full escrowed COIN. (A bid present at a REAL settlement is
+marked SETTLED and uncancellable, so this release never lets a spoofer escape a purchase — see AE +
+e2e_cancel_cannot_double_spend_a_settled_bid.)
+
 ### [BLOCKED] AM. Closed-ATA poison bid on the EVICTION path — uncensorability stays recoverable
 Finding V pinned the canonical-ATA recoverability on the CLAIM path
 (`e2e_closing_refund_ata_cannot_permanently_brick_the_book`), but the place_bid EVICTION path is a
