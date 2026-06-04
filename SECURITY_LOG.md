@@ -958,3 +958,31 @@ after the first back, support_weight == total_cast_weight == W (one contribution
 back/retract cycles (age fixed so weight is constant) retract returns both to 0 and re-back
 restores exactly W — never 2W. Closes the cycling-inflation vector. Test:
 twap-program/tests/chain.rs `e2e_retract_reback_cannot_inflate_vote_weight`. KEPT.
+
+### [STATE] E2E attack-probe coverage map (genesis -> handoff -> twap, all six real binaries)
+The probe loop has systematically swept the end-to-end chain. Full repo green (~98 tests):
+subledger 6+16+5, genesis-vote 3+5, distribution 4+7, twap lib 24, twap-program lib 2 + chain 24,
+setup 1+1 — no regression from this session's reseeds (P/Q/R), accept_operator, or finding O/S.
+REAL bugs found + fixed by the loop:
+  - O: pull_surplus had no surplus floor (LOF). Fixed by reading asset-0 insurance straight from
+    the slab (offset 733, canary-pinned) and capping to insurance - reserved_floor (DAO-set,
+    timelock'd, default u128::MAX).
+  - S: post-handoff deposits were drainable (the pool kept kind-1 authority). Fixed by
+    accept_operator atomically rotating kind 1 to the Squads vault, disabling deposits at handoff.
+Boundaries pinned end-to-end (twap-program/tests/chain.rs), all BLOCKED:
+  AUTHORITY/HANDOFF: operator grant cannot bypass the Squads timelock; reserved_floor cannot be
+    lowered outside the timelock; no surplus pull before a floor is configured (fail-safe MAX
+    default); foreign vault_authority rejected (no cross-market drain); cranker cannot redirect
+    surplus to its own holding; repeated pulls cannot cumulatively cross the floor; finding-S
+    deposit revoke; finding-O floor blocks principal drain.
+  LIVENESS: post-handoff subledger exit is blocked but DAO-recoverable (principal never
+    permanently lost).
+  GOVERNANCE/VOTE: fresh (age<2) position has no weight (anti flash-vote); one vote, one
+    proposal (no vote-splitting); minority turnout cannot reach quorum (no low-turnout capture);
+    a voter cannot vote with another's position (no vote-power theft); capital dominates soft
+    log-time weight (no early-squatter capture); retract/re-back cannot inflate weight.
+  CLAIM: only the winning proposal's recipients can claim (winner-take-all at claim).
+The high-value external-attack surface on the BUILT code is exhaustively covered. Remaining open
+items are design/operational, not code bugs: finding L (impairment first-come vs pro-rata,
+awaiting a design decision) and the unbuilt COIN buy/burn settlement slice (future probe target
+once built). Future ticks: re-verify on any code change; target new instructions when added.
