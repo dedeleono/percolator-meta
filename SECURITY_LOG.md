@@ -461,3 +461,28 @@ the clean in-program read is blocked. Options for slice 4:
 Until resolved, finding O stands: do NOT perform the handoff, and the loud SAFETY
 comments in pull_surplus/accept_operator remain. Reverted the read_market attempt;
 twap-program stays green.
+
+### [STATE] Audit coverage summary (live code exhaustively swept)
+78 tests green across all crates. Findings A-O recorded. The live/built on-chain code
+(subledger, genesis-vote, distribution, twap-program) has been swept across every
+guidance category and found hardened:
+- account substitution / PDA-seed confusion: pool/position/ballot/proposal/config all
+  PDA-pinned + disc-checked; no cross-substitution (A,F,H, vote/trigger pins).
+- missing signer/owner checks: owner-bound exits, set_vote_lock owner-signer (G),
+  seal authority-gated, reconfigure/accept_operator squads-vault-gated.
+- account reinit: every init checks lamports/data_len==0; no account is ever closed,
+  so no close-then-reinit.
+- arithmetic over/underflow: checked_add/sub on all tallies/balances; vote_weight
+  saturating; u128 for quorum/majority.
+- type confusion: every account carries + checks an 8-byte discriminator.
+- unchecked CPI: token_program pinned to spl_token::ID; percolator CPIs go to the
+  config-pinned program; squads vault gating; the percolator-side authority is
+  enforced by percolator (adversarially pinned: operator + policy rotations).
+- rent/closing, sysvar spoofing: no account closing; Clock via syscall (not passed).
+- bait-and-switch, vote-outlives-capital, hostile-authority freeze, fixed-supply,
+  drain-policy, minority-capture: all fixed (A,B,B2,G,K,M,N) + real-binary regressions.
+Drift canaries (insurance_percolator.rs) pin every percolator CPI encoding the code
+uses (TopUp/Withdraw/UpdateAssetAuthority/UpdateInsurancePolicy) against the live .so.
+OPEN, build-gated: finding O (surplus floor, needs a wincode-free percolator accessor
+for slice 4) and the twap genesis-binding front-run (needs slice 2's squads-creation
+port). No live vuln remains in built code.
