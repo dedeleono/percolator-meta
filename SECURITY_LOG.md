@@ -58,6 +58,16 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — gv vote back-out subtract (anti-inflation)] DO.
+Mutation-audited the gv vote back-out `pv.support_weight = pv.support_weight.checked_sub(ballot.voted_weight)`
+(genesis-vote lib.rs:619) — before (re-)recording a vote, vote() subtracts the ballot's PRIOR live weight
+from the proposal + global tallies, so re-backing the SAME proposal REPLACES (not ACCUMULATES) the weight.
+Mutated to `checked_sub(0)` (no-op back-out), build-sbf -> `e2e_retract_reback_cannot_inflate_vote_weight`
+FAILS. So it is mutation-sharp. (I expected a possible DM-style mask — retract zeroes the ballot so a later
+back-out is a no-op — but the test ALSO re-backs the LIVE ballot, exercising the real subtract: support
+would accumulate w + w' without it = vote-weight inflation / quorum-majority manipulation.) Restored ->
+test green. Verdict: BLOCKED, no gap. No code/test change.
+
 ### [VERIFIED SHARP — twap claim slot-clearing (anti-replay)] DN.
 Mutation-audited twap claim's slot-clearing `for b in d[o..o+SLOT_SIZE] { *b = 0 }` (twap lib.rs:1629) —
 the anti-replay guard: after paying usd_owed + coin_refund, the bid slot is fully zeroed so a re-claim
