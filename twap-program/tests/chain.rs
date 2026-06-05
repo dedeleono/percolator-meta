@@ -5138,7 +5138,7 @@ fn e2e_roll_does_not_unlock_cancel_before_aging() {
 // against config-B's BOOK; it must be rejected and B's reserve left intact, while config-B can still
 // set its OWN book's reserve.
 #[test]
-fn e2e_config_a_cannot_mutate_config_bs_book_reserve() {
+fn e2e_config_a_cannot_mutate_config_bs_book() {
     let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
         compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
         ..solana_program_runtime::compute_budget::ComputeBudget::default()
@@ -5193,6 +5193,23 @@ fn e2e_config_a_cannot_mutate_config_bs_book_reserve() {
     ];
     squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 6, &ok, &okr).expect("config-B sets its OWN book reserve");
     assert_eq!(rd(&svm).0, 5, "config-B updated its own book reserve");
+
+    // SECOND DOOR of the book.config pin (higher severity: cross-tenant buyback THEFT, not just grief):
+    // config-A's Squads tries to flip config-B's book into SEND mode with an A-OWNED coin sink. If
+    // set_coin_sink lacked the book.config == config pin (it's a DISTINCT check from set_reserve's), every
+    // COIN config-B's execute buys would be SENT to config-A's treasury. set_coin_sink rejects because
+    // book-B.config != config-A. (multisig-A's next tx index = 2.)
+    let attacker_sink = Pubkey::new_unique();
+    set_token(&mut svm, &attacker_sink, &env.coin_mint, &dao_a.pubkey(), 0); // A-owned, B's coin mint
+    let sink_msg = build_set_coin_sink_send_message(&vault_a, &config_a, &bk.book, &attacker_sink);
+    let sink_rem = vec![
+        AccountMeta::new_readonly(vault_a, false), AccountMeta::new(bk.book, false),
+        AccountMeta::new_readonly(config_a, false), AccountMeta::new_readonly(attacker_sink, false),
+        AccountMeta::new_readonly(twap_id(), false),
+    ];
+    assert!(squads_execute(&mut svm, &env.squads, &multisig_a, &dao_a, &payer, 2, &sink_msg, &sink_rem).is_err(),
+        "config-A must NOT flip config-B's book sink (book.config pin) — would redirect B's buyback to A");
+    assert_eq!(svm.get_account(&bk.book).unwrap().data[249], 0, "config-B's book stays BURN; its sink was not hijacked");
 }
 
 // CRITICAL PROBE: parasite config on the SAME market. The twap_authority seed is

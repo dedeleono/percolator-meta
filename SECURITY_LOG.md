@@ -31,6 +31,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Cross-config set_coin_sink theft door (book.config pin, higher severity than set_reserve)
+Continuing the both-doors lens on the book.config == config pin (multi-tenant isolation: config-A must not
+mutate config-B's book). It is a DISTINCT check in each book-taking mutator (set_reserve:1001,
+set_coin_sink:1031, set_bid_fee:1075, init_book, place_bid/execute). Only set_reserve's door was pinned
+(e2e_config_a_cannot_mutate_config_bs_book_reserve). set_coin_sink's is HIGHER severity: cross-config sink
+flip to SEND with an A-OWNED coin account would redirect EVERY COIN config-B's execute buys to config-A's
+treasury — cross-tenant buyback THEFT (not just the reserve-grief set_reserve enables). set_coin_sink's
+mint check (coin_sink.mint == book.coin_mint) does NOT stop it (A makes a B-coin account); only book.config
+== config-A does.
+Verified BLOCKED + mutation-SHARP through the REAL Squads binary: extended the test (renamed
+e2e_config_a_cannot_mutate_config_bs_book) so config-A's Squads also attempts set_coin_sink(SEND,
+attacker_sink) on config-B's book -> rejected, B's book stays BURN (data[BK_SINK_MODE=249]==0). Neutering
+ONLY set_coin_sink's book.config check (:1031 -> `if false`) + rebuilding the .so makes the hijack land and
+the new sub-assertion fail, while set_reserve's check stays intact. Extended in place; chain 71.
+Remaining same-pin doors (set_bid_fee, init_book book.config) are lower severity (fee grief / create-time,
+both Squads-gated footguns) — noted, not separately pinned.
+
 ### [BLOCKED+PINNED] Div-by-zero second door: init_book reserve_den == 0 (create-time, was unpinned)
 Applying the "both doors" lens: the cmp_rate div-by-zero (reserve_num/0 panics every execute -> permanent
 auction DOS) can be armed at TWO doors — set_reserve (mutate) and init_book (create). set_reserve's
