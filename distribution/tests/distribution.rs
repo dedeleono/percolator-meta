@@ -570,6 +570,56 @@ fn init_config_rejects_an_underfunded_vault() {
     send(&mut svm, build_init(60)).expect("fully-backed supply is accepted");
 }
 
+// ZERO CLAIM WINDOW (recipient-LOF DOS): init_config rejects claim_window_slots == 0 (lib.rs:276). A zero
+// window is catastrophic — window_end = seal_slot + 0 = seal_slot, so claim (clock < window_end) is refused
+// the instant the winner seals, and burn_unclaimed (clock >= window_end) immediately torches the WHOLE
+// vault: every recipient loses their COIN without a chance to claim. The guard blocks the config at
+// creation. (The sibling `total_supply == 0` clause is doubly-defended by the anti-hoarding
+// mint.supply == total_supply check — already pinned by init_config_rejects_a_mintable_coin — so only the
+// claim-window clause is single-guard here.)
+#[test]
+fn init_config_rejects_a_zero_claim_window() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(pid(), so_path()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let mint_authority = Keypair::new();
+    let coin_mint = create_mint(&mut svm, &payer, &mint_authority.pubkey());
+    let authority = Keypair::new();
+    let config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref(), authority.pubkey().as_ref()], &pid()).0;
+    let vault = create_token_account(&mut svm, &payer, &coin_mint, &config);
+    mint_to(&mut svm, &payer, &coin_mint, &mint_authority, &vault, 100); // fully back supply 100
+    revoke_mint_authority(&mut svm, &payer, &coin_mint, &mint_authority);
+
+    let build = |window: u64, supply: u64| {
+        let mut data = vec![0u8]; // IX_INIT_CONFIG
+        data.extend_from_slice(&window.to_le_bytes());
+        data.extend_from_slice(&supply.to_le_bytes());
+        Instruction {
+            program_id: pid(),
+            accounts: vec![
+                AccountMeta::new(payer.pubkey(), true),
+                AccountMeta::new_readonly(coin_mint, false),
+                AccountMeta::new(config, false),
+                AccountMeta::new_readonly(vault, false),
+                AccountMeta::new_readonly(authority.pubkey(), false),
+                AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            ],
+            data,
+        }
+    };
+    let send = |svm: &mut LiteSVM, ix: Instruction| -> Result<(), String> {
+        svm.expire_blockhash();
+        let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer], bh)).map(|_| ()).map_err(|e| format!("{:?}", e))
+    };
+
+    // A ZERO claim window would make every claim impossible -> all recipients lose their COIN. Rejected.
+    assert!(send(&mut svm, build(0, 100)).is_err(), "a zero claim window must be rejected (no one could ever claim)");
+    // A valid window + fully-funded supply is accepted (the config PDA was never touched by the reject).
+    send(&mut svm, build(50, 100)).expect("a valid window + fully-funded supply is accepted");
+}
+
 // Fixed-supply invariant (README Safety §4): a COIN whose mint authority is NOT
 // revoked must be refused — otherwise the authority holder could mint unlimited COIN
 // outside the fixed distribution pool and dilute every recipient (no "mint to drain").

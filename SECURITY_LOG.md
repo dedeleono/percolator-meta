@@ -31,6 +31,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Distribution init_config rejects a zero claim window (recipient-LOF DOS)
+Vector: init_config rejects claim_window_slots == 0 || total_supply == 0 (lib.rs:276). A ZERO claim window
+is catastrophic — window_end = seal_slot + 0 = seal_slot, so claim (clock < window_end) is refused the
+instant the winner seals, and burn_unclaimed (clock >= window_end) immediately torches the WHOLE vault:
+every recipient loses their entire COIN allocation with no chance to claim. The guard blocks the config at
+creation. (Orchestrator footgun reach — the config is authority-bound — but the consequence is a total
+recipient LOF, so worth pinning.)
+Verified BLOCKED + mutation-SHARP on the claim-window clause: build init with window 0 (fully-funded supply
+100) -> rejected; a window-50 + funded-100 config -> accepted. Dropping the `claim_window_slots == 0` clause
+from :276 + rebuilding the .so lets the zero-window config init (test fails). NOTE: the sibling
+`total_supply == 0` clause is DOUBLY-defended (the anti-hoarding mint.supply == total_supply check rejects a
+0 supply when the mint holds >0, already pinned by init_config_rejects_a_mintable_coin) — so it is not
+single-guard; I dropped that assertion rather than ship a non-sharp one (the mutation that left it green was
+the tell).
+Test KEPT: init_config_rejects_a_zero_claim_window (distribution integration 15).
+
 ### [BLOCKED+PINNED] Fully-impaired exit must retire without a zero-amount CPI (no quorum-DOS)
 Vector: under a TOTAL loss insurance is wiped to 0, so a depositor's owed = floor(0*amount/outstanding) = 0.
 percolator REJECTS a zero-amount WithdrawInsuranceLimited (amount==0 -> InvalidInstruction), so
