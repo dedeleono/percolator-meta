@@ -58,6 +58,21 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — impaired-exit pro-rata haircut + floor rounding is split-resistant] ER.
+HOSTILE vector (rounding direction / split-withdrawal drain): under impairment the insurance exit pays a
+pro-rata haircut `owed = payout(policy, insurance, outstanding, amount)`. Two ways to over-extract and drain
+co-depositors: (a) NO haircut (pay full principal first-come, stranding late exiters), or (b) a CEIL/round-up
+that lets an attacker split one exit into many tiny pieces, each capturing a rounding gain. Verified `payout`
+(subledger lib.rs) uses `mul_div_floor(balance, principal, outstanding)` — FLOOR, the protocol-favoring
+direction; since floor(a)+floor(b) <= floor(a+b), splitting can only LOSE dust, never beat a single exit
+(order-independent, no first-come race). Mutated the impaired branch `Ok(pro_rata)` -> `Ok(principal)` (no
+haircut) -> FOUR tests FAIL: `splitting_an_impaired_exit_cannot_beat_the_pro_rata_or_drain_a_codepositor` (the
+anti-split/anti-drain test — a co-depositor's capital is present, so over-paying one exit drains it),
+`impaired_insurance_exit_is_pro_rata`, `a_fully_impaired_exit_still_retires_the_position...`,
+`foreign_market_slab_cannot_inflate_the_haircut` (also pins reading insurance from the bound slab, cf. finding
+T/DS). Strongly mutation-SHARP. Verdict: BLOCKED, no gap (finding-L pro-rata haircut + floor rounding fully
+pins the split/drain vector). No code/test change.
+
 ### [VERIFIED SHARP — insurance_deposit last-write-time start_slot reset blocks hold-time weight inflation] EQ.
 HOSTILE vector (governance weight inflation via stale timestamp): gv weight = `floor(log2(hold)) * principal`,
 hold = now - position.start_slot. If a top-up did NOT reset start_slot, an attacker deposits 1 atom EARLY
