@@ -58,6 +58,19 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED — health check + trigger account-binding completion, no new test] CG.
+Health check: 166 GREEN (subledger 50, gv 17, distribution 22, twap 77), all four build-sbf clean, no drift.
+Completed the trigger account-binding picture (with CE/CF): all THREE distribution accounts trigger forwards
+to seal_winner are exact-key-bound — distribution_program == config.distribution_program, distribution_config
+== config.distribution_config, distribution_proposal == pv.distribution_proposal (lib.rs:25-27) — and the
+seal_winner CPI INDEPENDENTLY owner-checks both config + proposal (`*.owner != program_id`). So the gv->dist
+seal path is doubly-bound (gv-side exact key + dist-side owner) on every account; BB pins the proposal
+substitution, 786/822 pin the init bindings. Also re-confirmed the WithdrawInsuranceLimited dest-must-equal-
+operator invariant holds for BOTH callers (subledger dest=pool-owned holding, operator=pool; twap
+dest=twap_authority-owned holding, operator=twap_authority) — the percolator-side guarantee that makes the
+arbitrary-CPI doubly-defended (AU/CB). Verdict: BLOCKED; suite healthy, all cross-program seal/withdraw
+account bindings complete. No code/test change.
+
 ### [BLOCKED — trigger distribution-read defense + the read-binding asymmetry rationale, no new test] CF.
 Complements CE (subledger reads). The gv `trigger` reads the distribution proposal's snapshot (pd[84..88]
 entry_count, pd[88..96] total_amount) WITHOUT a disc check — but it is sound via a DIFFERENT, stronger
