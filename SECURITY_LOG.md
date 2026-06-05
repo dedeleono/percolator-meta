@@ -58,6 +58,17 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — distribution fixed-supply invariant, both halves] DE.
+Mutation-audited distribution init_config's fixed-supply guard `mint.mint_authority.is_some() ||
+mint.freeze_authority.is_some() -> reject` (distribution lib.rs:295). It's a combined `if`, so each half
+was mutated separately (CN-style): dropping the mint_authority half -> `init_config_rejects_a_mintable_coin`
+FAILS (a mint with a live mint authority is accepted -> the holder could dilute COIN past the fixed pool,
+diluting every recipient's governance/value); dropping the freeze_authority half ->
+`init_config_rejects_a_freezable_coin` FAILS (a freezable mint is accepted -> the freeze authority could
+freeze the vault or recipients' ATAs, DOSing all claims). Both halves mutation-sharp, each with its own
+test. (Plus supply==total_supply + vault solvency, separately pinned.) Restored -> 18 distribution green.
+Verdict: BLOCKED, no gap. No code/test change.
+
 ### [VERIFIED SHARP — gv register creator binding] DD.
 Mutation-audited gv register's creator binding `creator (pd[48..80]) != *payer.key -> reject` (genesis-vote
 lib.rs:471) — stops an attacker FRONT-RUNNING registration of someone else's distribution proposal (which
