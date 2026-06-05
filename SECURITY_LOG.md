@@ -58,6 +58,24 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED — auction liveness: a winner refusing to claim cannot DOS the book; cranker cannot redirect] EJ.
+HOSTILE vector (liveness DOS + permissionless-claim safety): after execute SETTLES the book, place_bid is
+rejected until every slot drains via claim; the book reopens only when the last slot frees. If claim required
+the BIDDER to sign, a malicious winner could simply refuse to claim -> book stuck SETTLED forever -> no new
+rounds -> permanent auction DOS, with other bidders' committed COIN frozen too. Verified the design defeats
+this: claim's first account is a `cranker` (any signer, :1562/1579), NOT the bidder — it is PERMISSIONLESS, so
+anyone can crank a stranded winner's claim. The payout is force-bound to the slot's RECORDED canonical ATAs
+(`*usd_dest.key != dest_key || *coin_ata.key != coin_key -> reject`, :1617; the dests were pinned to the
+bidder's canonical ATA at place_bid), so a third-party cranker pays the winner's OWN ATA and cannot redirect;
+the slot is then zeroed and the book flips to OPEN when empty (:1638). Coverage: tests crank claims with a
+cranker Keypair DISTINCT from the bidders (chain.rs:3193-3195), `e2e_execute_on_a_settled_book_is_frozen_until_claims_drain_it`
+pins the SETTLED-freeze, and the drain reopens the book to OPEN (:3325). Mutated the dest binding :1617 to
+`if false && ...` -> `e2e_claim_cannot_redirect_a_winners_payout` AND `e2e_claim_cannot_redirect_a_losers_coin_refund`
+(the CV pins) BOTH FAIL = mutation-SHARP. Combined with the canonical-ATA refund-brick fix
+(`e2e_closing_refund_ata_cannot_permanently_brick_the_book`, anyone can recreate a closed ATA), there is no
+refuse-to-claim DOS and no cranker theft. Restored -> 74 chain green. Verdict: BLOCKED, no gap. No code/test
+change.
+
 ### [VERIFIED SHARP — shutdown cannot strand/steal bidder funds; Squads gate sharp] EI.
 HOSTILE vector (DAO wind-down stranding/stealing user funds): the Squads-gated `shutdown` sweeps the TWAP's
 accumulated USD. Could it (a) be run by a non-DAO to steal the holding, or (b) drain bidders' escrowed COIN
