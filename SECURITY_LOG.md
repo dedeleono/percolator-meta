@@ -27,6 +27,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Re-executing a SETTLED book (double-burn / double-spend)
+Vector: after `execute` clears the auction (state -> SETTLED) but BEFORE any winner claims, a cranker
+warps past the freshly-set `round_end` (so the ERR_ROUND_ACTIVE timer no longer blocks) and re-cranks
+`execute`. If the OPEN-state precondition were absent, the second pass would re-walk the still-occupied
+slots and re-run settlement: a SECOND burn of `total_coin` (destroying COIN owed back to bidders as
+refunds) and a SECOND holding->settlement_usd transfer. A pure LOF.
+Analysis: process_execute gates on `book.state != BOOK_STATE_OPEN` (lib.rs:1315) BEFORE any movement;
+settle sets SETTLED, and only draining every slot via `claim` flips it back to OPEN. So the *state*, not
+the round timer, freezes a settled-but-unclaimed book. (place_bid is likewise OPEN-gated at :1127.)
+Verified BLOCKED + mutation-SHARP: dropping `|| book.state != BOOK_STATE_OPEN` from :1315, rebuilding the
+.so, makes the second execute SUCCEED and the test's is_err() assertion fire (double-settle reproduced);
+restored -> green. The round-active gate alone is insufficient here (it had elapsed) — the OPEN guard is
+the load-bearing one. Previously only the *across-rounds* path (warp between executes) was tested; the
+"settled book frozen until drained" boundary was unpinned.
+Test KEPT: e2e_execute_on_a_settled_book_is_frozen_until_claims_drain_it (asserts the re-crank fails,
+supply + settlement_usd unchanged, then a claim drains -> OPEN -> execute accepted again). 66 chain tests.
+
 ### [BLOCKED] Mid-auction config change cannot harm a committed bidder
 Vector: a bidder places a committed bid; the DAO then changes the auction parameters (set_reserve /
 reconfigure-bps / shutdown). Could a committed bidder lose their escrowed COIN or be forced into a worse

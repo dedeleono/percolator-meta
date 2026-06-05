@@ -3072,6 +3072,62 @@ fn e2e_buy_burn_uniform_price_dutch_auction() {
     let _ = (&alice, &bob, &carol);
 }
 
+// RE-EXECUTE A SETTLED BOOK (double-burn / double-spend, LOF): execute requires book.state == OPEN
+// (lib.rs:process_execute "book.state != BOOK_STATE_OPEN"). After a settle marks the book SETTLED, a
+// second execute — even once the freshly-set round_end has elapsed, so the round-active gate would NOT
+// block it — must be refused until claims drain the book back to OPEN. If it weren't, the second pass
+// would re-walk the still-occupied slots and re-run settlement: a SECOND burn of total_coin (destroying
+// COIN owed back to bidders as refunds) and a SECOND holding->settlement_usd transfer. The state guard,
+// not the round timer, is the only thing standing between a settled-but-unclaimed book and that
+// double-settlement. Pins the OPEN precondition as a fund-safety boundary (not just a cadence one).
+#[test]
+fn e2e_execute_on_a_settled_book_is_frozen_until_claims_drain_it() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+
+    // One bid that fully clears: alice offers 400k COIN for 400k USD (rate 1). Budget = 80% of the 500k
+    // surplus = 400k, so she fills entirely at P*=1 (400k COIN bought + burned, 400k USD spent).
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("alice bid");
+
+    warp_to(&mut svm, 111);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("settle");
+    let supply_after_settle = mint_supply(&svm, &env.coin_mint);
+    assert_eq!(supply_after_settle, 0, "alice's full 400k COIN (the only mint) bought at P*=1 and burned");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 400_000, "400k USD parked for alice");
+    assert_eq!(token_amount(&svm, &bk.holding), 0, "budget fully spent");
+
+    // ATTACK: do NOT claim. Warp far past the round_end that the settle just set (111 + round_length 10
+    // = 121) so the round-active gate cannot be what blocks us. Then re-crank execute. It MUST fail on
+    // the SETTLED-state guard, and no COIN may be re-burned nor USD re-moved.
+    warp_to(&mut svm, 500);
+    assert!(
+        send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).is_err(),
+        "a SETTLED book must reject execute until its claims drain it — even after the round window reopens"
+    );
+    assert_eq!(mint_supply(&svm, &env.coin_mint), supply_after_settle, "no second burn — supply unchanged");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 400_000, "no second USD transfer — settlement unchanged");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 0, "alice sold her full 400k; nothing left to re-burn anyway");
+
+    // Drain the one winner -> the last freed slot flips the book back to OPEN.
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &a_usd, &a_src, 0)).expect("alice claim drains the book");
+    assert_eq!(token_amount(&svm, &a_usd), 400_000, "alice got her parked USD");
+
+    // Now OPEN again, execute is accepted (an empty book just rolls; surplus is exhausted so it pulls
+    // nothing). This proves the freeze was the SETTLED state, lifted precisely by the drain.
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute accepted once the book drained back to OPEN");
+    let _ = alice;
+}
+
 // DOUBLE-SPEND (claim twice, LOF): after a winner claims, the slot is zeroed (lib.rs process_claim
 // clears SL_OCCUPIED), so a second claim of the SAME slot must be refused. If it weren't, a winner
 // could re-claim their `usd_owed` repeatedly out of the shared settlement-USD pool — draining the OTHER
