@@ -58,6 +58,21 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED BACKSTOPPED — insurance_deposit holding binding (DZ-parallel, TopUp SPL authority)] FT.
+Completes the holding-substitution map (DZ covered the WITHDRAW holding; this is the DEPOSIT side). Vector:
+pass an attacker-owned `holding` to insurance_deposit to capture/misroute a depositor's funds. Flow: user
+transfers `amount` from their ATA -> holding (user signs), then TopUpInsurance moves holding -> percolator vault
+signed by the POOL PDA. Guard: `hs.mint != pool.mint || hs.owner != *pool_account.key` (subledger lib.rs:863).
+Mutated the owner clause to `false` -> 42 insurance PASS = MUTATION-BLIND. NOT a gap — backstopped (the src
+comment at :51 says so outright): the TopUpInsurance CPI does spl_transfer(holding -> vault) with the pool PDA
+as authority; SPL requires the authority to OWN the source, so an attacker-owned holding makes TopUp REVERT ->
+the whole deposit (incl. the user's first transfer) reverts atomically -> no funds move. Plus SELF-SCOPED: the
+depositor signs their own deposit and controls the holding arg, so a substituted holding can only fail their
+own deposit, never a cross-user capture. Symmetric to DZ (withdraw holding, backstopped by the second
+transfer's SPL authority). So both holding bindings are fail-fast HYGIENE, backstopped by SPL-transfer authority
+on a pool-PDA-signed CPI; the SECURITY-relevant pool-PDA derivation (expected_pool) is mutation-sharp elsewhere.
+Per KEEP/DELETE: no test. Verdict: BLOCKED (defense-in-depth). No code/test change.
+
 ### [VERIFIED SHARP — claim sealed-proposal binding blocks loser-drains-winner vault (anti-mask)] FS.
 HOSTILE vector (cross-proposal payout redirect / LOF): after the winner seals, a recipient named in a LOSER
 proposal claims from the SHARED distribution vault via that loser proposal -> drains COIN owed to the winner's
