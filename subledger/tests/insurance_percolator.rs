@@ -981,6 +981,37 @@ fn cannot_redeposit_into_a_retired_position() {
 // co-depositor drained or the percolator CPI failing). Pins finding-L's conservation under the
 // realistic split attack — the existing test only does single lump-sum exits.
 #[test]
+fn cannot_over_withdraw_to_drain_a_codepositor() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let (bob, bob_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let a_hold = create_holding(&mut env, &pool);
+    let b_hold = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &a_hold, amount).expect("alice deposit");
+    env.insurance_deposit(&bob, &bob_ata, &b_hold, amount).expect("bob deposit");
+    assert_eq!(env.pool_outstanding(), 2 * amount, "outstanding = both deposits");
+    assert_eq!(env.token_amount(&env.perc_vault.clone()), 2 * amount, "insurance fully funded (healthy)");
+
+    // ATTACK: alice withdraws 2M (== outstanding, but > her OWN 1M principal) -> would drain bob. The
+    // `amount > position.principal` cap (lib.rs:1054) is the ONLY thing that can reject it here: the sibling
+    // `amount > outstanding` cap PASSES (2M is not > 2M), so a sole-depositor test would mask this guard.
+    // Pins the per-position over-withdraw cap with a co-depositor present (sharp where the sole-depositor
+    // test `cannot_withdraw_more_than_your_own_recorded_principal` is blind).
+    assert!(
+        env.insurance_withdraw(&alice, &alice_ata, &a_hold, &alice, 2 * amount).is_err(),
+        "a depositor cannot withdraw more than their OWN recorded principal (would drain a co-depositor)"
+    );
+    assert_eq!(env.token_amount(&alice_ata), 0, "alice gained nothing from the over-withdraw");
+    assert_eq!(env.token_amount(&env.perc_vault.clone()), 2 * amount, "insurance untouched by the rejected over-withdraw");
+    // bob can still exit with his full principal — it was never drained.
+    env.insurance_withdraw(&bob, &bob_ata, &b_hold, &bob, amount).expect("bob exits his own principal");
+    assert_eq!(env.token_amount(&bob_ata), amount, "bob recovers his full 1M — not drained");
+}
+
+#[test]
 fn splitting_an_impaired_exit_cannot_beat_the_pro_rata_or_drain_a_codepositor() {
     let mut env = Env::new();
     env.init_insurance_pool();

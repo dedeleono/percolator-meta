@@ -13,8 +13,8 @@ recovery (settle walks ALL occupied slots, not just eligible — else a cheap bi
 invariants proven across all 4 programs: BJ/BK binding-identity immutability (no setter can mutate a
 binding field), BR vault-mover enumeration (the distribution vault holding the whole COIN supply has only
 2 validated movers — drain-proof), BS execute budget-conservation (total_usd <= holding always; zero-coin
-marginal unpaid). Full regression GREEN: 166 tests (subledger insurance 38 + own-vault 6 + lib 6 = 50;
-genesis-vote seal 14 + lib 3 = 17; distribution 18 + lib 4 = 22; twap chain 73 + lib 4 = 77; = 166), full
+marginal unpaid). Full regression GREEN: 167 tests (subledger insurance 39 + own-vault 6 + lib 6 = 51;
+genesis-vote seal 14 + lib 3 = 17; distribution 18 + lib 4 = 22; twap chain 73 + lib 4 = 77; = 167), full
 suite green, all four programs build-sbf clean.
 ATTESTATION (every program x every attacker class is pinned mutation-sharp unless noted):
   TWAP auction - bidder: double-claim, settled-cancel double-spend, claim redirect (usd+coin), settled-book
@@ -57,6 +57,22 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [DOUBLY-DEFENDED confirmed + new end-to-end test KEPT] CZ. over-withdraw cap (drain a co-depositor)
+Mutation-audited insurance_withdraw's over-withdraw cap `amount > position.principal` (lib.rs:1054). The
+existing sole-depositor test `cannot_withdraw_more_than_your_own_recorded_principal` is mutation-BLIND for
+this half: with one depositor principal==outstanding, so its over-withdraw amount also trips the sibling
+`amount > outstanding` cap. So I built a SHARP-shaped 2-depositor test: alice (principal 1M of outstanding
+2M) withdraws 2M (== outstanding, > her 1M) — the sibling cap PASSES (2M !> 2M), so ONLY the
+amount>principal cap can reject it (and without it she'd drain bob's 1M). RESULT: even with the cap REMOVED,
+the over-withdraw is still BLOCKED — confirming the checkpoint's "doubly-defended by percolator EngineLock":
+the WithdrawInsuranceLimited CPI can't pull the whole insurance (the EngineLock keeps insurance >= the
+market's domain-budget-remaining), so the over-pull reverts before any drain. So the subledger cap is
+mutation-blind but FUNDS ARE SAFE (not a gap — unlike CL/CV which had no backstop). KEPT the new test
+`cannot_over_withdraw_to_drain_a_codepositor`: it pins the END-TO-END multi-depositor no-drain guarantee
+(passes clean, exercises a real over-withdraw attack blocked by the combined cap+EngineLock) — a scenario
+no prior test covered; it would catch a regression of BOTH layers. subledger insurance 38->39, total ->167.
+Verdict: BLOCKED (doubly-defended). KEEP.
 
 ### [VERIFIED SHARP — distribution append running-sum cap] CY.
 Extended the mutation-audit to ACCOUNTING guards. Audited the append per-entry running-sum cap `header.
