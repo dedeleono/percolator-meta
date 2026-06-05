@@ -3,11 +3,11 @@
 Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdict.
 
 ## Checkpoint (latest)
-Reachable six-binary surface is exhausted: 53 vectors recorded (A–AX), of which 3 were real CRITICAL
+Reachable six-binary surface is exhausted: 54 vectors recorded (A–AY), of which 3 were real CRITICAL
 bugs found + fixed by this loop (AD signer-seed-binding, AI lamport-prefund init-DOS, AQ parasite-config
 insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full regression GREEN at this
-checkpoint: 163 tests across every harness (subledger insurance 37 + own-vault 6 + lib 6 = 49; genesis-vote
-seal 13 + lib 3 = 16; distribution 18 + lib 4 = 22; twap chain 72 + lib 4 = 76; 49+16+22+76 = 163), full
+checkpoint: 164 tests across every harness (subledger insurance 37 + own-vault 6 + lib 6 = 49; genesis-vote
+seal 13 + lib 3 = 16; distribution 18 + lib 4 = 22; twap chain 73 + lib 4 = 77; 49+16+22+77 = 164), full
 suite green, and all four programs build-sbf clean.
 ATTESTATION (every program x every attacker class is pinned mutation-sharp unless noted):
   TWAP auction - bidder: double-claim, settled-cancel double-spend, claim redirect (usd+coin), settled-book
@@ -44,6 +44,28 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [BLOCKED+PINNED] AY. place_bid oversized leg (> u64) → cmp_bid cross-multiply overflow + phantom escrow (LOF)
+Vector: twap `place_bid` parses both bid legs (`coin_atoms`, `usdc_atoms`) as u128 from the instruction
+data, but the ranking comparator `cmp_bid(a,b) = (coin_a*usdc_b).cmp(coin_b*usdc_a)` is a DIRECT
+cross-multiply that is only overflow-safe because both legs are bounded to u64 (u64*u64 < 2^128). The
+binding guard is the two `as_u64(coin_atoms)?` / `as_u64(usdc_atoms)?` calls (lib.rs:1114-1115), which
+reject any leg ≥ 2^64 up front — before the signer/escrow/balance logic. A hostile bidder submitting a
+leg of exactly 2^64 is rejected, nothing is escrowed, funds intact.
+Why it's load-bearing (mutation-sharp): if the guard regressed to a truncating `coin_atoms as u64`, a
+bid with `coin_atoms = 2^64` would truncate to 0 COIN ESCROWED while the book still records the full
+2^64 (via `book_wr_u128(SL_COIN, coin_atoms)`). That bid then (a) overflows `cmp_bid` against other
+bids (corrupting the rank/eviction order) and (b) claims 2^64 COIN it never paid for — at execute it
+wins the entire USD budget for ~zero real COIN: a direct depositor-surplus LOF. The continued-fraction
+`cmp_rate` (reserve filter) is separately overflow-safe against the unbounded-u128 DAO reserve and is
+division-by-zero-safe (each recursion's new denominators are nonzero remainders); the two comparators
+are consistent and deliberate (cmp_bid = cheap, both-bid u64 path; cmp_rate = reserve path).
+Verdict: BLOCKED. Pinned by `e2e_place_bid_rejects_a_leg_above_u64` (rejects both the coin-leg and
+usd-leg overshoot, asserts zero escrowed + bidder COIN intact, then a legal bid still escrows). Mutation
+proof: replacing `as_u64(coin_atoms)?` with `coin_atoms as u64`, build-sbf, ran test → FAILED ("a coin
+leg of 2^64 must be rejected"); restored + rebuilt → 73 chain tests green. This was the one finding-AC
+boundary (the u64 bound that keeps cmp_bid safe) that was asserted in a code comment but not yet pinned
+by a test. KEEP.
 
 ### [BLOCKED+PINNED] append rejects malformed entries (zero amount / zero-address recipient)
 Vector: append_entries rejects amount == 0 || pk == Pubkey::default() per entry (lib.rs:428). A zero-amount

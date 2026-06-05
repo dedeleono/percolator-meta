@@ -3779,6 +3779,47 @@ fn e2e_bid_cancellable_after_cooldown_keeps_fee() {
     let _ = (alice, a_usd, mallory);
 }
 
+// FINDING AC (oversized-leg → ranking overflow + phantom escrow): place_bid's ranking comparator
+// `cmp_bid` is a direct cross-multiply `coin_a * usdc_b` that is only overflow-safe because BOTH
+// legs are bounded to u64 (u64*u64 < 2^128). The guard is the two `as_u64(coin_atoms)?` /
+// `as_u64(usdc_atoms)?` calls. This test pins that guard: a bid whose coin leg is exactly 2^64
+// (one past u64::MAX) is REJECTED, nothing is escrowed, and a normal bid still works afterward.
+// Mutation-sharpness: if `as_u64` regressed to a truncating `as u64`, coin_atoms=2^64 would
+// truncate to 0 ESCROWED while the book still records the full 2^64 (book_wr_u128(SL_COIN,..)) —
+// a bid claiming 2^64 COIN it never paid for, which at settle overflows cmp_bid and lets it win
+// the whole budget for zero COIN: a direct LOF. The same applies to the usd leg.
+#[test]
+fn e2e_place_bid_rejects_a_leg_above_u64() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 10_000);
+    let over_u64: u128 = (u64::MAX as u128) + 1; // 2^64, one past the legal bound
+
+    // (a) COIN leg above u64 — rejected before any escrow transfer.
+    assert!(send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, over_u64, 5_000, None)).is_err(),
+        "a coin leg of 2^64 must be rejected (cmp_bid overflow guard)");
+    // (b) USD leg above u64 — same guard, other leg.
+    assert!(send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 5_000, over_u64, None)).is_err(),
+        "a usd leg of 2^64 must be rejected (cmp_bid overflow guard)");
+
+    // Nothing was escrowed and the bidder's COIN is fully intact — the reject is pre-transfer.
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 0, "no COIN escrowed by a rejected oversized bid");
+    assert_eq!(token_amount(&svm, &a_src), 10_000, "bidder's COIN untouched");
+
+    // The path is otherwise healthy: a legal bid (both legs < 2^64) escrows normally.
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 10_000, 5_000, None)).expect("a legal bid still works");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 10_000, "legal bid escrowed its COIN");
+}
+
 // ADVERSARIAL DOS (refund-ATA brick): a losing bidder closes their COIN refund account after
 // bidding, so claim cannot deliver the refund and the slot can never free — bricking the whole
 // book (it stays SETTLED, execute + place_bid blocked) forever. FIXED by pinning the refund to the
