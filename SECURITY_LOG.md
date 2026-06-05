@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — execute reserved_floor ratchet prevents slow re-pull drain of principal] EU.
+HOSTILE vector (slow multi-round drain of depositor principal): execute splits surplus 80/20 — pulls the
+burnable share into the holding and RATCHETS the retained share into the principal counter `reserved_floor +=
+retained` (lib.rs:1413-1416), so the retained 20% stays in percolator insurance AND is reclassified as
+protected principal (next round's surplus = insurance - the NEW higher floor = only newly-accrued insurance).
+If the ratchet were skipped, `reserved_floor` would stay flat while the retained share remained classified as
+"surplus" (`surplus = insurance - reserved_floor`), so the SAME retained dollars become re-pullable every
+subsequent execute — repeated cranks would ratchet nothing and progressively pull the entire insurance,
+INCLUDING depositor principal below the intended floor: a slow LOF. Mutated the ratchet to `.checked_add(0)`
+(no-op) -> FOUR tests FAIL: `e2e_ratchet_pulls_fresh_surplus_across_rounds` (the multi-round test that pins
+"only NEWLY-accrued surplus is pulled next round, not the retained buffer again"),
+`e2e_execute_pulls_only_burn_share_and_ratchets_principal`, `e2e_buy_burn_uniform_price_dutch_auction`,
+`e2e_full_genesis_to_buy_burn`. Strongly mutation-SHARP across single- and multi-round paths. (Pairs with
+finding-O floor: the floor bounds a single pull; the ratchet bounds re-pulls across rounds.) Verdict: BLOCKED,
+no gap. No code/test change.
+
 ### [VERIFIED SHARP — execute coin_i>0 guard: never pay USD for zero COIN (dust-fill LOF)] ET.
 HOSTILE vector (rounding-edge LOF): in a real settle (total_coin>0) the MARGINAL bid can receive a residual
 budget so small that `coin_i = floor(usd_i * cm/um) == 0`. The clearing credits a filled bid via `if usd_i > 0
