@@ -58,6 +58,15 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — execute round gate] DJ.
+Mutation-audited execute's round gate `clock_slot < book.round_end -> ERR_ROUND_ACTIVE` (twap lib.rs:1367)
+— a round must run its full length before it can be executed, so a cranker can't PREMATURELY settle the
+auction (early bids clearing at a worse marginal price before later bids arrive = manipulation). Dropped
+it (`if false`), build-sbf -> `e2e_buy_burn_uniform_price_dutch_auction` FAILS at chain.rs:3129 ("execute
+before the round expires must fail") — the headline test has an EXPLICIT pre-round_end execute-rejection
+assertion (a dedicated `fn` grep missed it; it lives inside the multi-round headline test). So the round
+gate is mutation-sharp. Restored -> 73 chain green. Verdict: BLOCKED, no gap. No code/test change.
+
 ### [VERIFIED SHARP — cancel_bid owner check] DI.
 Mutation-audited cancel_bid's owner check `book_rd_key(SL_BIDDER) != *bidder.key -> IllegalOwner` (twap
 lib.rs:1699) — only the bid's OWNER may cancel it. Without it a non-owner could force-cancel (evict) a
