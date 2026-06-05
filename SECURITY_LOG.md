@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SAFE — reserve-rate comparison cmp_rate is overflow-safe (continued fractions)] GI.
+Continuing the GG arithmetic-overflow sweep onto the auction's rate comparisons. The reserve filter
+`cmp_rate(c, u, reserve_num, reserve_den)` (twap lib.rs) drops bids whose rate c/u is below the DAO-set reserve
+reserve_num/reserve_den. reserve_num/den are u128 (set by set_reserve, :876-877), so a NAIVE cross-multiply
+`c·reserve_den` vs `reserve_num·u` could overflow u128 (u128·u64) -> wrong comparison -> a sub-reserve bid
+accepted (protocol OVERPAYS for COIN = LOF) or an above-reserve bid wrongly dropped. Checked the code: cmp_rate
+does NOT cross-multiply — it is a CONTINUED-FRACTION comparator (repeated quotient `n/d` + remainder `n%d`,
+Euclidean-style, swapping into the remainder), which compares any two u128 fractions WITHOUT ever multiplying
+the numerators/denominators together -> overflow-safe by construction for arbitrary u128 operands. Lib test
+`cmp_rate_orders_by_coin_per_usd` pins it incl. `cmp_rate(u128::MAX, 3, u128::MAX, 4) == Greater` (max operands,
+no overflow). The COMPANION ranking comparator cmp_bid (bid-vs-bid) DOES cross-multiply (coin_a·usdc_b) but is
+safe because the legs are u64-bounded (finding AC: as_u64 rejects > u64::MAX, so u64·u64 < 2^128) — DU pinned
+that. So both auction comparators are overflow-safe: cmp_rate (u128 reserve) via continued fractions, cmp_bid
+(u64 legs) via bounded cross-multiply. No GG-class overflow in the rate/ranking math. Verdict: BLOCKED, no gap.
+No code/test change.
+
 ### [VERIFIED SAFE — GG arithmetic-overflow class sweep (no other amplified-quantity overflow)] GH.
 After fixing GG (u64 weight-tally overflow), swept the whole codebase for the SAME class — an AMPLIFIED/derived
 quantity (a product, not a raw token amount) accumulated or compared in a width too small to hold it. Findings:
