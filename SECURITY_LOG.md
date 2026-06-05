@@ -49,6 +49,15 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED — health check + reconfigure bps bounds, no new test] BV.
+Full-suite health check: 166 GREEN (subledger 50, gv 17, distribution 22, twap 77), all four build-sbf
+clean, no drift since BO. twap `reconfigure` (surplus_buy_burn_bps): `new_bps > BPS_DENOMINATOR` rejected
+(lib.rs:473) so it can't be set above 100% to over-pull the floor — pinned `reconfigure_rejects_a_bps_above_the_denominator_that_would_overpull_the_floor`
+(643) + auth pinned `e2e_reconfigure_rejects_a_non_signing_or_forged_vault` (4319). The 0% (no buyback)
+and 100% (burn-all-surplus) extremes are valid DAO choices, both principal-protected by the finding-O
+floor (only surplus above it is ever pulled) — no LOF, so not separately pinned. Verdict: BLOCKED; suite
+healthy, reconfigure bounded + authorized. No code/test change.
+
 ### [SAFE on-chain / task-#6 setup note, no bug] BU. Unbounded claim_window_slots (absurd value bricks claim+burn)
 Probed: distribution `init_config` rejects `claim_window_slots == 0` but sets NO upper bound (lib.rs:276).
 `window_end = seal_slot + claim_window_slots` is computed with `checked_add` in BOTH claim (:527) and
