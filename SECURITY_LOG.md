@@ -58,6 +58,17 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — twap claim slot-clearing (anti-replay)] DN.
+Mutation-audited twap claim's slot-clearing `for b in d[o..o+SLOT_SIZE] { *b = 0 }` (twap lib.rs:1629) —
+the anti-replay guard: after paying usd_owed + coin_refund, the bid slot is fully zeroed so a re-claim
+reads SL_OCCUPIED!=1 / SL_SETTLED!=1 and is refused. Made it a no-op (`let _ = b`), build-sbf ->
+`e2e_claim_cannot_be_replayed_to_drain_other_winners` FAILS (the same slot is claimed twice, the second
+pay draining OTHER winners' settlement_usd). So it is mutation-sharp. NOTE: this is the TWAP analogue of
+DM (distribution entry-zeroing), but UNLIKE DM the twap test is correctly designed — its very name
+("drain_other_winners") means it replays WHILE settlement_usd still holds other winners' funds, isolating
+the slot-clearing from the transfer-insufficiency that masked DM. Restored -> 73 chain green. Verdict:
+BLOCKED, no gap. No code/test change.
+
 ### [COVERAGE GAP FIXED] DM. claim entry-zeroing (anti-replay) was mutation-BLIND (masked by vault insufficiency)
 Mutation-audited claim's entry-zeroing `pd[eo+32..eo+40] = 0` (distribution lib.rs:564) — the LOAD-BEARING
 anti-replay guard: after paying, the entry's amount is zeroed so a re-claim reads amount==0 and is refused.
