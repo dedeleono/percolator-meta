@@ -4056,7 +4056,22 @@ fn e2e_reserve_blocks_expensive_bid_from_draining_surplus() {
     // Supply = attacker's 1 unsold COIN (still escrowed); the fair bidder's 400k was bought + burned.
     assert_eq!(mint_supply(&svm, &env.coin_mint), 1, "the fair bid's COIN is bought + burned, only the attacker's unsold COIN remains");
     assert_eq!(token_amount(&svm, &bk.settlement_usd), 400_000, "fair bidder paid at the clearing price");
-    let _ = (attacker, fair, a_usd, f_usd);
+
+    // RECOVERY (filtered-bid settled-as-loser, NOT wedged): a below-reserve bid is excluded from the
+    // ELIGIBLE set (settle loop a), but the settlement loop (d) walks ALL occupied slots, so the
+    // attacker's filtered bid is still marked SETTLED with a FULL coin refund — claimable immediately,
+    // not stranded until a cooldown-cancel. Pins that loop (d) settles every occupied bid, not just the
+    // eligible ones: were it to skip filtered bids they'd stay OCCUPIED+unsettled, blocking the book from
+    // ever reopening (a cheap-bid wedge). The eligible-loser path is covered elsewhere (3830); THIS pins
+    // the reserve-FILTERED loser's recovery + reopen.
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &a_usd, &a_src, 0)).expect("filtered sub-reserve bid is settled-as-loser and claimable");
+    assert_eq!(token_amount(&svm, &a_src), 1, "the filtered bidder's full COIN is refunded — never burned, never stuck");
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &f_usd, &f_src, 1)).expect("fair winner claims their USD");
+    assert_eq!(token_amount(&svm, &f_usd), 400_000, "fair winner received the clearing USD");
+    // Both slots drained -> the book REOPENED: a fresh bid can be placed again.
+    let (late, l_src, l_usd) = new_bidder(&mut svm, &payer, &env, 5_000);
+    send(&mut svm, &[&late], place_bid_ix(&late.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &l_src, &l_usd, &env.coin_mint, &env.collateral_mint, 5_000, 5_000, None)).expect("book reopened after both claims drained it");
+    let _ = (attacker, fair, late, l_usd);
 }
 
 // INIT_BOOK DEGENERATE PARAMS (round_length == 0 re-opens the spoof hole; reserve_den == 0 bricks

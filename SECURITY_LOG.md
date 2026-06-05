@@ -49,6 +49,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] BO. Filtered (below-reserve) bid recovery in a mixed settle — settle-ALL-occupied vs eligible-only
+Vector/analysis: execute's settle has two passes — (a) builds the ELIGIBLE set (occupied, positive,
+rate>=reserve) and sorts it; (d) the payout loop. A below-reserve bid is EXCLUDED from the eligible set
+in (a). The correctness hinge is that loop (d) walks ALL occupied slots (`for i in 0..MAX_BIDS`), so a
+filtered bid still gets SETTLED with a FULL coin refund (usd_owed stayed 0 -> the else branch) — claimable
+immediately. If (d) instead iterated only the eligible set, a filtered bid would stay OCCUPIED+unsettled
+after a real settle: not claimable, and (worse) it keeps the book from ever reopening (the reopen scan
+sees an OCCUPIED slot) — a cheap below-reserve bid would WEDGE the auction until a cooldown-cancel. The
+roll path (total_coin==0) is separately safe (full restore, finding AE).
+Verdict: BLOCKED. Pinned by EXTENDING `e2e_reserve_blocks_expensive_bid_from_draining_surplus`: after the
+fair bid settles, the attacker's filtered sub-reserve bid is claimed (full 1-COIN refund), the winner
+claims, and a fresh bid proves the book REOPENED. Mutation proof: changing loop (d) to iterate `idx[0..n]`
+(eligible-only), build-sbf — MY extension FAILED (filtered bid unsettled -> claim InvalidAccountData) while
+`e2e_closing_refund_ata_cannot_permanently_brick_the_book` (3830, an ELIGIBLE loser) still PASSED, proving
+the boundary was genuinely uncovered (3830's loser is in the eligible set, settled even by the buggy loop).
+Restored -> 73 chain green. Extended an existing test (no redundant new one); count unchanged (166). KEEP.
+
 ### [BLOCKED — health check + deposit duplicate-account/double-withdraw confirmations, no new test] BN.
 Full-suite health check: 166 GREEN (subledger 50, genesis-vote 17, distribution 22, twap 77), all four
 build-sbf clean — matches checkpoint, no drift since BL. Analyzed two more vectors, both safe:
