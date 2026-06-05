@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [COVERAGE GAP FIXED] CR. gv one-vote-one-proposal guard was mutation-BLIND (masked by a back-out underflow)
+Mutation-audited the one-vote-one-proposal guard `ballot.has_live_ballot() && ballot.voted_proposal !=
+*proposal_account.key -> reject` (lib.rs:612): it forces a voter to RETRACT before backing a different
+proposal, so vote()'s back-out (subtracts the old ballot weight from the PASSED proposal) operates on the
+SAME proposal the ballot is on. Found: removing 612, `e2e_voter_cannot_back_two_proposals_without_retracting`
+STAYED GREEN. Root cause (CL-class): the test had only alice voting (on A), so B's support_weight/principal
+were 0 — backing B made the back-out `checked_sub` UNDERFLOW (0 - alice's weight), and THAT rejected, not
+guard 612. The real guard was untested. The masked danger: with 612 gone AND B holding support (another
+backer), backing B does NOT underflow — the back-out wrongly subtracts alice's A-weight from B, her ballot
+re-points to B, but her weight stays STRANDED on A => phantom weight on A (tally corruption / capture),
+B's backer weight cancelled. FIX: inject B's support_weight@72 + support_principal@80 to >> alice's BEFORE
+the back-B assertion, so no underflow can mask 612 — the guard is now the sole rejector. Mutation proof:
+with 612 the test passes; removing 612 (rebuild gv) -> FAILS (alice backs B). Restored -> 73 chain green.
+Strengthened an existing test (no count change). KEEP. This is the 2nd CL-class find: a checked_sub/state
+backstop masking a guard — the recurring mutation-blind pattern.
+
 ### [VERIFIED SHARP — distribution seal_winner authority binding, both halves] CQ.
 Mutation-audited the BB-class guard: seal_winner's authority binding (only the configured seal authority =
 gv config PDA may seal -> mint the whole COIN supply). Both halves mutation-sharp, each with its own test:

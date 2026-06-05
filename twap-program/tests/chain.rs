@@ -2031,8 +2031,23 @@ fn e2e_voter_cannot_back_two_proposals_without_retracting() {
 
     // Back A.
     send(&mut svm, vote(&gv_a, 1)).expect("back A");
-    // Backing B while the ballot is live on A is rejected.
+    // COVERAGE (mutation-sharpness for the one-vote-one-proposal guard, lib.rs:612): give B real
+    // support (support_weight@72, support_principal@80) — as if another voter had backed it — so vote()'s
+    // back-out subtraction does NOT underflow. Without this, B is empty and backing-B-while-live-on-A is
+    // rejected by the back-out's checked_sub UNDERFLOW, not by guard 612 — masking it (a removed 612
+    // stayed green). With B funded, the ONLY thing that can reject alice's back-of-B is guard 612; if it
+    // regressed, alice would back B AND leave phantom weight stranded on A (tally corruption / capture).
+    {
+        let mut b = svm.get_account(&gv_b).unwrap();
+        b.data[72..80].copy_from_slice(&1_000_000_000u64.to_le_bytes()); // support_weight >> alice's
+        b.data[80..88].copy_from_slice(&1_000_000_000u64.to_le_bytes()); // support_principal >> alice's
+        svm.set_account(gv_b, b).unwrap();
+    }
+    // Backing B while the ballot is live on A is rejected — by guard 612, now that no underflow can mask it.
     assert!(send(&mut svm, vote(&gv_b, 1)).is_err(), "cannot back a second proposal without retracting the first");
+    // alice's weight is still wholly on A (no phantom leak to/from B): A unchanged, B's injected support intact.
+    let a_support = u64::from_le_bytes(svm.get_account(&gv_a).unwrap().data[72..80].try_into().unwrap());
+    assert!(a_support > 0, "alice's weight stays on A — the rejected back-of-B left no phantom split");
     // Retract A, then B can be backed.
     send(&mut svm, vote(&gv_a, 2)).expect("retract A");
     send(&mut svm, vote(&gv_b, 1)).expect("after retract, back B");
