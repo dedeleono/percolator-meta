@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — ballot-PDA lamport-prefund (finding-AI) disenfranchisement DOS resistance] FF.
+HOSTILE vector (permissionless disenfranchisement DOS): the gv ballot PDA `["gv_ballot", config, voter]` is
+deterministic, so an attacker can DUST it (send lamports) before a victim ever votes. A naive
+`system_instruction::create_account` FAILS on an account that already holds lamports -> the victim could NEVER
+create their ballot -> permanently unable to vote (targeted disenfranchisement; at scale, suppress a faction to
+swing the genesis). Defense (finding-AI): gv `create_pda` (lib.rs:306) is prefund-robust — it tops up only the
+DEFICIT `if current < required { transfer(required - current) }` (the conditional also guards an over-dust
+underflow of `required - current`) and then `allocate` + `assign` via invoke_signed (which succeed on a
+prefunded system-owned, zero-data account), NOT create_account. vote only creates when `data_len() == 0`
+(:587). Mutated the top-up condition `if current < required` -> `if current == 0` (fund only empty accounts) ->
+EXACTLY ONE test fails: `dusting_a_voters_ballot_pda_cannot_block_their_vote` (the 1-lamport-dusted ballot is no
+longer topped to rent-exemption -> allocate on a non-exempt account -> tx fails), while all 40 other
+(fresh-ballot) vote tests PASS. So the mutation precisely isolates the dust path: mutation-SHARP, and the test
+genuinely pins the robust top-up (not masked by the fresh-ballot path). Verdict: BLOCKED, no gap. No code/test
+change.
+
 ### [VERIFIED BACKSTOPPED — burn_unclaimed vault/mint binding (SPL-burn-authority, no LOF)] FE.
 Anti-mask probe of burn_unclaimed's `*vault.key != config.vault || *coin_mint.key != config.coin_mint` bundle
 (distribution lib.rs:593). Mutated the VAULT clause to `false` -> 20 dist PASS = MUTATION-BLIND. Analyzed: NOT
