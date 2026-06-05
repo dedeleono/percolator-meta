@@ -58,6 +58,18 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED DEAD STATE — gv config outstanding_principal cache is never read for a decision] GL.
+GK dead-field lens on the gv `Config.outstanding_principal` cache (refreshed each vote from the live pool,
+genesis-vote lib.rs:581). Risk: if the quorum decision read this CACHE, a stale/deflated value (cf. FU's
+vote-time fake-pool attempt) could fake quorum. Traced: it is WRITTEN at vote (:581) and read NOWHERE for a
+decision — the trigger computes quorum against `live_outstanding = read_sub_pool_outstanding(sub_pool)` re-read
+LIVE from the config-bound pool (DX, mutation-sharp), NOT config.outstanding_principal. Confirmed by mutation:
+corrupted the cached write to `read_sub_pool_outstanding(..)?.wrapping_add(999_999)` -> seal 14 + insurance 43
+PASS = the cache is DEAD STATE (no test, hence no on-chain decision, depends on it). So the cache's
+value/staleness/deflation has ZERO security impact: the quorum is always measured against the live pool. This
+fully closes the FU vote-time cache vector (the cache it could affect is unread) and matches GK (a recorded-but-
+unused field). Pure hygiene (a wasted write), no fix needed. Verdict: BLOCKED, no gap. No code/test change.
+
 ### [VERIFIED — SL_PLACE_ROUND_END is diagnostic-only (no written-but-misused-field seam)] GK.
 Probed for a "written-but-misused field" bug seam: place_bid records `SL_PLACE_ROUND_END` = book.round_end at
 placement (twap lib.rs:1269), a per-slot field. Risk: if a guard READ it (e.g., a cooldown computed against the
