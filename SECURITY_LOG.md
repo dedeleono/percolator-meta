@@ -58,6 +58,24 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SAFE (on-chain side of finding-BU) — claim_window_slots overflow is checked, not silent] GO.
+HOSTILE vector (claim-window overflow -> window-bypass or stuck COIN): the claim window is `window_end =
+seal_slot + claim_window_slots`; claim allows `clock < window_end`, burn_unclaimed requires `clock >= window_end`.
+A huge claim_window_slots (near u64::MAX) overflows the sum. Two outcomes to distinguish: (a) SILENT WRAP ->
+window_end becomes tiny -> claim refused instantly + burn torches the vault immediately (recipient LOF), or the
+inverse (claim forever); vs (b) CHECKED REVERT -> a clean DOS (COIN stuck, can't claim or burn). Checked the
+code: BOTH sites use `seal_slot.checked_add(claim_window_slots).ok_or(ArithmeticOverflow)` (distribution
+lib.rs:525-527 claim, and burn_unclaimed) -> outcome (b), the SAFE one: overflow REVERTS, NO silent window
+corruption/bypass. Init bounds `claim_window_slots == 0 -> reject` (:276) but has NO upper bound -> that upper
+bound is the off-harness finding-BU (the proposal-gen tool must set claim_window far below u64::MAX). Crucially
+an ATTACKER cannot weaponize this: to bind a malicious-claim-window distribution config, EZ's solvency check
+requires the config's vault to already hold the FULL COIN supply (which only the legit orchestration mints/holds),
+so a forged config is rejected at init. So the only reachability is an ORCHESTRATION bug (BU), and even then the
+on-chain reverts cleanly — no silent LOF/bypass, just a recoverable-only-by-redeploy DOS. DEFENSE-IN-DEPTH
+option (not implemented, design/DAO call): init_config could reject claim_window_slots above a sane cap to
+fail-fast at init instead of bricking at seal. Verdict: BLOCKED (corruption-safe; upper bound is BU's
+off-harness job). No code/test change.
+
 ### [VERIFIED SHARP — withdrawn-flag set ONLY on full exit (premature-retire stuck-remainder LOF)] GN.
 Mirror of GM (the withdraw side of the withdrawn-flag lifecycle). HOSTILE vector (premature retirement strands
 the remainder): insurance_withdraw decrements `position.principal -= amount` then retires the position
