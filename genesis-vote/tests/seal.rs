@@ -457,6 +457,54 @@ fn register_rejects_a_non_creator_front_runner() {
     assert_eq!(env.dist_sealed_proposal(), dist_proposal, "creator's distribution sealed");
 }
 
+// BAIT-AND-SWITCH (post-registration distribution tampering, LOF on voters): voters back a gv
+// proposal whose distribution they have read. `register` freezes a (entry_count, total_amount)
+// SNAPSHOT, and `trigger` (lib.rs ~724) refuses to seal unless the live distribution still matches it.
+// The danger this blocks: the distribution-side append-freeze only kicks in at SEAL — but the seal
+// happens INSIDE trigger, so between register and trigger the distribution proposal is NOT yet sealed
+// and its creator CAN still append. A creator could thus register an honest "60 to alice, 40 burned",
+// collect a quorum+majority on it, then append a self-dealing "40 to mallory" into the burn-bound
+// headroom (60+40 == total_supply, so the distribution's own supply cap never fires) and trigger to
+// privatize the 40 voters expected destroyed. The gv snapshot check is the ONLY guard over this exact
+// window; if it were absent the inflated distribution would seal. Confirm trigger refuses the tamper.
+#[test]
+fn trigger_refuses_a_distribution_inflated_after_registration() {
+    let mut env = Env::new();
+    let alice = Pubkey::new_unique();
+    // Honest distribution voters approve: 60 to alice, the remaining 40 of the 100 supply is burned.
+    let dist_proposal = env.create_dist_proposal(1, &[(alice, 60)]);
+    let gv_proposal = env.register(&dist_proposal); // snapshot frozen at (entry_count=1, total=60)
+    env.set_pool_outstanding(10);
+    env.inject_tally(&gv_proposal, 10, 8, 10, 8, 10); // quorum + majority on the HONEST proposal
+
+    // ATTACK: after voters backed it, the creator appends a self-dealing 40 into the headroom. This
+    // append SUCCEEDS at the distribution layer (not sealed yet; 60+40 == supply, so the cap passes)
+    // — only the gv snapshot stands between it and a sealed rug.
+    let mallory = Pubkey::new_unique();
+    let mut ad = vec![2u8]; // IX_APPEND_ENTRIES
+    ad.extend_from_slice(&1u32.to_le_bytes());
+    ad.extend_from_slice(mallory.as_ref());
+    ad.extend_from_slice(&40u64.to_le_bytes());
+    let append = Instruction {
+        program_id: dist_id(),
+        accounts: vec![
+            AccountMeta::new(env.payer.pubkey(), true),
+            AccountMeta::new_readonly(env.dist_config, false),
+            AccountMeta::new(dist_proposal, false),
+        ],
+        data: ad,
+    };
+    env.send(&[append], &[]).expect("the append itself is accepted pre-seal (only the snapshot guards the trigger)");
+
+    // The trigger must now REFUSE: the live (entry_count=2, total=100) no longer matches the frozen
+    // snapshot (1, 60). The voters' approved distribution can never be silently inflated.
+    assert!(
+        env.trigger(&gv_proposal, &dist_proposal).is_err(),
+        "trigger must refuse a distribution that changed after registration"
+    );
+    assert_eq!(env.dist_sealed_proposal(), Pubkey::default(), "nothing sealed — the rug was blocked, not paid out");
+}
+
 // LAMPORT PRE-FUND INIT-DOS (finding AI), genesis-vote config: the gv config PDA is
 // deterministic (f(coin_mint, subledger_pool), both public), and init_config is permissionless.
 // System `create_account` aborts with AccountAlreadyInUse on ANY pre-existing lamports, so an

@@ -27,6 +27,26 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Distribution bait-and-switch in the register->trigger window (LOF on voters)
+Vector: voters back a gv proposal whose distribution they have read. The distribution-side append-freeze
+(`header.sealed`, tested last tick) only engages at SEAL — but the seal happens INSIDE gv `trigger`, so
+between `register` and `trigger` the distribution proposal is NOT sealed and its creator can still append.
+A creator registers an honest "60 to alice, 40 burned", collects quorum+majority, then appends a self-
+dealing "40 to mallory" into the burn-bound headroom (60+40 == total_supply, so distribution's own supply
+cap never fires) and triggers — privatizing the 40 voters expected destroyed. The ONLY guard over this
+exact window is gv trigger's snapshot check (lib.rs ~724): the live (entry_count, total_amount) must equal
+the (snapshot_entry_count, snapshot_total_amount) frozen at register, else the seal is refused.
+Analysis: append is append-only (no edit), entry_count + total_amount both monotonically grow, so ANY
+post-register tamper changes the pair and trips the check; a content swap keeping the pair fixed is
+impossible (no edit-entry ix). The tamper just bricks the creator's own proposal (self-DOS) — it can never
+seal an inflated list. Voters get exactly what they approved, or nothing.
+Verified BLOCKED + mutation-SHARP: register (alice,60) -> tally quorum+majority -> append (mallory,40)
+[accepted at the distribution layer, pre-seal] -> trigger REFUSED, nothing sealed. Removing the snapshot
+block at :724 + rebuilding the .so makes trigger seal the inflated distribution and the test fails.
+Distinct from register_rejects_a_non_creator_front_runner (that pins the creator-BINDING on register; this
+pins the snapshot-MISMATCH refusal at trigger over the creator's OWN post-registration tamper).
+Test KEPT: trigger_refuses_a_distribution_inflated_after_registration (seal 10).
+
 ### [BLOCKED+PINNED] Split-withdraw rounding game on the impaired insurance haircut (LOF)
 Vector: insurance_withdraw allows PARTIAL exits and the haircut is mul_div_floor(insurance, amount,
 outstanding). A sophisticated exiter splits their exit into many small partial withdraws hoping the
