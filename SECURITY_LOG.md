@@ -31,6 +31,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Deposit != vote: top-up while voted doesn't inflate the tally nor unlock the pledge
+Probed the deposit x vote-lock INTERACTION (untested): insurance_deposit checks p.withdrawn but NOT
+vote_locked and never touches the gv tallies (gv-owned state). So a voter may top up while a ballot is live.
+Two properties matter: (a) the top-up must NOT silently raise counted weight/principal — else it would inject
+vote power bypassing vote's weight/age/backout path (a Sybil-relevant inflation); (b) it must NOT unlock the
+at-risk capital. The only way to count fresh capital is a re-vote, which resets the age clock
+(top_up_resets... pins the reset; this pins the no-inflation interaction).
+Verified: alice votes (weight 10*P, locked) -> tops up P (allowed, no DOS) -> tally STAYS at (10*P, P)
+(extra capital uncounted), position grew to 2P but stays vote-locked, and a withdraw of the topped-up
+position is refused until retract. The unlock half is mutation-covered by the existing vote_locked guard
+(vote_locked_principal_cannot_exit); the NO-INFLATION half is a behavioral/regression guard (no single line
+to mutate — deposit simply doesn't touch gv state), catching any future change that made deposit a vote.
+Test KEPT: topping_up_a_voted_position_does_not_inflate_or_unlock_the_vote (subledger insurance 36).
+Also confirmed covered this tick: place_bid on a SETTLED book is rejected (book.state==OPEN, pinned by the
+refund-ATA brick tests at chain.rs:3807/4433); one-bid-per-bidder pinned (e2e_buy_burn:3275).
+
 ### [BLOCKED+PINNED] Cross-proposal phantom inflation (one-vote-one-proposal guard, single-guard)
 Vector: a voter with a live ballot on proposal A must RETRACT before backing proposal B (lib.rs:612). Subtler
 than same-proposal double-count: the re-vote backout subtracts ballot.voted_weight from the PASSED proposal,

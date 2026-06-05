@@ -1447,6 +1447,44 @@ fn cannot_back_a_second_proposal_without_retracting_the_first() {
     assert_eq!(read_cast(&env), 20 * amount, "global cast still exactly two votes — never inflated");
 }
 
+// DEPOSIT != VOTE (top-up while a ballot is LIVE must not inflate the tally nor unlock the pledge):
+// insurance_deposit checks p.withdrawn but NOT vote_locked, and it never touches the gv tallies (those are
+// gv-owned state). So a voter may add capital while voted, but doing so must (a) NOT silently raise their
+// counted weight/principal — that would inject vote power bypassing vote's weight/age/backout path — and
+// (b) NOT unlock the at-risk capital. The only way to count fresh capital is a re-vote, which resets the age
+// clock (top_up_resets... pins that). This interaction (deposit x live ballot) was untested.
+#[test]
+fn topping_up_a_voted_position_does_not_inflate_or_unlock_the_vote() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, 2 * amount); // funds for the first deposit + a top-up
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("first deposit");
+    let (_d, gv_proposal) = create_and_register_proposal(&mut env, &ve, 1, &Pubkey::new_unique());
+    env.warp_slot(1124); // weight 10*principal
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("vote");
+    assert_eq!(gv_proposal_support(&env, &gv_proposal), (10 * amount, amount), "vote counted once");
+    assert!(env.svm.get_account(&env.position_pda(&alice.pubkey())).unwrap().data[97] == 1, "position vote-locked");
+
+    // TOP UP while the ballot is live (deposit ignores the lock) — allowed (no DOS on adding capital).
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("top-up while voted is allowed");
+
+    // (a) The tally is UNCHANGED — the extra capital is NOT counted until a re-vote.
+    assert_eq!(gv_proposal_support(&env, &gv_proposal), (10 * amount, amount),
+        "top-up must NOT inflate the live vote — deposit is not a vote");
+    // (b) The position grew but stays LOCKED: the pledged capital can't be exited without retracting.
+    let (principal, _start, withdrawn) = env.read_position(&alice.pubkey());
+    assert_eq!(principal, 2 * amount, "top-up landed (principal grew)");
+    assert!(!withdrawn);
+    assert!(env.svm.get_account(&env.position_pda(&alice.pubkey())).unwrap().data[97] == 1,
+        "top-up did NOT unlock the live vote — capital still pledged");
+    assert!(env.insurance_withdraw(&alice, &alice_ata, &holding, &alice, amount).is_err(),
+        "the topped-up, still-voted position cannot exit until the vote is retracted");
+}
+
 // TARGETED DISENFRANCHISEMENT (lamport-prefund DOS on a voter's ballot, finding AI on the vote path):
 // the ballot PDA is f(gv_config, voter) — fully deterministic from a public voter key — and `vote`
 // lazily creates it on the first back. If that creation used the System `create_account` (which aborts
