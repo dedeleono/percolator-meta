@@ -58,6 +58,34 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [GT-CORRECTION (REVERSES last tick) — do NOT drop the per-asset checks; they are the market-substitution defense] GU.
+Probed the market-substitution angle behind GT's proposed option-b fix and found option-b is UNSAFE — RETRACTING
+the GT-UPDATE recommendation to "drop the 3 per-asset reads and gate on marketauth@0 alone." Why: kickstart
+(lib.rs:2587) and genesis_withdraw (:2007 else-branch) take `market_slab` as a caller-supplied account and bind
+its identity SOLELY by `collateral_mint == base_mint` (load_percolator_market_config) + the 4-way authority check
+`admin && insurance_authority && insurance_operator && backing_bucket_authority == market_admin PDA`
+(:2629-2632 / :2030-2033). There is NO `market_slab.key == genesis_config.market_slab` binding — GenesisConfig
+stores no market key. So the 4-way check IS the market-identity guard. Attack if reduced to marketauth-only:
+an attacker InitMarkets a percolator market with collateral=base_mint and marketauth=attacker (so the derived
+per-asset authorities = attacker), then — IF percolator's market-level UpdateAuthority does not require new-key
+consent — rotates marketauth -> the (deterministic) market_admin PDA, yielding marketauth==PDA but
+insurance_operator==attacker. Under option-b kickstart would ACCEPT it and TopUpInsurance the depositors' base
+capital into the attacker's market, which the attacker drains via their insurance_operator
+(WithdrawInsuranceLimited) -> CRITICAL depositor-capital LOF. The CURRENT 4-way check blocks this
+(insurance_operator != PDA -> reject). Whether the marketauth-rotation-consent path is actually open is a
+percolator-internal question I did NOT fully verify — but the conservative, correct conclusion stands regardless:
+the per-asset checks are load-bearing (or at minimum the intended market-control verification) and the GT fix
+MUST PRESERVE the 4-way semantics. CORRECTED FIX = option (a): keep reading all four authorities but re-point the
+3 per-asset reads at the NEW location — asset-0's AssetOracleProfileV16, which starts at a FIXED absolute offset
+`MARKET_GROUP_OFF(=HEADER_LEN+432=448) + dynamic_asset_slot_offset::<AssetOracleStorageV16>(0)` (fixed for
+index 0 = the market-group header size), with in-profile field offsets insurance_authority@+24, insurance_operator@+56,
+backing_bucket_authority@+88 (struct: 4+4+2+2+2+2+2 + 6 pad = 24, then +32 each). PIN the absolute offset with an
+`offset_of!` test against the real percolator struct in the integration suite (which CAN dev-dep percolator-prog),
+exactly like twap's finding-T insurance@749 pin — never hardcode unpinned. Still a deliberate task-#11 change
+(needs the offset_of! pin + the trivial integration.rs marketauth helper migration + the non-GT timelock/encoding
+test-data fixes for a fully-green 40-test suite). Net: GT remains a real genesis DOS; the fix is option-a, NOT
+option-b.
+
 ### [REAL BUG (genesis DOS) — meta read_market_config reads 3 authorities at STALE percolator offsets after the v16 rebuild] GT.
 While restoring the GR-dark integration suite I PROVED the test-side migration is trivial (the percolator v16
 rebuild collapsed admin/asset_authority/base_unit_authority into one market-level `marketauth` at wrapper
