@@ -58,6 +58,24 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED DEFENSE-IN-DEPTH — trigger distribution_config binding / seal redirect] DY.
+HOSTILE vector (continuing the DW/DX substitution lens): substitute a foreign distribution_config into gv
+`trigger` so the winner-take-all seal lands on an attacker-controlled distribution (config.authority preset to
+the gv config PDA), redirecting the COIN payout. trigger binds three accounts (lib.rs:713-716):
+distribution_program, distribution_config (:715), distribution_proposal==pv.distribution_proposal (:716).
+Mutation results: :716 (proposal) is SHARP — `trigger_cannot_redirect_to_a_sibling_distribution_proposal`
+(the BB test) FAILS when dropped. :715 (config) is mutation-BLIND (seal 14 + insurance 41 green). Probed the
+backstop: distribution `seal_winner` :475 requires `header.config == config_account.key` (the proposal must
+belong to the sealed config) — but THAT is ALSO mutation-blind (dist 19 + seal 14 green when dropped). Analyzed
+the COMBINATION: the two config bindings (:715 trigger-side, :475 seal-side) are MUTUALLY REDUNDANT, and :716
+already forces the legit registered proposal whose header.config IS the legit config — so the seal cannot be
+redirected to a foreign config by ANY single guard removal (each is backstopped by the others + the proposal
+binding). seal_winner is reachable ONLY via trigger (its authority == config.authority == the gv config PDA,
+which only trigger can invoke_signed), so there is no direct-call bypass. => triply-redundant defense-in-depth,
+NOT a single-point gap. A config-redirect test would be (a) mutation-blind to every single removal (masked) and
+(b) redundant with the BB proposal-redirect test (the meaningful, stronger version). Per KEEP/DELETE: no test
+added. Verdict: BLOCKED (defense-in-depth). No code/test change.
+
 ### [GAP FIXED — substituted low-outstanding pool -> fake quorum -> COIN-supply theft] DX.
 HOSTILE vector (sibling of DW; account substitution): `trigger` measures quorum as `total_voted_principal*2 >
 live_outstanding`, reading `outstanding` LIVE from the subledger pool (lib.rs:740). Feed a pool reporting a
