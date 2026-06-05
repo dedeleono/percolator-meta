@@ -27,6 +27,26 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] reconfigure bps > 10000 would over-pull below the floor (principal drain LOF)
+Vector: execute pulls burnable = surplus * buy_burn_bps / BPS_DENOMINATOR(10000). If buy_burn_bps could
+exceed 10000, burnable would EXCEED surplus and the WithdrawInsuranceLimited reaches BELOW reserved_floor
+into protected depositor principal — a LOF that bypasses the finding-O floor. The only mutable path to bps
+is reconfigure (Squads-vault-gated, timelock'd); a malicious/mistaken DAO could try bps=10001.
+Analysis: process_reconfigure rejects new_bps > BPS_DENOMINATOR (lib.rs:473) BEFORE writing config, so even
+a fully-approved, post-timelock reconfigure cannot arm an over-pull; execute's burnable stays <= surplus and
+retained = surplus - burnable stays >= 0 (checked_sub). Existing tests covered bps=5000 (happy) and bps=0
+(auth) — neither pinned the upper bound.
+Verified BLOCKED + mutation-SHARP end-to-end through the REAL Squads binary: propose+approve+warp-past-
+timelock a reconfigure(10001) -> the vault execute fails (twap rejects), bps stays 8000. Removing the
+`new_bps > BPS_DENOMINATOR` check at :473 + rebuilding the .so makes the 10001 reconfigure land (test fails).
+Also confirmed init_config does not take bps as a free input (defaults 8000), so reconfigure is the only
+mutation path. Adjacent surfaces reviewed + already covered (no new test): finding-S post-handoff deposit
+lock (e2e_post_handoff_deposit_blocked_by_authority_revoke), post-handoff exit closure
+(e2e_subledger_exit_blocked_after_operator_handoff), operator-grant Squads gating
+(e2e_attacker_cannot_grant_operator_bypassing_squads), create_proposal capacity<=MAX_ENTRIES + exact-sized
+allocation.
+Test KEPT: reconfigure_rejects_a_bps_above_the_denominator_that_would_overpull_the_floor (chain 68).
+
 ### [BLOCKED+PINNED] Front-run the genesis insurance pool with an out-of-range policy (permanent exit DOS)
 Vector: init_insurance_pool is permissionless and the genesis pool PDA is deterministic, so an attacker can
 race the orchestrator to it. The market/vault bindings are part of the PDA seeds (covered by

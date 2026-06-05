@@ -633,6 +633,71 @@ fn reconfigure_only_via_squads_vault_execute_after_timelock() {
     );
 }
 
+// BPS OVER-PULL (floor breach -> principal drain): execute pulls burnable = surplus * buy_burn_bps /
+// BPS_DENOMINATOR. If buy_burn_bps could exceed BPS_DENOMINATOR (10000), burnable would EXCEED the
+// surplus and the WithdrawInsuranceLimited would reach BELOW reserved_floor into protected depositor
+// principal (a LOF). reconfigure rejects new_bps > BPS_DENOMINATOR (lib.rs:process_reconfigure) so even a
+// Squads-approved, timelock'd reconfigure cannot arm an over-pull. The happy path tests bps=5000 and the
+// auth test bps=0; neither pins the upper bound. This drives a real Squads execute of reconfigure(10001).
+#[test]
+fn reconfigure_rejects_a_bps_above_the_denominator_that_would_overpull_the_floor() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(twap_id(), format!("{}/../target/deploy/twap_program.so", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let squads = squads_id();
+    let treasury = install_squads(&mut svm, &squads, &payer.pubkey());
+    let dao = Keypair::new();
+    svm.airdrop(&dao.pubkey(), 100_000_000_000).unwrap();
+    let create_key = Keypair::new();
+    let multisig = multisig_pda(&squads, &create_key.pubkey());
+    let create_ix = multisig_create_v2_ix(
+        &squads, &treasury, &multisig, &create_key.pubkey(), &payer.pubkey(),
+        Some(&dao.pubkey()), 1, &[(dao.pubkey(), PERM_ALL)], TIMELOCK_1_WEEK_SECS,
+    );
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[create_ix], Some(&payer.pubkey()), &[&payer, &create_key], bh)).expect("create multisig");
+
+    let coin_mint = Keypair::new().pubkey();
+    let market = Keypair::new().pubkey();
+    let percolator_program = Keypair::new().pubkey();
+    let init = init_config_ix(&payer.pubkey(), &coin_mint, &market, &multisig, &dao.pubkey(), &percolator_program);
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[init], Some(&payer.pubkey()), &[&payer], bh)).expect("init twap config");
+    let cfg_pda = twap_config_pda(&market, &multisig, &coin_mint, &percolator_program);
+    assert_eq!(read_bps(&svm, &cfg_pda), 8_000, "default buy/burn share");
+
+    // The DAO proposes an OVER-PULL: bps = 10001 (> 100%), which would make execute pull more than the
+    // surplus and breach the principal floor.
+    let vault = vault_pda(&squads, &multisig, 0);
+    let message = build_twap_reconfigure_message(&vault, &cfg_pda, &twap_id(), 10_001u16);
+    let idx = 1u64;
+    let transaction = transaction_pda(&squads, &multisig, idx);
+    let proposal = proposal_pda(&squads, &multisig, idx);
+    let mut send = |svm: &mut LiteSVM, ixs: &[Instruction], extra: &[&Keypair]| -> Result<(), String> {
+        svm.expire_blockhash();
+        let bh = svm.latest_blockhash();
+        let mut signers: Vec<&Keypair> = vec![&payer];
+        signers.extend_from_slice(extra);
+        svm.send_transaction(Transaction::new_signed_with_payer(ixs, Some(&payer.pubkey()), &signers, bh)).map(|_| ()).map_err(|e| format!("{:?}", e))
+    };
+    send(&mut svm, &[vault_transaction_create_ix(&squads, &multisig, &transaction, &dao.pubkey(), &message)], &[&dao]).expect("vault tx create");
+    send(&mut svm, &[proposal_create_ix(&squads, &multisig, &proposal, &dao.pubkey(), idx)], &[&dao]).expect("proposal create");
+    send(&mut svm, &[proposal_approve_ix(&squads, &multisig, &proposal, &dao.pubkey())], &[&dao]).expect("approve");
+    let mut clock = svm.get_sysvar::<Clock>();
+    clock.unix_timestamp += i64::from(TIMELOCK_1_WEEK_SECS) + 1;
+    svm.set_sysvar::<Clock>(&clock);
+    let remaining = vec![
+        AccountMeta::new_readonly(vault, false), AccountMeta::new(cfg_pda, false), AccountMeta::new_readonly(twap_id(), false),
+    ];
+    let exec = vault_transaction_execute_ix(&squads, &multisig, &proposal, &transaction, &dao.pubkey(), &remaining);
+
+    // Even fully approved and past the timelock, the TWAP rejects the out-of-range bps — so the over-pull
+    // can never be armed and the floor stays load-bearing.
+    assert!(send(&mut svm, &[exec], &[&dao]).is_err(), "reconfigure must reject bps > 10000 (would overpull below the floor)");
+    assert_eq!(read_bps(&svm, &cfg_pda), 8_000, "buy/burn share unchanged — no over-pull configured");
+}
+
 // --- Percolator handoff e2e (slice 3): squads-execute -> accept_operator -> percolator ---
 fn perc_id() -> Pubkey {
     percolator_prog::id()
