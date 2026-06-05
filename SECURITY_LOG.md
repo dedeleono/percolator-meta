@@ -58,6 +58,20 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED — trigger distribution-read defense + the read-binding asymmetry rationale, no new test] CF.
+Complements CE (subledger reads). The gv `trigger` reads the distribution proposal's snapshot (pd[84..88]
+entry_count, pd[88..96] total_amount) WITHOUT a disc check — but it is sound via a DIFFERENT, stronger
+binding: (a) exact key match `*distribution_proposal.key != pv.distribution_proposal -> reject` (lib.rs:27;
+pv.distribution_proposal was fixed at register to the exact registered proposal's key, so the account is
+uniquely identified — only a real registered distribution proposal could BE that key), (b) `pd.len() < 96
+-> reject` (no OOB), (c) the seal_winner CPI independently checks `proposal_account.owner == distribution_
+program`. RATIONALE for the asymmetry (so it isn't mis-flagged as a missing disc check): the subledger
+position/pool are PDA-DERIVED bindings (f(pool,voter) / config.subledger_pool), so CE's disc+length+owner
+re-validation adds type-safety ON TOP of the derivation; the distribution proposal is bound by an EXACT
+STORED KEY (pv.distribution_proposal) — a strictly stronger identity than a derivation — so a disc check
+would be redundant. Both cross-program raw reads are sound via the appropriate mechanism. Verdict: BLOCKED.
+No code/test change.
+
 ### [BLOCKED — cross-program raw-offset reads are disc-guarded (type-cosplay), no new test] CE.
 gv reads the subledger Position + Pool via raw byte offsets; verified BOTH readers reject type-cosplay, not
 just rely on the PDA+owner binding:
