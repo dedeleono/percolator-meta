@@ -58,6 +58,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [COVERAGE ADDED — position-PDA lamport-prefund cross-user EXCLUSION DOS (deposit call site)] FG.
+HOSTILE vector (targeted depositor exclusion — higher-stakes sibling of FF): the subledger position PDA
+["subledger_position", pool, owner] is deterministic, so an attacker can DUST a VICTIM's position with lamports
+BEFORE they ever deposit. A naive create_account fails on a prefunded account -> the victim can NEVER open a
+position -> totally excluded from the genesis (no capital at risk => no vote, no weight, no claim). This is the
+FIRST gate, before voting even matters, and the attack is CROSS-USER (dust the victim's PDA, not your own).
+insurance_deposit creates the position via create_pda_robust (subledger lib.rs:75), which is prefund-robust
+(top up only the deficit `if current < required` + allocate/assign, NOT create_account). COVERAGE GAP at THIS
+call site: the helper's robustness was pinned only via the POOL-init path (`lamport_prefund_cannot_brick_insurance_pool_init`)
+and the BALLOT path (FF) — the deposit/position call site + the cross-user depositor-exclusion threat had no
+test. FIX: added `dusting_a_depositors_position_pda_cannot_block_their_deposit` — dusts alice's position PDA
+with 1 lamport before she deposits, asserts the deposit lands, the position is subledger-owned, and her full
+principal is recorded (not excluded). Mutation-sharp: gating the top-up to `if current == 0` fails THIS test
+(and the pool-init one), passing the other 40. KEPT: pins a distinct call site + a distinct (cross-user
+targeted-exclusion) threat the pool-init/ballot tests don't cover. insurance 41->42. Verdict: BLOCKED; deposit
+-path exclusion-DOS coverage added.
+
 ### [VERIFIED SHARP — ballot-PDA lamport-prefund (finding-AI) disenfranchisement DOS resistance] FF.
 HOSTILE vector (permissionless disenfranchisement DOS): the gv ballot PDA `["gv_ballot", config, voter]` is
 deterministic, so an attacker can DUST it (send lamports) before a victim ever votes. A naive

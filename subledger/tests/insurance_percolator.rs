@@ -1779,6 +1779,42 @@ fn dusting_a_voters_ballot_pda_cannot_block_their_vote() {
     assert_eq!(support_weight, 10 * amount, "alice's weight counts — she was not silenced");
 }
 
+// FINDING-AI for the POSITION PDA (exclusion DOS, higher-stakes than the ballot): the subledger position
+// PDA ["subledger_position", pool, owner] is deterministic, so an attacker can DUST a victim's position with
+// lamports BEFORE they ever deposit. A naive create_account fails on a prefunded account -> the victim could
+// NEVER open a position -> totally excluded from the genesis (no capital at risk, so no vote, no weight, no
+// claim). The ballot-dust case is pinned (dusting_a_voters_ballot_pda_cannot_block_their_vote) but the
+// position — the FIRST gate, before voting even matters — was not. This pins create_pda_robust on the deposit
+// path: a dusted position PDA is absorbed (top up the deficit + allocate/assign), and the deposit still lands.
+#[test]
+fn dusting_a_depositors_position_pda_cannot_block_their_deposit() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+
+    // ATTACK: dust alice's deterministic position PDA with 1 lamport BEFORE she deposits.
+    let position = env.position_pda(&alice.pubkey());
+    env.svm.set_account(position, Account {
+        lamports: 1, // attacker dust, system-owned + empty
+        data: vec![],
+        owner: solana_sdk::system_program::ID,
+        executable: false,
+        rent_epoch: 0,
+    }).unwrap();
+
+    // The deposit STILL lands — the robust create absorbs the dust instead of aborting.
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("deposit lands despite the dusted position PDA");
+
+    let pos = env.svm.get_account(&position).unwrap();
+    assert_eq!(pos.owner, sub_id(), "position created + owned by subledger despite the dust");
+    let principal = u64::from_le_bytes(pos.data[72..80].try_into().unwrap());
+    assert_eq!(principal, amount, "alice's full principal is recorded — she was not excluded");
+}
+
 // Finding B (vote-outlives-capital): a live genesis ballot must keep its principal
 // at risk. Before the fix, a voter could vote (recording a principal/weight snapshot)
 // then insurance-withdraw their capital, leaving a free, capital-less ballot that
