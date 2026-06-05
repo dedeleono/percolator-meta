@@ -58,6 +58,19 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — init_insurance_pool policy range check blocks bad-policy pool-brick DOS] GC.
+HOSTILE vector (front-run the genesis pool init with a garbage policy to brick it): init_insurance_pool is
+permissionless and writes the pool's `policy` byte. An out-of-range value (POLICY_WITH_SURPLUS+1 = 2) would be
+stored, then `Pool::deserialize` — which rejects `policy > POLICY_WITH_SURPLUS` on EVERY read — would make the
+pool unreadable forever: all deposits/withdraws/votes/CPIs revert, and the legit re-init fails
+AccountAlreadyInitialized (the deterministic PDA is squatted) -> the genesis is permanently BRICKED before it
+starts. Guard: init validates `policy > POLICY_WITH_SURPLUS -> InvalidInstructionData` (subledger lib.rs:732)
+BEFORE create/write. Mutated :732 to disable the policy clause -> `front_running_the_genesis_pool_with_a_bad_policy_is_rejected`
+FAILS = mutation-SHARP. That test inits the REAL genesis pool PDA with policy=2 (only the policy wrong), asserts
+init refuses + the PDA is UNTOUCHED (not bricked), then inits normally and round-trips a deposit+full exit.
+(Pairs with finding-Q: the pool PDA seed includes market_slab+percolator_program so the disabled own-vault
+init_pool can't squat the insurance PDA either.) Verdict: BLOCKED, no gap. No code/test change.
+
 ### [VERIFIED SHARP — twap reads of the Squads Multisig (config_authority/time_lock offsets)] GB.
 Extends the cross-program offset sweep to the OTHER sibling binary (Squads v4, after percolator slab EX/FX/FV/FW).
 twap init_config reads the bound multisig's fields at hardcoded offsets into the Squads `Multisig` struct:
