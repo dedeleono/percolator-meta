@@ -31,6 +31,19 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Trigger requires a STRICT majority/quorum (a tie is not enough)
+Vector: trigger seals the winner-take-all distribution only if total_voted_principal*2 > live_outstanding
+AND support_weight*2 > total_cast_weight (lib.rs:743,748, strict `* 2 <= ... -> reject`). The existing tests
+use clearly-below (4/10) and clearly-above (10/10); the EXACT-50% boundary was untested. A `>` -> `>=`
+regression (i.e. `<=` -> `<` in the reject conditions) would let a MINORITY holding exactly half the
+principal, or a proposal with exactly half the cast weight, capture 100% of the COIN supply on a TIE.
+Verified BLOCKED + mutation-SHARP on BOTH inequalities (via inject_tally + the real distribution seal CPI):
+exactly-50% principal (voted 5/10, 5*2==10) is refused; exactly-50% cast weight (support 4/8, 4*2==8) is
+refused; one unit past both ties (6/10 and 5/8) seals. Mutating the QUORUM `<=`->`<` makes the 5/10 case
+seal (test fails); mutating the MAJORITY `<=`->`<` makes the 4/8 case seal (test fails) — each sub-assertion
+independently pins its own strict inequality.
+Test KEPT: trigger_requires_a_strict_majority_and_quorum_not_a_tie (gv seal 12).
+
 ### [BLOCKED+PINNED] Settle with a zero-COIN marginal: never pay USD for 0 COIN (overpay LOF)
 Vector: in a real SETTLE (total_coin > 0) the marginal bid can get a residual budget so small that
 coin_i = floor(usd_i * cm/um) == 0. execute treats any coin_i == 0 fill as UNFILLED (usd_owed -> 0, full

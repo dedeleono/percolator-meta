@@ -400,6 +400,36 @@ fn trigger_seals_the_distribution_cross_program() {
     assert!(env.trigger(&gv_proposal, &dist_proposal).is_err(), "no double seal");
 }
 
+// STRICT MAJORITY/QUORUM (a tie is NOT enough): trigger requires total_voted_principal*2 > live_outstanding
+// AND support_weight*2 > total_cast_weight (lib.rs:743,748 — strict `* 2 <= ... -> reject`). The existing
+// happy/sad tests use clearly-below (4/10) and clearly-above (10/10); the EXACT-50% boundary was untested.
+// A `>` -> `>=` regression would let a MINORITY that holds exactly half the principal, or a proposal with
+// exactly half the cast weight, capture the entire COIN distribution — winner-take-all on a tie.
+#[test]
+fn trigger_requires_a_strict_majority_and_quorum_not_a_tie() {
+    let mut env = Env::new();
+    let alice = Pubkey::new_unique();
+    let dist_proposal = env.create_dist_proposal(1, &[(alice, 100)]);
+    let gv_proposal = env.register(&dist_proposal);
+    env.set_pool_outstanding(10); // live quorum denominator
+
+    // EXACTLY 50% principal quorum: voted 5 of 10 -> 5*2 == 10, NOT > 10. A tie is not a quorum.
+    // (Majority is satisfied to isolate the quorum boundary.)
+    env.inject_tally(&gv_proposal, 5, 8, 10, 8, 5);
+    assert!(env.trigger(&gv_proposal, &dist_proposal).is_err(), "exactly-half principal is NOT a quorum");
+    assert_eq!(env.dist_sealed_proposal(), Pubkey::default(), "not sealed on a tie quorum");
+
+    // EXACTLY 50% weighted majority: quorum satisfied (10 of 10), support 4 of cast 8 -> 4*2 == 8, NOT > 8.
+    env.inject_tally(&gv_proposal, 10, 8, 10, 4, 10);
+    assert!(env.trigger(&gv_proposal, &dist_proposal).is_err(), "exactly-half cast weight is NOT a majority");
+    assert_eq!(env.dist_sealed_proposal(), Pubkey::default(), "not sealed on a tie majority");
+
+    // One unit past BOTH ties: voted 6 of 10 (12 > 10) and support 5 of cast 8 (10 > 8) -> seals.
+    env.inject_tally(&gv_proposal, 6, 8, 10, 5, 6);
+    env.trigger(&gv_proposal, &dist_proposal).expect("a STRICT majority + quorum seals");
+    assert_eq!(env.dist_sealed_proposal(), dist_proposal, "strict majority + quorum seals the winner");
+}
+
 // REINIT DOS: init_config is permissionless. If an already-initialized gv config could be
 // re-initialized, the second init would RESET the global tallies (total_voted_principal,
 // total_cast_weight, outstanding) to 0 while every voter's ballot PDA + subledger vote-lock
