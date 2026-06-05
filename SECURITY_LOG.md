@@ -58,6 +58,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED BACKSTOPPED — finding-Q init_pool PDA squat (structural disjoint-namespace + signed-seed)] GD.
+HOSTILE vector (cross-instruction PDA squat / seed-collision): own-vault `init_pool` (tag 0) and
+`init_insurance_pool` (tag 3) share `pool_seeds(mint, asset_id, market_slab, percolator_program)`. Point
+init_pool's pool_account at the genesis insurance PDA (mint,0,REAL_market,REAL_program) to seize it with a
+BACKING-domain own-vault pool -> legit insurance init then fails AccountAlreadyInitialized -> genesis bricked
+(gv needs is_insurance()). finding-Q defense: init_pool HARDCODES the market/program seed parts to
+`Pubkey::default()` (subledger lib.rs:393-394) and checks `*pool_account.key != expected_pool -> InvalidSeeds`
+(:400). Mutated :400 (drop the explicit key check) -> 42 insurance PASS = MUTATION-BLIND. Analyzed: NOT a gap
+— backstopped STRUCTURALLY: create_pda_robust does invoke_signed(allocate(pool_account), seeds = default-market
+pool_seeds); the runtime REQUIRES the signing seeds to DERIVE the account address, but default-market seeds
+derive own_vault_pda != the real-market insurance PDA, so the allocate is refused (seed/address mismatch) even
+with :400 gone. Own-vault (default,default) and insurance (real,real) PDAs are provably DISJOINT namespaces, so
+init_pool can never create at the insurance PDA; :400 is fail-fast hygiene. `own_vault_init_pool_cannot_squat_the_genesis_insurance_pda`
+confirms the end-to-end boundary (init_pool at env.pool refused, PDA untouched, real init then succeeds at
+INSURANCE domain bound to the real market) — KEPT as an e2e no-squat test (GA/FL class). Verdict: BLOCKED
+(defense-in-depth; structural namespace disjointness + PDA-signing). No code/test change.
+
 ### [VERIFIED SHARP — init_insurance_pool policy range check blocks bad-policy pool-brick DOS] GC.
 HOSTILE vector (front-run the genesis pool init with a garbage policy to brick it): init_insurance_pool is
 permissionless and writes the pool's `policy` byte. An out-of-range value (POLICY_WITH_SURPLUS+1 = 2) would be
