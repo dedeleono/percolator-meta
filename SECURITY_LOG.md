@@ -58,6 +58,21 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED BACKSTOPPED — burn_unclaimed vault/mint binding (SPL-burn-authority, no LOF)] FE.
+Anti-mask probe of burn_unclaimed's `*vault.key != config.vault || *coin_mint.key != config.coin_mint` bundle
+(distribution lib.rs:593). Mutated the VAULT clause to `false` -> 20 dist PASS = MUTATION-BLIND. Analyzed: NOT
+a gap — backstopped hygiene (EW class). burn_unclaimed torches the vault's remaining COIN after the claim
+window; the burn CPI is invoke_signed by the config PDA (seeds = config.coin_mint+authority). SPL burn requires
+the AUTHORITY to own the burned account, and the config PDA is the authority of ONLY config.vault. So a
+substituted vault is either (a) not config-PDA-owned -> burn fails on authority mismatch (incl. another
+distribution config's vault, whose authority is a DIFFERENT PDA), or (b) the attacker's OWN config-PDA-... which
+they cannot create. Moreover burning is DEFLATION by design (unclaimed COIN is meant to burn) -> even a
+successful substitute burn moves no funds to anyone = no LOF, and `remaining = token_balance(vault)` of an
+empty substitute burns 0. The mint clause is also SPL-backstopped (burn checks vault.mint == mint, EW). The
+SECURITY-relevant guards on this path ARE pinned: the claim-window gate (DK, :601 — can't burn before the
+window) and is_sealed. Per KEEP/DELETE: no test for the SPL-backstopped binding. Verdict: BLOCKED
+(defense-in-depth; SPL burn authority + deflation-not-transfer). No code/test change.
+
 ### [VERIFIED SHARP — gv weight==0 guard blocks zero-weight quorum pumping] FD.
 HOSTILE vector (quorum manipulation bypassing time-weighting Sybil resistance): gv BACK computes weight =
 floor(log2(hold))*principal; a JUST-deposited position (hold < 2, last-write-time) or a withdrawn one
