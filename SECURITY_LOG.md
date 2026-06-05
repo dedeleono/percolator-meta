@@ -58,6 +58,17 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — distribution append running-sum cap] CY.
+Extended the mutation-audit to ACCOUNTING guards. Audited the append per-entry running-sum cap `header.
+total_amount > config.total_supply -> reject` (distribution lib.rs:442) — the over-allocation / drain-DOS
+guard (a proposal can't promise more than the funded supply, or early claimers drain it and strand late
+ones). Mutated to `if false`, build-sbf -> `append_cannot_exceed_total_supply` FAILS (the 60+50=110 > 100
+append now succeeds). So it is mutation-sharp; the test pins it at APPEND time (not masked by the seal-time
+cap at :478, since the test asserts the append itself is rejected without sealing). The per-append cap +
+the checked_add (:43, overflow-safe) + the seal-time cap (:478, defense-in-depth) together bound total_amount
+<= total_supply <= vault (init solvency). Restored -> 18 distribution green. Verdict: BLOCKED, no gap. No
+code/test change.
+
 ### [UNPINNED but SELF-HARM-ONLY -> documented, not pinned] CX. distribution claim vault binding + key-binding audit closeout
 Mutation-audited distribution claim's vault binding `vault.key != config.vault` (lib.rs:27): UNPINNED
 (dropping it left the suite green). BUT distribution claim is RECIPIENT-GATED — `recipient.is_signer` (:14)
