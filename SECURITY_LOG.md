@@ -6,9 +6,13 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 Reachable six-binary surface is exhausted: 53 vectors recorded (A–AX), of which 3 were real CRITICAL
 bugs found + fixed by this loop (AD signer-seed-binding, AI lamport-prefund init-DOS, AQ parasite-config
 insurance drain) plus 1 real correctness fix (AS self-loop buyback sink). Full regression GREEN at this
-checkpoint: 136 tests across every harness (subledger insurance 27 + own-vault 5 + lib 6 = 38; genesis-vote
-seal 9 + lib 3 = 12; distribution 13 + lib 4 = 17; twap chain 65 + lib 4 = 69; 38+12+17+69 = 136), full
-suite green, and all four programs build-sbf clean.
+checkpoint: 148 tests across every harness (subledger insurance 31 + own-vault 5 + lib 6 = 42; genesis-vote
+seal 11 + lib 3 = 14; distribution 14 + lib 4 = 18; twap chain 70 + lib 4 = 74; 42+14+18+74 = 148), full
+suite green, and all four programs build-sbf clean. Tests added since the 136 checkpoint pin: settled-book
+re-execute freeze, distribution append-after-seal + gv register->trigger bait-and-switch, impaired split-
+withdraw rounding conservation, foreign-distribution-config register, bad-policy + cross-instruction-squat
+pool init, ballot-PDA dusting, reconfigure bps>10000 over-pull, the Squads 1-week timelock ENFORCEMENT (not
+just config), set_reserve reserve_den==0 div-by-zero, and init_book round_length==0 spoof-cooldown collapse.
 On-chain FIXES this run: twap init_config enforces the bound Squads multisig time_lock >= 1 week; twap
 cancel_bid no longer lets a no-op roll unlock the anti-spoof cooldown early (external issue #28).
 Missing-signer guards pinned across the stack: twap reconfigure, subledger set_vote_lock, distribution
@@ -26,6 +30,21 @@ whose bugs are the realistic trigger for program-level footguns like AS). Recomm
 to one of those, or pausing it.
 
 ## Analyzed
+
+### [VERIFIED-COVERED] twap Config field audit (metadao_futarchy binding + market_0_domain vestigial)
+Probed the two twap Config fields I had not traced, for a hidden authority path or stale-snapshot misuse.
+- metadao_futarchy: NOT vestigial and NOT a live authority. At init_config (lib.rs:388-404) it requires the
+  bound Squads multisig's config_authority == metadao_futarchy, so the twap can only bind to a multisig the
+  DAO actually controls (the tested twap_config_binds_only_to_a_real_squads_multisig... boundary). After init
+  it is ONLY a stored snapshot — no mutator/CPI reads it; all post-init control flows through
+  config.squads_multisig, re-validated at every Squads-gated entry (set_reserve/floor/coin_sink/shutdown/
+  reconfigure/init_book/accept_operator via squads_default_vault(config.squads_multisig)). So the genesis->DAO
+  config_authority rotation (squads_handover) making the init-time snapshot stale is harmless — nothing reads
+  it. No vector.
+- market_0_domain: serialized + deserialized but NEVER read in any logic path (grep-confirmed) — vestigial,
+  hence unexploitable. Flagged for a future dead-field cleanup, not a security issue.
+Health check this tick: all four programs build-sbf clean; 148 tests green (subledger 42, gv 14, dist 18,
+twap 74). Checkpoint header refreshed from the stale 136.
 
 ### [BLOCKED+PINNED] init_book round_length == 0 re-opens place-then-yank spoofing (anti-spoof break)
 Vector: init_book's combined guard rejects reserve_den==0 || round_length==0 || sink_mode>SINK_SEND
