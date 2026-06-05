@@ -27,6 +27,28 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [GH-TRIAGE] No open PRs/issues; no external PR ever merged (DPRK lens)
+Checked at user request (assume DPRK submitter): `gh pr list` / `gh issue list` both empty. Across ALL
+history every contributor PR (#27,#25,#22,#21,#18,#15,#11,#10,#7,...) is CLOSED with mergedAt=null; the only
+MERGED PR is #8 by the owner. So NO untrusted remote code ever entered the tree — clean-room discipline held
+(hostile ideas verified locally + reimplemented from scratch, never pulled). Latest items already triaged:
+#28 cancel-cooldown bypass (real, fixed by this loop), #27 bind-twap-auth (regression trap, rejected),
+#24/#26 (superseded by F-VAULT + AQ), #20 minority-capture (real, accepted by "those who stay decide").
+
+### [BLOCKED+PINNED] Append to a SEALED winner to grab the unallocated headroom (LOF)
+Vector: a distribution proposal that allocates only PART of total_supply (e.g. 60 of 100) leaves 40 of
+unallocated headroom destined to be burned as unclaimed -> deflation to ALL coin holders. The (real)
+creator waits until the vote SEALS their proposal, then appends a self-dealing 40-entry into that headroom
+(60+40 == total_supply, so the supply cap at append never fires) and claims it — privatizing protocol-wide
+deflation AFTER voters can no longer react. The only thing standing in the way is the append-time freeze
+`header.sealed || config.is_sealed()` (distribution/src/lib.rs:420). Existing append tests covered only the
+supply cap + foreign-creator; the seal-freeze was unpinned.
+Verified BLOCKED + mutation-SHARP: removing the guard at :420 + rebuilding the .so makes the post-seal append
+land (test fails); restored -> green. The genuine creator (passes header.creator) would otherwise succeed —
+so creator-binding does NOT cover this; the seal flag is the load-bearing guard.
+Test KEPT: append_to_a_sealed_winner_cannot_grab_the_unallocated_headroom (append fails, no index-1 entry,
+alice still gets exactly 60, the 40 remains and is later BURNED not captured, grabber gets 0). 14 dist tests.
+
 ### [VERIFIED-COVERED] cancel_bid redirect/owner + the whole distribution claim/seal/burn surface
 Re-probed two surfaces for redirect/replay/substitution gaps; both already saturated, so NO new test
 (adding one would be tautological).

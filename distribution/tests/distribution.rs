@@ -475,6 +475,51 @@ fn append_entries_rejects_a_foreign_creator() {
     env.append(&proposal, &[(honest.pubkey(), 60)]).expect("the real creator extends its proposal");
 }
 
+// LOF boundary (post-seal headroom grab): append_entries refuses once the proposal is sealed
+// (lib.rs `header.sealed || config.is_sealed()`). The danger it blocks: a winning proposal that
+// allocated only PART of the supply (say 60 of 100) leaves 40 of unallocated headroom. That 40 is
+// meant to be burned as unclaimed after the window — deflation accruing to ALL coin holders. Without
+// the seal-freeze, the (real) creator could wait until the vote sealed THEIR proposal, then append a
+// self-dealing entry into the 40 headroom (below total_supply, so the cap check never fires) and
+// claim it — converting protocol-wide deflation into a private grab AFTER voters could no longer
+// react. Confirm the freeze blocks it and the remainder is burnable, not grabbable.
+#[test]
+fn append_to_a_sealed_winner_cannot_grab_the_unallocated_headroom() {
+    let mut env = Env::new(100, 50); // supply 100, claim window 50
+    env.set_slot(10);
+    let proposal = env.create_proposal(1, 8);
+    let (alice, alice_ata) = env.new_recipient();
+    env.append(&proposal, &[(alice.pubkey(), 60)]).expect("creator allocates 60 of 100"); // 40 headroom
+
+    let auth = clone_kp(&env.authority);
+    env.seal(&proposal, &auth).expect("the vote seals this winner"); // seal_slot 10, window ends 60
+
+    // ATTACK: the creator appends a self-dealing 40 into the still-open headroom of the SEALED winner.
+    // total_amount would be 60+40 = 100 == total_supply, so the supply cap would NOT catch it — only
+    // the seal-freeze stands in the way.
+    let grabber = Keypair::new();
+    let grab_ata = create_token_account(&mut env.svm, &env.payer, &env.coin_mint, &grabber.pubkey());
+    assert!(
+        env.append(&proposal, &[(grabber.pubkey(), 40)]).is_err(),
+        "a sealed winner must not accept new entries — the unallocated headroom is not grabbable"
+    );
+    // The injected entry never landed: there is no index-1 entry to claim.
+    assert!(env.claim(&proposal, &grabber, &grab_ata, 1).is_err(), "no entry was appended post-seal");
+
+    // The honest allocation still pays exactly 60; the 40 remainder stays in the vault.
+    env.claim(&proposal, &alice, &alice_ata, 0).expect("alice claims her 60");
+    assert_eq!(env.token_amount(&alice_ata), 60);
+    assert_eq!(env.token_amount(&env.vault.clone()), 40, "the unallocated 40 is still in the vault, untouched");
+
+    // After the window, that 40 is BURNED (deflation to all holders) — never reachable by the grabber.
+    env.set_slot(60);
+    let supply_before = spl_token::state::Mint::unpack(&env.svm.get_account(&env.coin_mint).unwrap().data).unwrap().supply;
+    env.burn_unclaimed().expect("burn the unallocated remainder");
+    let supply_after = spl_token::state::Mint::unpack(&env.svm.get_account(&env.coin_mint).unwrap().data).unwrap().supply;
+    assert_eq!(supply_before - supply_after, 40, "the 40 headroom was burned, not captured");
+    assert_eq!(env.token_amount(&grab_ata), 0, "the grabber got nothing");
+}
+
 // Solvency invariant: InitConfig must reject a vault that holds less than the
 // promised total_supply. Otherwise a config could promise 100 COIN while the vault
 // holds only 60 — the seal (total_amount <= total_supply) would pass, then early
