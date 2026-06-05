@@ -58,6 +58,21 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — register_proposal non-empty check blocks empty-proposal finalize-brick DOS] FM.
+HOSTILE vector (finalize-brick DOS via an empty winning proposal): register an EMPTY distribution proposal
+(entry_count == 0, created but never appended) for voting. If it could be backed and won the strict majority,
+trigger's seal_winner rejects `entry_count == 0` (distribution lib.rs) -> the WINNING proposal can never be
+sealed -> genesis finalize permanently BRICKED (a strict-majority winner blocks any other proposal from
+winning, and this one is unsealable). Secondary harm: registering empty freezes a (0,0) snapshot, and the
+creator's later append makes the live proposal mismatch the snapshot forever (DA bait-and-switch brick).
+Defense: register_proposal refuses `entry_count == 0` (genesis-vote lib.rs:476) so only a FULLY-built proposal
+becomes votable. Mutated :476 to `if false && ...` -> `register_rejects_an_empty_proposal` FAILS =
+mutation-SHARP (the test registers a created-but-never-appended proposal and asserts refusal + no gv
+proposal-vote account created). Pairs with: seal_winner's entry_count==0 backstop, the foreign-config register
+reject (:460), creator-only registration (DD), snapshot anti-bait-and-switch (DA), seal-finality (ES) — the
+register/seal lifecycle rejects every malformed/foreign/empty/mutated proposal before it can brick finalize.
+Verdict: BLOCKED, no gap. No code/test change.
+
 ### [VERIFIED BACKSTOPPED — twap accept_operator handoff (percolator two-signature gate)] FL.
 HOSTILE vector (non-DAO/non-timelock signer hijacks the insurance operator grant): drive twap accept_operator
 (IX 3) directly to grant the percolator asset-0 insurance OPERATOR to an attacker-chosen authority, bypassing
