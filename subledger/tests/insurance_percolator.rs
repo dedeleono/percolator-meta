@@ -966,6 +966,46 @@ fn splitting_an_impaired_exit_cannot_beat_the_pro_rata_or_drain_a_codepositor() 
     assert_eq!(env.token_amount(&env.perc_vault.clone()), 0, "vault fully and fairly distributed");
 }
 
+// OVER-WITHDRAW DRAIN (principal-only cap, per-depositor): insurance_withdraw caps the amount to
+// `amount <= position.principal && amount <= pool.outstanding` (lib.rs:1054). This pins the END-TO-END
+// invariant that a depositor can never pull more than their own recorded principal. DOUBLY-DEFENDED:
+// mutation-removing the `amount <= position.principal` half does NOT let the drain through right after
+// deposits, because percolator's own insurance >= domain-budget-remaining (EngineLock) invariant rejects
+// any withdraw that would drop insurance below the funded budgets. The subledger cap is the load-bearing
+// per-caller guard only once the market has SPENT budgets so insurance > budget-remaining (not constructed
+// here); in the budget-tracking state percolator backstops it. Either way the depositor is capped to their
+// own principal — this test verifies that against the real binaries (no underflow, co-depositor safe).
+#[test]
+fn cannot_withdraw_more_than_your_own_recorded_principal() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let (bob, bob_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let a_hold = create_holding(&mut env, &pool);
+    let b_hold = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &a_hold, amount).expect("alice deposit");
+    env.insurance_deposit(&bob, &bob_ata, &b_hold, amount).expect("bob deposit");
+    assert_eq!(env.token_amount(&env.perc_vault.clone()), 2 * amount, "both principals in insurance");
+    assert_eq!(env.pool_outstanding(), 2 * amount);
+
+    // ATTACK: alice withdraws 2M (the whole pool) — more than her own 1M — which would drain bob.
+    assert!(
+        env.insurance_withdraw(&alice, &alice_ata, &a_hold, &alice, 2 * amount).is_err(),
+        "withdraw must reject amount > the caller's own recorded principal"
+    );
+    assert_eq!(env.token_amount(&env.perc_vault.clone()), 2 * amount, "insurance untouched — bob's principal safe");
+    let (a_principal, _, a_withdrawn) = env.read_position(&alice.pubkey());
+    assert_eq!(a_principal, amount, "alice's recorded principal intact (no underflow)");
+    assert!(!a_withdrawn, "alice's position not retired by the failed over-withdraw");
+
+    // Alice can still exit exactly her OWN 1M; bob's 1M stays outstanding.
+    env.insurance_withdraw(&alice, &alice_ata, &a_hold, &alice, amount).expect("alice exits her own principal");
+    assert_eq!(env.token_amount(&alice_ata), amount, "alice got exactly her own 1M, never bob's");
+    assert_eq!(env.pool_outstanding(), amount, "bob's 1M still outstanding");
+}
+
 // LAMPORT PRE-FUND INIT-DOS (finding AI): every init handler creates its PDA with the System
 // `create_account`, which FAILS with AccountAlreadyInUse if the destination already holds ANY
 // lamports — and the handlers additionally guard `lamports() != 0 -> AlreadyInitialized`. An attacker

@@ -31,6 +31,24 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [HARDENING/DOUBLY-DEFENDED] Over-withdraw drain capped — percolator EngineLock backstops the subledger cap
+Probed insurance_withdraw's amount cap (lib.rs:1054, `amount <= position.principal && amount <= outstanding`)
+as a presumed single-guard per-depositor protection (drain co-depositors by withdrawing > your principal).
+Built the e2e attack (alice 1M + bob 1M; alice withdraws 2M) — BLOCKED, funds safe. But the mutation check
+surfaced a real finding: removing the `amount <= position.principal` half does NOT let the drain through
+right after deposits, because percolator's OWN insurance >= domain-budget-remaining invariant (EngineLock)
+rejects any WithdrawInsuranceLimited that would drop insurance below the funded budgets. So the over-withdraw
+is DOUBLY-defended (subledger per-caller cap + percolator EngineLock). The subledger cap is the sole
+load-bearing guard only once the market has SPENT its budgets so insurance > budget-remaining (a state not
+constructed here); in the budget-tracking state percolator backstops it. The cap also prevents the
+position.principal u64 underflow — moot when the CPI reverts, load-bearing if percolator ever allowed the
+pull. Distinct from the owner-half theft (single-guard, pinned above): that has no percolator backstop
+(percolator can't tell depositors apart), this one does.
+Test KEPT as end-to-end hardening: cannot_withdraw_more_than_your_own_recorded_principal (insurance 33) —
+verifies the principal-only invariant holds against the REAL binaries (no underflow, co-depositor safe),
+comment corrected to state the doubly-defended nature (not "sole guard"). Methodology note: a mutation that
+leaves the test green is itself a finding — it locates the TRUE backstop (here: a sibling invariant).
+
 ### [BLOCKED+PINNED] Non-owner insurance-principal theft (owner half, genesis-critical, was untested)
 Vector: insurance_withdraw re-derives the POOL PDA but NOT the position PDA, so `position.owner == owner`
 (lib.rs:1039) is the SOLE guard that only the depositor pulls their at-risk principal. An attacker who SIGNS
