@@ -58,6 +58,19 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED — cross-program COIN-flow independence, no new test] CK.
+The genesis COIN is burned in TWO places; confirmed they're independent and non-interfering:
+ - twap execute burns from `coin_escrow` == book.coin_escrow, book_escrow-PDA-owned, signed by the
+   book_escrow seeds (twap lib.rs:263). It burns only the bidders' deposited COIN it custodies.
+ - distribution burn_unclaimed burns from `vault` == config.vault, config-PDA-owned, signed by the
+   dist_config seeds (distribution lib.rs:42). It burns only the unclaimed remainder of the distributed pool.
+These are DIFFERENT token accounts owned by DIFFERENT PDAs in DIFFERENT programs — neither can sign for or
+burn the other's account (the twap can't touch the distribution vault; the distribution can't touch the
+auction escrow). Both reduce the LIVE supply of the same fixed-supply COIN (distribution init proved
+mint_authority+freeze_authority revoked + supply==total_supply, so no re-mint), so the supply is
+monotonically deflationary with no cross-account interference or double-burn. Verdict: BLOCKED. No code/test
+change.
+
 ### [BLOCKED — balance-manipulation class closed across all programs, no new test] CJ.
 Extends CH/CI: no program lets an attacker manipulate a token-account BALANCE to extract value.
  - twap: payouts use recorded book fields; only `budget=holding.amount` reads a balance (CH donor-subsidy);
