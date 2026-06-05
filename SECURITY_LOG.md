@@ -58,6 +58,15 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — gv register creator binding] DD.
+Mutation-audited gv register's creator binding `creator (pd[48..80]) != *payer.key -> reject` (genesis-vote
+lib.rs:471) — stops an attacker FRONT-RUNNING registration of someone else's distribution proposal (which
+would freeze the snapshot at a stale/partial (entry_count, total_amount), so the creator's later append
+makes it permanently unsealable -> genesis stall). Dropped it (`if false`), build-sbf ->
+`register_rejects_a_non_creator_front_runner` FAILS (a non-creator registers). So it is mutation-sharp.
+(The foreign-distribution-config binding + empty-proposal guard are separately pinned; the trigger-side
+bait-and-switch snapshot is DA.) Restored -> 14 seal green. Verdict: BLOCKED, no gap. No code/test change.
+
 ### [DOUBLY-DEFENDED — shutdown holding owner check, no new test] DC.
 Mutation-audited shutdown's holding owner check `h.owner != expected_auth (twap_authority) -> reject`
 (twap lib.rs:1772) — meant to stop the DAO's holding-sweep from draining the bidders' escrow/settlement.
