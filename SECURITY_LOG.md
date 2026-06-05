@@ -58,6 +58,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — init_config validation bundles are per-clause sharp (anti-mask sweep post-EZ)] FA.
+After EZ (a guard masked by a sibling `if` triggering first), swept the multi-clause init_config validation
+bundles for the same failure mode — a bundled `if A || B || C` where existing tests violate several clauses at
+once, so dropping any one is masked by another. (1) gv init_config distribution_config bundle (genesis-vote
+lib.rs:377-381 owner||len||disc||coin_mint||authority): EY pinned the authority clause (:380); mutated the
+COIN_MINT clause (:379) -> `init_config_rejects_a_distribution_not_authority_bound_to_this_config` FAILS =
+sharp. That test carries SEPARATE sub-assertions (one foreign config wrong only in coin_mint, another only in
+authority), so each clause is independently the sole decider — well-constructed, NOT masked. (2) twap
+init_config multisig bundle (owner :385 DV / disc :401 / config_authority :404 / timelock :410): each has its
+own single-violation test — mutated the config_authority DAO-binding (:404) ->
+`twap_config_binds_only_to_a_real_squads_multisig_controlled_by_the_dao` FAILS = sharp (the test's multisig has
+the correct owner/disc/timelock but a non-DAO config_authority, so :404 is the sole decider); timelock pinned
+by `twap_config_rejects_a_multisig_below_the_one_week_timelock`, owner by the DV cosplay test. Conclusion: the
+init bundles use single-violation tests per clause, so they are genuinely per-clause sharp — EZ's cross-`if`
+supply-vs-solvency mask was a one-off (two separate `if`s with overlapping test input), not a systemic bundle
+pattern. Verdict: BLOCKED, no gap. No code/test change.
+
 ### [GAP FIXED — distribution solvency check was MASKED (underfunded-vault claim-race LOF)] EZ.
 HOSTILE vector (underfunded vault -> claim-race LOF): distribution init_config promises `total_supply` COIN;
 seal only enforces `total_amount <= total_supply`, so if the vault holds LESS than total_supply, the entries
