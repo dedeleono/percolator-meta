@@ -27,6 +27,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED-COVERED] cancel_bid redirect/owner + the whole distribution claim/seal/burn surface
+Re-probed two surfaces for redirect/replay/substitution gaps; both already saturated, so NO new test
+(adding one would be tautological).
+- twap cancel_bid (lib.rs:1655): bidder.is_signer (1672) + SL_BIDDER==bidder.key (1699) so only the owner
+  cancels; refund coin_ata pinned to the stored SL_COIN_ATA (1719); aged-only cooldown (1714, the #28
+  fix); settled slots rejected -> claim path (1696). The coin_ata pin here is self-only (cancel needs the
+  bidder's OWN signature, so they can only steer their own COIN) — not a cross-user surface. Cooldown +
+  non-owner rejection already pinned by e2e_bid_cancellable_after_cooldown_keeps_fee (mallory case).
+- distribution claim (lib.rs): recipient.is_signer + entry pk==recipient.key (named-pull) + sealed-winner
+  + vault pin + window + zero-on-claim. recipient_ata is caller-chosen but SPL enforces mint-match and the
+  recipient steers only their OWN entitlement. Double-claim + wrong-recipient pinned at distribution.rs:294/299.
+- distribution seal_winner: authority key+sig (17/18) + re-seal refused via is_sealed (lib.rs:20) — pinned at
+  distribution.rs:367 (cannot reseal to the loser). burn_unclaimed: vault+coin_mint pinned, sealed+window
+  gated, BURNS (not transfers) the remainder — pinned both window directions.
+Verdict: no LOF/DOS gap on either surface. distribution suite green (4+13).
+
 ### [BLOCKED+PINNED] Re-executing a SETTLED book (double-burn / double-spend)
 Vector: after `execute` clears the auction (state -> SETTLED) but BEFORE any winner claims, a cranker
 warps past the freshly-set `round_end` (so the ERR_ROUND_ACTIVE timer no longer blocks) and re-cranks
