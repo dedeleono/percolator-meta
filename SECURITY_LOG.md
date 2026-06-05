@@ -27,6 +27,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [DOWNGRADED] Arbitrary-CPI insurance drain is DOUBLY-defended (percolator operator-dest invariant)
+Resolves last tick's "load-bearing-but-litesvm-untestable" flag on the subledger percolator_program pin
+(:853/:1024/:1241). Read the REAL percolator handle_withdraw_insurance_limited (../percolator-prog/src/
+v16_program.rs:8470): it calls verify_withdrawable_token_accounts(dest_token, operator.key, ...), which
+requires `dest.owner == operator` (the registered asset-0 insurance operator = the subledger pool PDA) AND
+the vault to be the canonical insurance vault. So WithdrawInsuranceLimited can ONLY pay out to an account
+owned by the operator.
+Consequence: even in the hypothetical where the :853 pin were removed and a hostile program received the
+pool-PDA signer via the redirected TopUp/Withdraw CPI, that program could at most move insurance into a
+POOL-PDA-OWNED account (the holding) — it can NOT extract to an attacker account (percolator rejects a
+non-operator-owned dest with InvalidTokenAccount). Pool-owned funds stay governed by the subledger's
+owner-authorized, principal-only exit. So the arbitrary-CPI is doubly-defended (subledger program pin +
+percolator operator-dest invariant), not a high-severity hole. The repo-side pin remains correct hygiene
+(don't hand a PDA signer to an unpinned program); the percolator invariant is its own kani-tested backstop.
+Net: no extractable LOF on this path; no new percolator-meta test warranted (the backstop lives in the
+sibling's own suite). Closes the open question from the sysvar/arbitrary-CPI sweep below.
+
 ### [VERIFIED-COVERED] Sysvar-spoofing + arbitrary-CPI sweep (two Copenhagen classes)
 Two classes swept across all four programs; both clean, no new test (reasons below).
 SYSVAR SPOOFING — structurally absent: every time/rent read uses the Clock::get()/Rent::get() SYSCALL
