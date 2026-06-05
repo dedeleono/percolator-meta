@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — gv->subledger pool `outstanding` read offset (cross-program quorum denominator)] FV.
+HOSTILE vector (cross-program layout drift -> wrong quorum denominator; the finding-T analogue for gv reading
+the subledger pool): trigger's quorum is `total_voted_principal*2 > outstanding`, where `outstanding` is read
+by `read_sub_pool_outstanding` at a HARDCODED byte offset `data[80..88]` (genesis-vote lib.rs:229) into the
+subledger Pool struct. If that offset drifts from the real `outstanding_principal` field (e.g. reads an
+adjacent field), the denominator is wrong -> quorum mis-evaluates: too-low reads let a minority finalize (mass
+LOF — seize the supply), too-high reads brick finalize (DOS). Mutated the offset 80->72 (adjacent field) ->
+FIVE tests FAIL across suites: `trigger_uses_live_pool_outstanding_not_stale_cache`,
+`trigger_requires_a_strict_majority_and_quorum_not_a_tie` (seal), `those_who_stay_decide_after_a_nonvoting_majority_forfeits_by_exiting`,
+`winning_voter_can_retract_and_exit_after_finalize`, `full_lifecycle_deposit_vote_seal_then_recipient_claims_coin`
+(insurance). Strongly mutation-SHARP — the e2e tests drive REAL subledger pools (real binary) with known
+outstanding through the genesis lifecycle, so a wrong offset breaks the quorum decision broadly. (Unlike
+finding-T/EX which reads the EXTERNAL percolator binary's slab and needs an offset_of! canary, here both gv and
+subledger are in THIS repo and a layout change is coordinated; the disc check `data[..8] == SUB_POOL_DISC`
+guards type, the e2e suite guards the field offset.) Verdict: BLOCKED, no gap. No code/test change.
+
 ### [VERIFIED BACKSTOPPED — gv vote pool binding (cache deflation; position-read + trigger-live backstop)] FU.
 Anti-mask probe of the gv VOTE path's pool binding (vs DX which pinned TRIGGER's pool binding). Vector: a voter
 passes a FAKE low-outstanding sub_pool to vote, deflating the refreshed `config.outstanding_principal` cache so
