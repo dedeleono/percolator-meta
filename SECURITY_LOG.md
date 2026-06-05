@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — replay re-audit (claim slot-zeroing; retract ballot-clearing) post-EM] EN.
+After EM (a transfer-insufficiency-MASKED replay guard slipped through), re-audited the sibling replay/double-spend
+guards with the anti-mask lens — could a "replay rejected" test be masked by the shared pool being drained below
+the replay amount? (1) TWAP claim slot-zeroing (:1629, DN): re-mutated to a no-op -> FIVE tests FAIL incl.
+`e2e_claim_cannot_be_replayed_to_drain_other_winners` -> strongly mutation-SHARP, NOT masked (that test funds
+multiple winners so the shared settlement_usd/coin_escrow exceed a single replay). (2) genesis-vote RETRACT
+double-subtract: a voter retracting twice could corrupt the GLOBAL total_cast_weight (masked: other voters'
+weight keeps checked_sub from underflowing) -> but the back-out (:618-622) subtracts the BALLOT's OWN
+voted_weight, which retract ZEROES (:629-630), so a second retract subtracts 0 = harmless; additionally
+`voted_proposal = default` (:628) makes has_live_ballot() false so retract #2 is rejected outright (:623) AND
+the subledger vote-lock is released (lock_val, :658). Mutated :628 (drop the voted_proposal clear) -> FOUR
+insurance tests FAIL (`winning_voter_can_retract_and_exit_after_finalize`,
+`vote_locked_principal_cannot_exit_until_retracted`, ...) — :628 is load-bearing for lock-release-on-retract
+(without it the retractor's capital stays frozen = self-DOS) and mutation-SHARP. Verdict: BLOCKED, no gap (both
+replay guards genuinely sharp; EM remains the lone masked gap found by this lens). No code/test change.
+
 ### [GAP FIXED — cancel_bid double-refund drains the shared escrow] EM.
 HOSTILE vector (replay / double-spend — cross-user LOF): cancel_bid refunds a bid's escrowed `coin_atoms`
 from the SHARED coin_escrow (which pools EVERY bidder's COIN), then ZEROES the slot (lib.rs:1728). The
