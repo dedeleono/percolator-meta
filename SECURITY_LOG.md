@@ -31,6 +31,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Non-owner insurance-principal theft (owner half, genesis-critical, was untested)
+Vector: insurance_withdraw re-derives the POOL PDA but NOT the position PDA, so `position.owner == owner`
+(lib.rs:1039) is the SOLE guard that only the depositor pulls their at-risk principal. An attacker who SIGNS
+(account-0 owner = attacker) could pass the VICTIM's position and route the payout to their own ATA, stealing
+the victim's insurance principal — the genesis path where the real money lives. The OWN-VAULT path had
+non_owner_cannot_withdraw_another_position; the INSURANCE owner-half had no equivalent (the prior tick pinned
+the POOL half of the own-vault check; this pins the OWNER half of the insurance check — different door).
+Verified BLOCKED + mutation-SHARP: victim deposits 1M; attacker signs an insurance_withdraw whose position is
+the victim's and whose dest is the attacker's ATA -> rejected, perc_vault still 1M, attacker gets 0, victim's
+position intact, then the genuine owner exits for the full 1M. Removing the `position.owner != *owner.key`
+half from :1039 + rebuilding the .so makes the theft SUCCEED (test fails). This insurance owner-check is
+single-guard sharp (no position-PDA re-derivation backstop), unlike the vote path's foreign-position
+rejection which is doubly-defended (sub_position == PDA(pool,voter) at :565 AND read_sub_position owner field
+at :215 — neither single removal lets a whale-position vote through, so no clean mutation test there).
+Test KEPT: a_non_owner_cannot_withdraw_a_victims_insurance_principal (subledger insurance 32).
+
 ### [BLOCKED+PINNED] Cross-pool drain on own-vault withdraw (the pool half of the owner/pool guard)
 Vector: own-vault process_withdraw checks `position.owner == owner && position.pool == pool_account`
 (lib.rs:604). non_owner_cannot_withdraw_another_position pins the OWNER half; the POOL half was untested.

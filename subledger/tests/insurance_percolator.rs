@@ -1730,6 +1730,42 @@ fn principal_only_owner_exit_returns_funds_and_guards() {
     assert!(err.is_err(), "retired position cannot withdraw");
 }
 
+// NON-OWNER INSURANCE PRINCIPAL THEFT (genesis-critical, owner half of insurance_withdraw's guard):
+// insurance_withdraw re-derives the POOL PDA but NOT the position PDA, so `position.owner == owner`
+// (lib.rs:1039) is the SOLE guard that only the depositor can pull their at-risk principal. The own-vault
+// path has non_owner_cannot_withdraw_another_position; the genesis insurance path (where the real money
+// lives) had no equivalent. Without this check an attacker who SIGNS could pass the VICTIM's position and
+// route the payout to their own ATA, stealing the victim's insurance principal.
+#[test]
+fn a_non_owner_cannot_withdraw_a_victims_insurance_principal() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let amount = 1_000_000u64;
+    let (victim, victim_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    env.insurance_deposit(&victim, &victim_ata, &holding, amount).expect("victim deposit");
+    assert_eq!(env.token_amount(&env.perc_vault.clone()), amount, "victim's principal is in insurance");
+
+    // Attacker signs (account-0 owner = attacker) but targets the VICTIM's position, routing the payout
+    // to the attacker's own ATA. (insurance_withdraw's owner param drives the position PDA; signer is the
+    // submitting key — here they differ, which is exactly the theft attempt.)
+    let (attacker, attacker_ata) = new_depositor(&mut env, 0);
+    assert!(
+        env.insurance_withdraw(&victim, &attacker_ata, &holding, &attacker, amount).is_err(),
+        "a non-owner must NOT be able to withdraw the victim's insurance principal"
+    );
+    assert_eq!(env.token_amount(&env.perc_vault.clone()), amount, "victim's insurance untouched");
+    assert_eq!(env.token_amount(&attacker_ata), 0, "attacker gained nothing");
+    let (principal, _, withdrawn) = env.read_position(&victim.pubkey());
+    assert_eq!(principal, amount, "victim's position principal intact");
+    assert!(!withdrawn, "victim's position not retired by the failed theft");
+
+    // The genuine owner can still exit normally.
+    env.insurance_withdraw(&victim, &victim_ata, &holding, &victim, amount).expect("victim exits their own position");
+    assert_eq!(env.token_amount(&victim_ata), amount, "owner recovers their full principal");
+}
+
 // Type-confusion boundary: the own-vault deposit path (tag 1) must REJECT an
 // insurance pool. An insurance pool's `vault` is the percolator insurance vault,
 // owned by the percolator vault_authority — not this pool PDA. Without the guard,
