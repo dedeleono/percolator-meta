@@ -58,6 +58,19 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — place_bid book monopolization via duplicate bids (DOS)] DT.
+HOSTILE vector: a single attacker fills all 32 book slots with their own cheap bids to lock honest sellers
+out of the uniform-price auction; the strictly-better-eviction rule would then PROTECT the squat (an honest
+seller's bid only evicts the weakest, and the attacker keeps re-taking slots). Plausibility hinges on whether
+`place_bid` enforces one-active-bid-per-bidder. It DOES (lib.rs:1161-1165): before insertion it scans all
+MAX_BIDS slots and `if d[o+SL_OCCUPIED]==1 && book_rd_key(SL_BIDDER)==*bidder.key { return InvalidArgument }`
+("already has an active bid") — so a bidder can never hold 2 slots, let alone 32. Mutated the scan predicate
+to `if false && ...` (disable the dup check), build-sbf -> `e2e_bid_cannot_be_cancelled_only_evicted_by_a_better_bid`
+FAILS (it asserts a same-bidder better re-place is rejected, chain.rs:3308 "a bidder cannot stack a second
+bid"). Mutation-SHARP. The single-second-bid rejection fully covers the monopolization vector — you cannot
+reach 2 slots, so 32 is unreachable; no extra test needed. Restored -> 73 chain green. Verdict: BLOCKED, no
+gap. No code/test change.
+
 ### [VERIFIED DOUBLY-DEFENDED — execute slab->config binding / fabricated-surplus] DS.
 HOSTILE vector: substitute a fake `market_slab` into twap `execute` whose finding-T insurance offset
 reports a huge value, fabricating a giant `surplus` to over-pull insurance and/or ratchet `reserved_floor`
