@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — re-deposit into a retired position blocked (stuck-capital LOF / inconsistent state)] GM.
+HOSTILE vector (revive a retired position into a stuck state -> LOF): the insurance position PDA is
+deterministic per (pool, owner), and a full exit sets `withdrawn=true, principal=0` (terminal). If
+insurance_deposit allowed re-depositing into that SAME retired position, it would become `withdrawn=true,
+principal>0` — an inconsistent state. Then insurance_withdraw HARD-REJECTS any `position.withdrawn` (subledger
+lib.rs:1042 `return InvalidAccountData`), so the re-deposited capital could NEVER be withdrawn -> permanently
+stuck in the percolator insurance vault = LOF (and a revived position could also vote with the re-deposited
+principal, finding-AR phantom territory). Guard: on re-deposit into an existing position, insurance_deposit
+rejects `p.owner != owner || p.pool != pool || p.withdrawn` (:897). Anti-mask: the test re-deposits into the
+depositor's OWN retired position (owner+pool CORRECT), so only the `p.withdrawn` clause decides. Mutated that
+clause to `false` -> `cannot_redeposit_into_a_retired_position` FAILS = mutation-SHARP. So a fully-exited
+position is terminally retired (no revive); to re-participate a user needs a fresh owner key (distinct PDA) —
+the deliberate one-shot retirement consistent with the Sybil model and the withdrawn-flag terminality (EO/CZ
+gate re-withdraw via the principal cap; GM gates re-deposit via the withdrawn flag). Verdict: BLOCKED, no gap.
+No code/test change.
+
 ### [VERIFIED DEAD STATE — gv config outstanding_principal cache is never read for a decision] GL.
 GK dead-field lens on the gv `Config.outstanding_principal` cache (refreshed each vote from the live pool,
 genesis-vote lib.rs:581). Risk: if the quorum decision read this CACHE, a stale/deflated value (cf. FU's
