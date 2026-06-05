@@ -27,6 +27,24 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Foreign-distribution-config proposal registered -> votable-but-unsealable genesis stall
+Vector: register binds a votable proposal to THIS genesis's distribution config (lib.rs:459, the proposal
+header.config[8..40] must == config.distribution_config). Without it, a proposal created under a DIFFERENT
+(attacker-owned) distribution config could be registered + voted on; if it won, trigger would
+CPI SealWinner(our_dist_config, foreign_proposal) which the distribution rejects on header.config mismatch
+-> the winner can never seal, and winner-take-all means no other proposal can seal either -> the genesis
+stalls forever (DOS). Distinct from the creator-binding (register_rejects_a_non_creator_front_runner pins
+the creator half; this pins the config half).
+Verified BLOCKED + mutation-SHARP: plant a distribution-program-owned proposal valid in every respect
+(disc DISTPRP1, creator==payer, entry_count 1, total 100) EXCEPT header.config = a foreign key; the genuine
+creator's register is refused purely on the config binding and no gv proposal-vote account is created.
+Removing the `dist_proposal_config != config.distribution_config` check at :459 + rebuilding the .so makes
+register accept the foreign-config proposal (test fails).
+Note: also reviewed init_book's Squads gate (shared require_squads_vault, already proven by
+e2e_attacker_cannot_lower_the_reserve_without_squads) and the top-up start_slot reset (already pinned by
+top_up_resets_the_position_start_slot) — both covered, no new test.
+Test KEPT: register_rejects_a_proposal_from_a_foreign_distribution_config (seal 11).
+
 ### [BLOCKED+PINNED] Distribution bait-and-switch in the register->trigger window (LOF on voters)
 Vector: voters back a gv proposal whose distribution they have read. The distribution-side append-freeze
 (`header.sealed`, tested last tick) only engages at SEAL — but the seal happens INSIDE gv `trigger`, so

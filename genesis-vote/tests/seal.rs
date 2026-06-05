@@ -505,6 +505,55 @@ fn trigger_refuses_a_distribution_inflated_after_registration() {
     assert_eq!(env.dist_sealed_proposal(), Pubkey::default(), "nothing sealed — the rug was blocked, not paid out");
 }
 
+// CROSS-CONFIG BINDING at register (votable-but-unsealable genesis-stall DOS): register binds the
+// distribution proposal to THIS genesis's distribution config (lib.rs:459, header.config[8..40] ==
+// config.distribution_config). Without it, a proposal created under a DIFFERENT (e.g. attacker-owned)
+// distribution config could be registered + voted on; if it then won, trigger would CPI
+// SealWinner(our_dist_config, foreign_proposal) which the distribution program rejects (header.config
+// mismatch) — and since the win is winner-take-all, no other proposal could seal either, stalling the
+// genesis forever. The creator-binding test (register_rejects_a_non_creator_front_runner) pins the
+// creator half; this pins the config half. We plant a proposal that is valid in EVERY other respect
+// (right disc, creator == payer, non-empty) so the ONLY rejecting check is the config binding.
+#[test]
+fn register_rejects_a_proposal_from_a_foreign_distribution_config() {
+    let mut env = Env::new();
+    let foreign_config = Pubkey::new_unique(); // NOT env.dist_config
+    let bad_proposal = Pubkey::new_unique();
+
+    // A distribution-program-owned proposal header: disc DISTPRP1, config = FOREIGN, creator = payer
+    // (so the creator-binding passes), capacity 4, entry_count 1, total 100 — fully registerable but
+    // for the config.
+    let mut data = vec![0u8; 257];
+    data[..8].copy_from_slice(b"DISTPRP1");
+    data[8..40].copy_from_slice(foreign_config.as_ref());
+    data[48..80].copy_from_slice(env.payer.pubkey().as_ref()); // creator
+    data[80..84].copy_from_slice(&4u32.to_le_bytes()); // capacity
+    data[84..88].copy_from_slice(&1u32.to_le_bytes()); // entry_count (non-empty)
+    data[88..96].copy_from_slice(&100u64.to_le_bytes()); // total_amount
+    env.svm
+        .set_account(
+            bad_proposal,
+            solana_sdk::account::Account {
+                lamports: 2_000_000,
+                data,
+                owner: dist_id(),
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
+
+    // The genuine creator (payer) tries to register it — refused purely on the config binding, so it
+    // never becomes votable and can never stall finalize.
+    let creator = clone_kp(&env.payer);
+    assert!(
+        env.register_as(&bad_proposal, &creator).is_err(),
+        "a proposal under a foreign distribution config must not be registerable for voting"
+    );
+    let gv_proposal = env.gv_proposal_pda(&bad_proposal);
+    assert!(env.svm.get_account(&gv_proposal).is_none(), "no gv proposal-vote account was created");
+}
+
 // LAMPORT PRE-FUND INIT-DOS (finding AI), genesis-vote config: the gv config PDA is
 // deterministic (f(coin_mint, subledger_pool), both public), and init_config is permissionless.
 // System `create_account` aborts with AccountAlreadyInUse on ANY pre-existing lamports, so an
