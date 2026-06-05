@@ -297,7 +297,7 @@ fn payout(policy: u8, balance: u64, outstanding: u64, principal: u64) -> Result<
 // NOTE: the adjacent `vault` field is at +285 (slab 733) and holds total tokens (insurance +
 // trader capital + pnl); reading vault would over-count the fund and under-charge the haircut.
 // Pinned exactly against the real percolator struct by the insurance_offset canary in the tests.
-const PERC_INSURANCE_OFFSET: usize = 448 + 301;
+pub const PERC_INSURANCE_OFFSET: usize = 448 + 301;
 
 /// The market's LIVE asset-0 insurance, read straight from the slab account bytes. This is
 /// the authoritative figure (not the shared vault token balance) — it shrinks when the

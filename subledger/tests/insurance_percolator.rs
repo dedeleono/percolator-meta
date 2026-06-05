@@ -441,6 +441,12 @@ fn impair_market(env: &mut Env, new_insurance: u128) {
     // of the pro-rata feature is reading the insurance fund, NOT the (larger) vault total.
     assert_eq!(off_ins, MARKET_GROUP_OFF + 301, "insurance offset drifted from real percolator struct");
     assert_ne!(off_ins, off_vault, "insurance must not alias vault");
+    // Pin the SUBLEDGER's shipped src constant against the real struct too. The functional haircut tests
+    // below set vault == insurance (a consistent loss), so they CANNOT distinguish a src offset that
+    // accidentally reads vault@733 instead of insurance@749 — only this assertion catches a regression of
+    // PERC_INSURANCE_OFFSET itself (the canary above only pins offset_of!, not what the program ships).
+    assert_eq!(subledger_program::PERC_INSURANCE_OFFSET, off_ins,
+        "subledger PERC_INSURANCE_OFFSET drifted from real percolator insurance field (would read vault as insurance)");
 
     // The asset-0 domain budgets live in the first asset slot (Market<T>), which the real
     // percolator binary packs immediately after the header. Locate the [long, short] u128 pair

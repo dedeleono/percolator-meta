@@ -58,6 +58,25 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [GAP FIXED — subledger slab insurance offset was MASKED (canary pinned offset_of! but not the src const)] FX.
+HOSTILE vector (finding-T for the SUBLEDGER side; layout-drift -> over-pay/DOS): the impaired-exit pro-rata
+haircut reads asset-0 insurance straight from the percolator slab at `PERC_INSURANCE_OFFSET = 448 + 301 = 749`
+(subledger lib.rs:300). The adjacent `vault` field @733 holds TOTAL tokens (insurance + trader capital + pnl);
+reading it as "insurance" inflates the haircut basis -> over-computed `owed` (over-pay a withdrawer / drain
+co-depositors, or owed>insurance -> WithdrawInsuranceLimited reverts -> exit DOS). Applied the FV/FW offset
+lens: mutated :300 749->733 (vault) -> 42 insurance PASS = MUTATION-BLIND. ROOT CAUSE (mask): the impaired
+tests' `impair_market` helper sets `off_vault == off_ins == new_insurance` (a consistent loss keeps
+percolator's validate_shape happy), so reading vault or insurance yields the SAME value — the functional tests
+cannot distinguish the offsets. And the existing canary only asserts `offset_of!(H, insurance) == 301` (pins
+the percolator STRUCT layout) — it never referenced the subledger's shipped `PERC_INSURANCE_OFFSET`, so a src
+regression of that const passed both the canary and the masked tests. (Contrast twap/EX: its real-market e2e
+tests have vault != insurance, so they catch a src drift functionally.) FIX: made `PERC_INSURANCE_OFFSET` pub
+and added to the canary `assert_eq!(subledger_program::PERC_INSURANCE_OFFSET, off_ins)` — pinning the SHIPPED
+const against the real `offset_of!(insurance)`. Now mutating :300 -> the canary FAILS ("PERC_INSURANCE_OFFSET
+drifted ... would read vault as insurance"). insurance 42 + lib 6 green. This is the FOURTH masked gap (cf. EM,
+EZ, FN) — here a value-equality (vault==insurance) in the test fixture masked the offset. Verdict: BLOCKED;
+src-offset COVERAGE GAP closed.
+
 ### [VERIFIED SHARP — gv->subledger position field offsets (principal, start_slot = weight inputs)] FW.
 Completes the cross-program byte-offset-integrity sweep (EX twap->percolator slab insurance; FV gv->subledger
 pool outstanding; FW gv->subledger position). `read_sub_position` reads the two inputs to vote weight =
