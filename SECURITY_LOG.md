@@ -31,6 +31,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED-COVERED] Distribution proposal-id namespace, execute SEND account-count, withdraw atomicity
+Three probes this tick; all contained, no new test (reasons below).
+- DISTRIBUTION proposal_id SHARED namespace: proposal_seeds = [dist_proposal, config, id] (lib.rs:63) — NOT
+  creator-scoped, so an attacker can create_proposal at any id with themselves as creator. CONTAINED + inert:
+  (a) create at an occupied id fails AccountAlreadyInitialized (clean); (b) a squatted proposal is registerable
+  ONLY by its own creator (register is creator-gated, pinned by register_rejects_a_non_creator_front_runner)
+  and to win still needs a real quorum+weighted-majority an attacker can't fake; (c) the id space is u64, so
+  the orchestrator just picks an unused id. No on-chain LOF/DOS. Minor task-#6 note: the proposal-generation
+  tool should pick an unused proposal_id (or retry on collision) — trivial.
+- EXECUTE SEND coin_sink account count: coin_sink is read via next_account_info ONLY inside the `if settled`
+  block AND only when sink_mode == SINK_SEND, after the 14 fixed accounts; it is pinned to book.coin_sink (and
+  != coin_escrow, finding AS). A rolled round never reads it; a settled SEND round that omits it fails cleanly
+  (NotEnoughAccountKeys) and is re-crankable. Redirect already pinned (e2e_execute_send_cranker_cannot_redirect).
+- INSURANCE_WITHDRAW two-step (percolator->holding->owner_ata): atomic — a bad/frozen owner_ata reverts the
+  WHOLE tx (the position decrement + both transfers roll back), so no partial-state LOF; the owner retries with
+  a good ATA. Atomicity is a Solana guarantee, so a test would be tautological.
+
 ### [VERIFIED-COVERED] twap Config field audit (metadao_futarchy binding + market_0_domain vestigial)
 Probed the two twap Config fields I had not traced, for a hidden authority path or stale-snapshot misuse.
 - metadao_futarchy: NOT vestigial and NOT a live authority. At init_config (lib.rs:388-404) it requires the
