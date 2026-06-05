@@ -4746,6 +4746,16 @@ fn e2e_claim_cannot_redirect_a_winners_payout() {
     assert_eq!(token_amount(&svm, &thief_usd), 0, "no USD redirected to the cranker");
     assert_eq!(token_amount(&svm, &bk.settlement_usd), 400_000, "winner's USD still intact");
 
+    // SOURCE key binding (anti-strand): substitute the settlement_usd SOURCE with a FUNDED book_escrow-owned
+    // account (≠ canonical). usd_dest is the winner's real ATA so the dest binding passes — only the
+    // settlement_usd == book.settlement_usd SOURCE binding can reject it. Without it, the winner is paid from
+    // the decoy and the canonical's spent USD is STRANDED (book_escrow-owned, unrecoverable). An empty decoy
+    // would revert on the transfer (masking via insufficiency), so it is funded. (Found mutation-blind.)
+    let src_decoy = Pubkey::new_unique(); set_token(&mut svm, &src_decoy, &env.collateral_mint, &bk.book_escrow, 400_000);
+    assert!(send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &src_decoy, &bk.coin_escrow, &w_usd, &w_src, 0)).is_err(),
+        "claim must reject a settlement_usd source other than the book's recorded one");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 400_000, "canonical settlement intact after the rejected source-substitution");
+
     // The honest claim (to the winner's recorded destination) pays the winner.
     send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &w_usd, &w_src, 0)).expect("honest claim");
     assert_eq!(token_amount(&svm, &w_usd), 400_000, "winner receives their USD");
@@ -5620,6 +5630,15 @@ fn e2e_claim_cannot_redirect_a_losers_coin_refund() {
     assert!(send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &b_usd, &thief, 1)).is_err(),
         "claim must reject a coin_ata != the bid's recorded refund target");
     assert_eq!(token_amount(&svm, &thief), 0, "no COIN refund redirected to the cranker");
+
+    // SOURCE key binding (anti-strand) for coin_escrow: substitute the coin_escrow SOURCE with a FUNDED
+    // book_escrow-owned coin account (≠ canonical). coin_ata is bob's real ATA (dest binding passes), so only
+    // the coin_escrow == book.coin_escrow SOURCE binding can reject it. Without it, bob is refunded from the
+    // decoy and his real escrowed COIN is STRANDED in the canonical escrow (book_escrow-owned, unrecoverable).
+    // An empty decoy reverts on the transfer (masking), so it is funded. (Found mutation-blind.)
+    let coin_src_decoy = Pubkey::new_unique(); set_token(&mut svm, &coin_src_decoy, &env.coin_mint, &bk.book_escrow, 100_000);
+    assert!(send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &coin_src_decoy, &b_usd, &b_src, 1)).is_err(),
+        "claim must reject a coin_escrow source other than the book's recorded one");
 
     // Honest claim -> bob gets his full COIN refund.
     send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &b_usd, &b_src, 1)).expect("honest claim");

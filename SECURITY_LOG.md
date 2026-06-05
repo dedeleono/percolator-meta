@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [COVERAGE GAP FIXED] CV. claim SOURCE key bindings (settlement_usd + coin_escrow) were UNPINNED
+Continued the key-binding audit on claim's SOURCE accounts: `settlement_usd.key != book.settlement_usd`
+(lib.rs:1591) + `coin_escrow.key != book.coin_escrow` (:1592) — the accounts claim pays winners/losers FROM
+(signed by book_escrow). Both UNPINNED: dropping either left the whole chain suite green (the claim-redirect
+tests only substituted the DEST usd_dest/coin_ata, not the SOURCE). Masked danger: a cranker substitutes the
+SOURCE with a FUNDED book_escrow-owned account (≠ canonical) -> the winner/loser is paid from the decoy and
+the canonical's spent USD / escrowed COIN is STRANDED in the real account (book_escrow-owned, unrecoverable
+since claims for that slot are now done) — a self-harm griefing that locks protocol/bidder funds. Empty
+decoy reverts on the transfer (masking via insufficiency), so the pins FUND the substitute. FIX: added a
+funded settlement_usd source-substitution to `e2e_claim_cannot_redirect_a_winners_payout` (1591) and a
+funded coin_escrow source-substitution to `e2e_claim_cannot_redirect_a_losers_coin_refund` (1592), each with
+the REAL dest (so only the source binding can reject). Mutation proof: dropping 1591+1592 -> both tests
+FAIL; restored -> 73 chain green. Strengthened existing tests (no count change). KEEP. 5th mutation-audit
+gap (CL/CR/CS/CU/CV) — the dual key+owner pattern hid BOTH source key bindings behind their (absent here)
+sibling, and the existing tests only covered the dest. Source AND dest of every claim transfer now pinned.
+
 ### [COVERAGE GAP FIXED] CU. execute coin_escrow KEY binding was UNPINNED (no test caught its removal)
 Continued the CS/CT dual-check audit on execute's `coin_escrow` (key binding `coin_escrow.key !=
 book.coin_escrow` :1320 + owner check `ce.owner != expected_escrow` :1360). Dropping the KEY binding ->
