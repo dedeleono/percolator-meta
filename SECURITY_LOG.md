@@ -49,6 +49,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED — init-squat vote_authority + remaining-account smuggling, no new test] BW.
+ - init_insurance_pool vote_authority squat: the pool's vote_authority is set from a caller-provided
+   account with NO init-time validation (by design), reinit-guarded (data_len()!=0 -> AccountAlreadyInitialized,
+   lib.rs:39). The defense is downstream: gv `init_config` REQUIRES pool.vote_authority == the gv PDA
+   (finding G/H), so a front-run squat with a wrong authority can never be bound by the genesis. Pinned by
+   the `poison_pool_vote_authority` cases (seal.rs:757-772 — attacker-key pool rejected, gv-PDA pool
+   accepted) + `gv_config_cannot_be_bound_to_a_substituted_pool` (822) + the subledger squat tests
+   (init_insurance_pool_cannot_be_squatted 2292, non-canonical-vault 2024). No LOF/misdirection; a squat
+   only forces the orchestrator to a different sub_pool (off-harness, task #6).
+ - remaining-account smuggling: every instruction reads a FIXED account list via next_account_info and
+   validates each by key/owner/PDA, so a substituted account fails its check; the only conditionally-read
+   trailing accounts (execute's coin_sink in SEND mode, place_bid's evict_acct on a full book) are each
+   pinned to book.coin_sink / the evicted bid's recorded ATA. Extra accounts beyond the fixed list are
+   ignored; a missing required trailing account reverts (NotEnoughAccountKeys). No smuggling path.
+Verdict: BLOCKED. No code/test change.
+
 ### [BLOCKED — health check + reconfigure bps bounds, no new test] BV.
 Full-suite health check: 166 GREEN (subledger 50, gv 17, distribution 22, twap 77), all four build-sbf
 clean, no drift since BO. twap `reconfigure` (surplus_buy_burn_bps): `new_bps > BPS_DENOMINATOR` rejected
