@@ -690,6 +690,55 @@ fn init_config_rejects_an_underfunded_vault() {
     send(&mut svm, build_init(60)).expect("fully-backed supply is accepted");
 }
 
+// SOLVENCY (anti-mask of init_config_rejects_an_underfunded_vault): that test mints only 60, so its
+// build_init(100) is actually rejected by the SUPPLY-EQUALITY check (mint.supply 60 != total_supply 100,
+// lib.rs:304) — the solvency check (:318) is masked and never the deciding guard. This pins :318 directly:
+// mint the FULL 100 supply (mint.supply == total_supply == 100) but seed only 60 into the vault (40 minted
+// to a decoy held outside). Now :304 PASSES, so ONLY the solvency check `vault.amount < total_supply` stands
+// between an underfunded vault and a claim-race LOF (early claimants drain 60, late ones stranded). Without
+// :318 this init would succeed.
+#[test]
+fn init_config_rejects_a_vault_underfunded_below_a_fully_minted_supply() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(pid(), so_path()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let mint_authority = Keypair::new();
+    let coin_mint = create_mint(&mut svm, &payer, &mint_authority.pubkey());
+
+    let authority = Keypair::new();
+    let config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref(), authority.pubkey().as_ref()], &pid()).0;
+    let vault = create_token_account(&mut svm, &payer, &coin_mint, &config);
+    // The FULL supply is 100, but the vault holds only 60 — the other 40 are minted to a decoy account
+    // (e.g. an attacker's), so the mint's supply == 100 == total_supply (passing the supply-equality check)
+    // while the vault is underfunded.
+    let decoy = create_token_account(&mut svm, &payer, &coin_mint, &payer.pubkey());
+    mint_to(&mut svm, &payer, &coin_mint, &mint_authority, &vault, 60);
+    mint_to(&mut svm, &payer, &coin_mint, &mint_authority, &decoy, 40);
+    revoke_mint_authority(&mut svm, &payer, &coin_mint, &mint_authority);
+
+    let mut data = vec![0u8]; // IX_INIT_CONFIG
+    data.extend_from_slice(&1_000_000u64.to_le_bytes()); // claim window
+    data.extend_from_slice(&100u64.to_le_bytes()); // total_supply == mint.supply, but vault holds only 60
+    let ix = Instruction {
+        program_id: pid(),
+        accounts: vec![
+            AccountMeta::new(payer.pubkey(), true),
+            AccountMeta::new_readonly(coin_mint, false),
+            AccountMeta::new(config, false),
+            AccountMeta::new_readonly(vault, false),
+            AccountMeta::new_readonly(authority.pubkey(), false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        ],
+        data,
+    };
+    let bh = svm.latest_blockhash();
+    let r = svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer], bh));
+    assert!(r.is_err(), "a vault holding 60 of a fully-minted 100 supply must be rejected (solvency, :318)");
+    // No config PDA was created — the underfunded bind was refused.
+    assert!(svm.get_account(&config).map_or(true, |a| a.data.is_empty()), "no config bound to the underfunded vault");
+}
+
 // ZERO CLAIM WINDOW (recipient-LOF DOS): init_config rejects claim_window_slots == 0 (lib.rs:276). A zero
 // window is catastrophic — window_end = seal_slot + 0 = seal_slot, so claim (clock < window_end) is refused
 // the instant the winner seals, and burn_unclaimed (clock >= window_end) immediately torches the WHOLE

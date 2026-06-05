@@ -58,6 +58,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [GAP FIXED — distribution solvency check was MASKED (underfunded-vault claim-race LOF)] EZ.
+HOSTILE vector (underfunded vault -> claim-race LOF): distribution init_config promises `total_supply` COIN;
+seal only enforces `total_amount <= total_supply`, so if the vault holds LESS than total_supply, the entries
+can sum above the vault balance -> early claimants drain it, honest late claimants stranded. Guards:
+supply-equality `mint.supply != total_supply` (lib.rs:304) AND solvency `vault_state.amount < total_supply`
+(:318). Applying the EM anti-mask lens: mutated :318 (drop solvency) -> 19 dist PASS = MUTATION-BLIND, despite
+a dedicated test `init_config_rejects_an_underfunded_vault`. ROOT CAUSE (mask): that test mints only 60 and
+promises 100, so its rejection actually comes from the SUPPLY-EQUALITY check (:304, 60 != 100) — :318 is never
+the deciding guard, so dropping it changes nothing. The solvency check was effectively untested. FIX: added
+`init_config_rejects_a_vault_underfunded_below_a_fully_minted_supply` — mints the FULL 100 supply (mint.supply
+== total_supply == 100) but seeds only 60 into the vault (40 to a decoy held outside), so :304 PASSES and ONLY
+:318 stands between the underfunded vault and the LOF. Asserts init is rejected + no config PDA created.
+Mutation-sharp: PASSES with :318, FAILS without. dist 19->20. (Companion sharp guard :304 caught by
+`init_config_rejects_a_mintable_coin`; together they prove every COIN that exists is in this vault AND the
+vault holds the full promised supply.) Verdict: BLOCKED; solvency COVERAGE GAP closed. This is the SECOND
+masked-by-a-sibling-guard gap (cf. EM cancel-double-refund) — the anti-mask lens remains productive.
+
 ### [VERIFIED SHARP — gv init_config dependency back-bindings (anti-squat / anti-poison genesis wiring)] EY.
 HOSTILE vector (front-run squat / genesis poisoning): the gv config PDA seed is ["gv_config", coin_mint,
 subledger_pool] (finding R) — distribution_config is NOT in the seed but a stored field. An attacker front-runs
