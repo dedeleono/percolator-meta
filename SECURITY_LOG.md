@@ -86,6 +86,30 @@ ones (which the handoff already drives). Other integration failures triaged as T
 expectation @3274) or percolator instruction-ENCODING drift (admin-burn tag @2925) — separate, lower-stakes.
 Test edits reverted this tick to keep the committed suite state clean (no red committed); finding recorded for a
 dedicated migration. Flagged to the user as the headline item.
+GT-UPDATE (scope + fix pinned down): the drift is CONTAINED, not systemic — the meta program's ONLY raw slab
+reads are in read_market_config (lib.rs:45-117). admin@HEADER_LEN+0, collateral@+32, secondary@+64 are STILL
+correct (marketauth/collateral_mint/secondary_collateral_mint remain the first three WrapperConfigV16 fields at
+0/32/64); ONLY the 3 per-asset authorities @+192/+224/+256 are wrong. The meta program does NOT read
+insurance/vault balances by offset (it manages insurance via CPIs and computes the 50/50 kickstart from the
+deposited amount), so finding-T-style balance offsets are not affected — twap already owns those at the new
+MARKET_GROUP_OFF=448 (percolator WRAPPER_CONFIG_LEN is now 432, vs the meta's stale 624 — harmless to the >=640
+length check, fatal only to the 3 authority reads). The 3 fields moved to a per-asset AssetOracleProfileV16 whose
+slab location is a DYNAMIC capacity-dependent offset (percolator dynamic_slot_offset), NOT a fixed constant — so
+replicating it in the meta's minimal raw parser (which deliberately does NOT depend on percolator_abi) is fragile.
+RECOMMENDED FIX (option b, robust + secure): DROP the 3 per-asset reads/checks and gate kickstart/withdraw/
+recovery on `admin`(marketauth)@0 == market_admin PDA alone. Security argument: at InitMarket percolator derives
+all per-asset authorities (insurance_authority/operator/backing/asset_admin) FROM marketauth
+(asset_oracle_profile_from_config), and rotating any of them later requires the CURRENT per-asset authority or
+asset_admin (both = the PDA pre-handoff) to sign percolator's UpdateAssetAuthority — which only the meta program
+can do. So for a meta-created market, marketauth==PDA STRICTLY IMPLIES the per-asset authorities are still ==PDA;
+the 3 checks are redundant defense-in-depth, not load-bearing. (Option a — replicate dynamic_slot_offset to read
+the new location — preserves the literal 4-way check but is fragile to the next percolator slot-layout change.)
+This is a security-relevant simplification of the meta validation surface + needs the full integration suite
+green to verify (incl. the non-GT timelock/encoding test fixes), so it stays a deliberate task-#11 change, not a
+probe-tick edit. Also swept this tick + confirmed exhaustively pinned: distribution burn_unclaimed (window-gated
+checked-add, burns only the post-window vault remainder = unclaimed, idempotent, pre-seal torch blocked by
+is_sealed) — pinned by unclaimed_is_burned_after_window, burn_unclaimed_is_rejected_during_the_claim_window
+(boundary-1 sharp), burn_unclaimed_before_the_genesis_seals_cannot_torch_the_vault.
 
 ### [VERIFIED BLOCKED (cross-program backstop traced into the real binary) — twap execute unvalidated percolator_vault] GS.
 HOSTILE vector (cross-vault drain via a substituted source vault): twap `execute` forwards the `percolator_vault`
