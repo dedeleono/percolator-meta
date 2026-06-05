@@ -58,6 +58,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED — balance-manipulation class closed across all programs, no new test] CJ.
+Extends CH/CI: no program lets an attacker manipulate a token-account BALANCE to extract value.
+ - twap: payouts use recorded book fields; only `budget=holding.amount` reads a balance (CH donor-subsidy);
+   donations to escrows are stranded (CI).
+ - distribution: claim pays the RECORDED entry `amount` (lib.rs:46/63, not the vault balance); the vault is
+   solvency-guaranteed at init (`vault.amount >= total_supply`) + drain-proof (BR); a donation to the vault
+   is simply BURNED by burn_unclaimed (`token_balance(vault)`, :37) -> extra deflation, donor self-harm.
+ - subledger: insurance_withdraw DOES read live slab insurance for the pro-rata (`read_asset0_insurance`,
+   :89), but insurance only changes via AUTHORITY-gated percolator TopUpInsurance (pool pre-handoff /
+   squads_vault post-handoff), which records `outstanding` IN LOCKSTEP, so insurance/outstanding stays
+   consistent — an external party can't inflate the ratio; and a deposit-then-withdraw into an impaired
+   pool is self-harming (the floor haircut applies to the attacker's own deposit too; pinned by the
+   splitting test 942). 
+Across the stack, payouts track RECORDED state (or an authority-gated, lockstep-consistent live figure);
+attacker-controlled balance donations are stranded, burned, or self-harm — never extractable. Verdict:
+BLOCKED. No code/test change.
+
 ### [BLOCKED — recorded-field accounting principle (donation-stranding), no new test] CI.
 Generalizes CH to ALL twap book accounts. The auction's payouts are computed from RECORDED book fields, NOT
 live token balances: claim pays `usd_owed` (book_rd SL_USD_OWED, lib.rs:52) + `coin_refund` (SL_COIN_REFUND
