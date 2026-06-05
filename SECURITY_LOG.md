@@ -58,6 +58,16 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — execute SEND-mode coin_sink binding] DB.
+Mutation-audited execute's SEND-mode buyback redirect guard `coin_sink.key != book.coin_sink` (twap
+lib.rs:1540) — in SINK_SEND mode the bought COIN is transferred to coin_sink instead of burned, so this
+key binding is the permissionless-cranker anti-theft (the cranker can't route the buyback to its own
+account). Dropped it (`if false`), build-sbf -> TWO tests FAIL:
+`e2e_execute_send_cranker_cannot_redirect_the_buyback` (5565) + `e2e_send_mode_routes_bought_coin_to_treasury_not_attacker`
+(3898). So it is mutation-sharp, doubly-tested. (The self-loop guard coin_sink != coin_escrow is separately
+pinned at both init+set doors, finding AS.) Restored -> 73 chain green. Verdict: BLOCKED, no gap. No
+code/test change.
+
 ### [VERIFIED SHARP — gv trigger bait-and-switch snapshot check] DA.
 Mutation-audited the trigger snapshot check (`pd[84..88] != pv.snapshot_entry_count || pd[88..96] !=
 pv.snapshot_total_amount -> reject`, genesis-vote lib.rs:727-728) — stops a creator appending self-
