@@ -58,6 +58,21 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — insurance_deposit last-write-time start_slot reset blocks hold-time weight inflation] EQ.
+HOSTILE vector (governance weight inflation via stale timestamp): gv weight = `floor(log2(hold)) * principal`,
+hold = now - position.start_slot. If a top-up did NOT reset start_slot, an attacker deposits 1 atom EARLY
+(start_slot = slot 0), waits to accrue a large `hold`, then TOPS UP a huge principal that inherits the ancient
+start_slot -> a high log2(hold) multiplier is applied to the big late principal -> fabricated vote weight (and
+quorum principal) far beyond what fresh capital should earn. Defense: insurance_deposit applies last-write-time
+— `position.start_slot = Clock::get()?.slot` on EVERY deposit incl. top-ups (subledger lib.rs:960), so a
+late-added principal always restarts its own hold clock. Mutated :960 to only set start_slot on the FIRST
+deposit (stale on top-up) -> 10+ tests FAIL, critically `topping_up_a_voted_position_does_not_inflate_or_unlock_the_vote`
+(the exact anti-inflation test for the top-up case) and `a_too_recent_position_cannot_vote_or_pump_the_quorum`
+(plus the core deposit/vote/weight lifecycle). Strongly mutation-SHARP. (Companion: vote_weight treats
+start_slot==0 / hold<2 as zero weight, so a just-deposited position cannot vote — `a_too_recent_position...`.)
+Verdict: BLOCKED, no gap. The weight model (last-write-time EQ, floor(log2) cap, one-vote DO/CR, vote-lock ED)
+is fully anti-inflation-verified. No code/test change.
+
 ### [VERIFIED SHARP — place_bid slot reuse has no stale-state inheritance; place_slot cooldown anchor sharp] EP.
 HOSTILE vector (stale-state inheritance on slot reuse/eviction): when place_bid takes a slot — either a FREED
 slot (zeroed by claim/cancel) or an EVICTED slot (overwritten over the weakest live bid) — any field NOT
