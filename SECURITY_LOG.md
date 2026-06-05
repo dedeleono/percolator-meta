@@ -58,6 +58,20 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — cross-proposal seal irreversibility (winner-take-all is final)] ES.
+HOSTILE vector (state-overwrite redirect of the whole distribution): once a proposal wins (gv trigger ->
+seal_winner sets config.sealed_proposal), a SECOND proposal that also reaches the tally could re-run trigger ->
+seal_winner and OVERWRITE config.sealed_proposal, redirecting the entire COIN distribution from the first
+winner to the attacker's proposal. claim binds payout to config.sealed_proposal (DL), so a reseal makes the
+real winner's claims fail and routes the supply to the attacker. Guard: seal_winner rejects `if
+config.is_sealed()` (distribution lib.rs:470) — the seal is one-shot. Mutated :470 to `if false && ...` (allow
+reseal) -> TWO tests FAIL across suites: `a_second_proposal_cannot_reseal_after_a_winner_is_sealed`
+(genesis-vote seal.rs — B's trigger -> seal CPI must revert once A is sealed) AND
+`a_losing_proposal_cannot_claim_the_winners_vault` (distribution — a loser cannot reseal to redirect the
+vault). Strongly mutation-SHARP, doubly-covered (gv-side trigger path + distribution-side direct reseal). This
+pins finding f8f688e (cross-proposal winner-take-all irreversibility). Verdict: BLOCKED, no gap. No code/test
+change.
+
 ### [VERIFIED SHARP — impaired-exit pro-rata haircut + floor rounding is split-resistant] ER.
 HOSTILE vector (rounding direction / split-withdrawal drain): under impairment the insurance exit pays a
 pro-rata haircut `owed = payout(policy, insurance, outstanding, amount)`. Two ways to over-extract and drain
