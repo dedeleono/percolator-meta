@@ -2132,6 +2132,28 @@ fn owner_cannot_self_unlock_a_live_vote_to_exit_capital() {
     );
     assert!(vote_locked(&env), "position stays locked — self-unlock refused");
 
+    // ATTACK 2 (anti-mask of attack 1): the first attack is refused by the is_signer check (the gv config
+    // is named but does not sign). To force the vote_authority *key binding* to be the sole decider, alice
+    // names HERSELF as the vote_authority AND signs — so is_signer PASSES and only
+    // `pool.vote_authority != *vote_authority.key` (lib.rs:1186) stands between her and a self-unlock. If it
+    // were dropped, she would unlock her own live-voted position and exit while the ballot still counts
+    // (finding B: ballot outlives capital). Must be refused.
+    let attack2 = Instruction {
+        program_id: sub_id(),
+        accounts: vec![
+            AccountMeta::new_readonly(alice.pubkey(), true), // alice names HERSELF as vote_authority AND signs
+            AccountMeta::new_readonly(env.pool, false),
+            AccountMeta::new(env.position_pda(&alice.pubkey()), false),
+            AccountMeta::new_readonly(alice.pubkey(), true), // owner = same alice, signs
+        ],
+        data: vec![6u8, 0u8], // IX_SET_VOTE_LOCK, locked = 0 (unlock)
+    };
+    assert!(
+        env.send(&[attack2], &[&alice]).is_err(),
+        "owner cannot self-unlock by naming themselves as the vote_authority (key binding, :1186)"
+    );
+    assert!(vote_locked(&env), "position stays locked — self-named-authority unlock refused");
+
     // The capital still cannot leave while the ballot is live.
     assert!(
         env.insurance_withdraw(&alice, &alice_ata, &holding, &alice, amount).is_err(),

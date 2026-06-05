@@ -58,6 +58,23 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [GAP FIXED — set_vote_lock vote_authority binding was MASKED (owner self-unlock -> ballot outlives capital)] FN.
+HOSTILE vector (owner self-unlocks a live-voted position to exit while the ballot still counts = finding B,
+ballot outlives capital -> a free, capital-less ballot inflates quorum/majority): set_vote_lock (subledger IX 6)
+toggles a position's vote-lock and is reachable directly (public ix). It requires vote_authority.is_signer
+(lib.rs:16/CP), owner.is_signer (:26), AND `pool.vote_authority != *vote_authority.key -> IllegalOwner` (:1186)
+— the last being the SOLE guard stopping the OWNER from naming THEMSELVES as the vote_authority and unlocking
+their own position. Applying the EZ anti-mask lens: mutated :1186 -> 42 insurance PASS = MUTATION-BLIND, despite
+`owner_cannot_self_unlock_a_live_vote_to_exit_capital`. ROOT CAUSE (mask): that test's attack names the gv
+config as vote_authority but WITHOUT its signature, so it is rejected by the is_signer check (:16) — :1186 is
+never the decider, and dropping it changes nothing. The key binding was effectively untested. FIX: augmented
+the test with ATTACK 2 — alice names HERSELF as the vote_authority AND signs, so is_signer PASSES and ONLY
+:1186 (pool.vote_authority(gv PDA) != alice) stands between her and a self-unlock; asserts it is refused, the
+position stays locked, and the capital still cannot exit. Mutation-sharp: PASSES with :1186, FAILS without.
+insurance 42 (augmented, not +1). This is the THIRD masked-by-a-sibling-guard gap (cf. EM cancel-replay, EZ
+solvency) — each time a stricter sibling (is_signer here, supply-equality in EZ) shadowed the real guard because
+the test's input tripped the sibling first. Verdict: BLOCKED; self-unlock COVERAGE GAP closed.
+
 ### [VERIFIED SHARP — register_proposal non-empty check blocks empty-proposal finalize-brick DOS] FM.
 HOSTILE vector (finalize-brick DOS via an empty winning proposal): register an EMPTY distribution proposal
 (entry_count == 0, created but never appended) for voting. If it could be backed and won the strict majority,
