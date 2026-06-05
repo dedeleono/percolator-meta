@@ -31,6 +31,20 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Re-vote weight inflation (the backout is single-guard, no sibling backstop)
+Vector: `vote` backs out the ballot's prior live contribution from BOTH the proposal's support_weight/
+support_principal AND the global total_cast_weight/total_voted_principal BEFORE re-adding the fresh weight
+(lib.rs:618-622). Without that backout a voter could call vote N times on the SAME proposal and have ONE
+position's weight + principal counted N times — inflating that proposal's weighted-majority share AND the
+quorum numerator with a single deposit. A Sybil-free governance-capture attack.
+Single-guard, NO backstop: unlike the over-withdraw cap (percolator EngineLock backstops it), the gv tallies
+are gv-OWNED state with no CPI, so the in-handler backout is the SOLE guard. Existing vote tests only
+covered single votes / re-vote-after-withdraw (weight 0); the double-count path was untested.
+Verified BLOCKED + mutation-SHARP: alice votes -> weight 10*principal, global cast 10*principal; she votes
+the SAME proposal twice more -> tallies STAY at exactly one vote (not 2x/3x). Removing the 4 checked_sub
+backout lines at :618-622 + rebuilding the gv .so makes the re-vote DOUBLE the weight (test fails).
+Test KEPT: re_voting_the_same_proposal_does_not_double_count_weight (subledger insurance 34, real gv path).
+
 ### [HARDENING/DOUBLY-DEFENDED] Over-withdraw drain capped — percolator EngineLock backstops the subledger cap
 Probed insurance_withdraw's amount cap (lib.rs:1054, `amount <= position.principal && amount <= outstanding`)
 as a presumed single-guard per-depositor protection (drain co-depositors by withdrawing > your principal).

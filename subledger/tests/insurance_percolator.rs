@@ -1353,6 +1353,48 @@ fn genesis_vote_reads_subledger_position_and_weights() {
     assert_eq!(support_weight, 10 * amount, "weight = floor(log2(hold)) * principal");
 }
 
+// RE-VOTE WEIGHT INFLATION (no sibling backstop — pure gv accounting): `vote` backs out the ballot's prior
+// contribution from BOTH the proposal's support_weight/principal AND the global total_cast/total_voted
+// BEFORE re-adding the fresh weight (lib.rs:618-622). Without that backout, a voter could call vote N times
+// on the SAME proposal and have their weight (and principal) counted N times — inflating the proposal's
+// majority share and the quorum numerator with one position's capital. Unlike the over-withdraw cap there is
+// NO percolator/other backstop here: the tallies are gv-owned state, so this backout is the SOLE guard.
+#[test]
+fn re_voting_the_same_proposal_does_not_double_count_weight() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("deposit");
+    let dest = Pubkey::new_unique();
+    let (_dist, gv_proposal) = create_and_register_proposal(&mut env, &ve, 1, &dest);
+    env.warp_slot(1124); // hold age 1024 -> floor(log2)=10 -> weight 10*principal
+
+    let read_cast = |env: &Env| -> u64 {
+        u64::from_le_bytes(env.svm.get_account(&ve.gv_config).unwrap().data[208..216].try_into().unwrap())
+    };
+
+    // First vote: weight counted once.
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("first vote");
+    assert_eq!(gv_proposal_support(&env, &gv_proposal), (10 * amount, amount), "one vote, weight once");
+    assert_eq!(read_cast(&env), 10 * amount, "global cast = one vote");
+
+    // ATTACK: vote AGAIN on the SAME proposal. The backout removes the prior contribution before re-adding,
+    // so the tallies stay at exactly one vote — they must NOT double.
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("re-vote accepted (idempotent)");
+    assert_eq!(gv_proposal_support(&env, &gv_proposal), (10 * amount, amount),
+        "re-vote must NOT double the proposal's weight/principal");
+    assert_eq!(read_cast(&env), 10 * amount, "re-vote must NOT double the global cast weight");
+
+    // Even a third time stays put.
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("third vote");
+    assert_eq!(gv_proposal_support(&env, &gv_proposal).0, 10 * amount, "weight still counted exactly once");
+    assert_eq!(read_cast(&env), 10 * amount, "global cast still exactly one vote");
+}
+
 // TARGETED DISENFRANCHISEMENT (lamport-prefund DOS on a voter's ballot, finding AI on the vote path):
 // the ballot PDA is f(gv_config, voter) — fully deterministic from a public voter key — and `vote`
 // lazily creates it on the first back. If that creation used the System `create_account` (which aborts
