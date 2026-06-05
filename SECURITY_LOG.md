@@ -58,6 +58,19 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — append_entries creator-gating blocks proposal poisoning] EF.
+HOSTILE vector (missing-signer/authority + griefing): a non-creator appends entries to someone's UNSEALED
+distribution proposal — inserting a self-allocation, padding entry_count, or inflating total_amount to grief
+the genesis or redirect funds. Defense: append_entries requires `creator.is_signer` (lib.rs:405) AND
+`header.creator != *creator.key -> reject` (:417), plus `header.sealed` blocks appends after seal (:420),
+capacity + `total_amount <= total_supply` bound the list (:431,:439). Mutated the creator clause to `|| false`
+-> `append_entries_rejects_a_foreign_creator` FAILS = mutation-SHARP (a foreign appender is refused while the
+real creator can still extend its own proposal). BONUS — closes the EE backstop: the SAME instruction's
+zero-entry rejection (`append_rejects_a_zero_amount_or_default_pubkey_entry` pins amount==0 || pk==default ->
+reject) GUARANTEES no valid entry is zero, so an out-of-bounds claim reading an unfilled (zero) slab entry can
+never match a real recipient/amount — the EE defense-in-depth rests on a mutation-sharp invariant. Verdict:
+BLOCKED, no gap. No code/test change.
+
 ### [VERIFIED DOUBLY-DEFENDED — distribution claim out-of-bounds index] EE.
 HOSTILE vector (rounding/bounds + reading uninitialized data): claim takes a u32 `index` and pays
 `entry[index].amount` to `entry[index].recipient`. Pass an index past the filled entries to read garbage as a
