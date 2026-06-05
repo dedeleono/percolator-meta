@@ -58,6 +58,16 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — cancel_bid owner check] DI.
+Mutation-audited cancel_bid's owner check `book_rd_key(SL_BIDDER) != *bidder.key -> IllegalOwner` (twap
+lib.rs:1699) — only the bid's OWNER may cancel it. Without it a non-owner could force-cancel (evict) a
+VICTIM's bid from the book: the refund still goes to the victim's pinned coin_ata (so no theft), but the
+victim loses their book position and must re-bid — a cross-user griefing / book-manipulation. Dropped it
+(`if false`), build-sbf -> `e2e_bid_cancellable_after_cooldown_keeps_fee` FAILS at the mallory assertion
+(a non-owner cancels alice's bid). So it is mutation-sharp. (The coin_ata binding passes in that assertion
+since mallory supplies alice's recorded ATA, so ONLY the owner check rejects — correctly isolated.)
+Restored -> 73 chain green. Verdict: BLOCKED, no gap. No code/test change.
+
 ### [VERIFIED SHARP — cancel_bid anti-spoof cooldown] DH.
 Mutation-audited cancel_bid's anti-spoof cooldown `aged = now >= place_slot + 2*round_length; if !aged ->
 ERR_ROUND_ACTIVE` (twap lib.rs:1714) — the issue-#28 guard: a placed bid is committed until aged (or
