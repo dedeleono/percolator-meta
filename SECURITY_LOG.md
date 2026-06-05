@@ -49,6 +49,28 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED — binding-immutability invariant across all 4 programs, no new test] BK.
+Completed the BJ immutability sweep on the other three programs by enumerating every post-init write to
+each account's fields. The security-critical binding/identity fields are NEVER reassigned after init in
+any program — only designed accumulators/lifecycle flags change:
+ - subledger Pool: ONLY `outstanding_principal` mutates (deposit/withdraw/insurance accounting, lib.rs
+   536/643/951). `vote_authority`, `vault`, `policy`, `mint`, `market_slab`, `percolator_program` are
+   immutable (the only occurrence of vote_authority outside init is a `==` check at :1185). => the entire
+   vote-lock cross-program contract (AZ) rests on an immutable authority; an attacker cannot repoint
+   pool.vote_authority to lock/unlock victims or self-unlock to bypass retract.
+ - distribution Config: ONLY `sealed_proposal` + `seal_slot` change post-init (one-time, at seal_winner,
+   guarded by !is_sealed, :483-484). `authority`, `vault`, `total_supply`, `coin_mint` are immutable =>
+   claim solvency (total_amount<=total_supply<=vault) is stable forever; the seal authority + vault can't
+   be repointed to redirect or over-draw the pool.
+ - genesis-vote Config: NO post-init write to ANY binding (coin_mint / distribution_program /
+   distribution_config / subledger_program / subledger_pool) — grep empty; only the tallies
+   (total_voted_principal / total_cast_weight / outstanding_principal) mutate in `vote`. => BB's
+   trigger routing + the gv-init fail-fast bindings (786/822) rest on immutable wiring.
+With BJ (twap book), all four programs are confirmed: cross-program guards read FROZEN bindings, so the
+"mutate a binding field to break an isolation/cross-program guard" class is closed everywhere. (Immutable
+by absence of a setter — not separately litesvm-testable, but every binding test exercises the frozen
+value and the round-trip/layout tests pin the field positions.) Verdict: BLOCKED. No code/test change.
+
 ### [BLOCKED — book-identity immutability invariant, no new test] BJ.
 Probed the "mutate a binding/identity field post-init to break an isolation guard" class on the twap book.
 Enumerated every writer of the book account: the IDENTITY fields — BK_CONFIG, BK_COIN_MINT,
