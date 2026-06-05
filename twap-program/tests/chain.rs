@@ -3847,6 +3847,56 @@ fn e2e_bid_cancellable_after_cooldown_keeps_fee() {
     let _ = (alice, a_usd, mallory);
 }
 
+// DOUBLE-CANCEL DRAIN (shared-escrow theft): cancel_bid refunds a bid's escrowed `coin_atoms` from the
+// SHARED coin_escrow (which pools EVERY bidder's COIN), then ZEROES the slot so it cannot be cancelled
+// again. The slot-zeroing is the SOLE guard — there is no separate "cancelled" flag. Without it, an aged
+// bidder cancels their OWN slot twice and the second refund comes out of OTHER bidders' escrowed COIN: a
+// direct cross-user LOF that drains the pool. This pins it: alice's re-cancel of her already-cancelled slot
+// is refused, and bob's escrowed COIN is untouched and still his to reclaim.
+#[test]
+fn e2e_cancel_cannot_be_replayed_to_drain_the_shared_escrow() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let round_length = 10u64;
+    let bk = setup_auction(&mut svm, &payer, &env, round_length, 0, None, 0);
+
+    // Two bidders escrow into the SHARED coin_escrow: alice (10_000) in slot 0, bob (20_000) in slot 1.
+    // Bob's leg deliberately EXCEEDS alice's, so after alice's first cancel the pool still holds MORE than
+    // her refund — a replayed cancel can therefore SUCCEED on transfer (the drain is gated only by the
+    // slot-zeroing, not by transfer-insufficiency; this avoids the DM-style mask).
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 10_000);
+    let (bob, b_src, b_usd) = new_bidder(&mut svm, &payer, &env, 20_000);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 10_000, 5_000, None)).expect("alice bid (slot 0)");
+    send(&mut svm, &[&bob], place_bid_ix(&bob.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &b_src, &b_usd, &env.coin_mint, &env.collateral_mint, 20_000, 5_000, None)).expect("bob bid (slot 1)");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 30_000, "shared escrow holds both bids");
+
+    // Age past the cooldown, then alice legitimately cancels her own slot 0 once.
+    warp_to(&mut svm, 100 + 2 * round_length + 1);
+    send(&mut svm, &[&alice], cancel_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, 0)).expect("alice cancels slot 0 once");
+    assert_eq!(token_amount(&svm, &a_src), 10_000, "alice got her 10_000 back exactly once");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 20_000, "only alice's leg left the shared escrow — bob's 20_000 remains (> alice's refund)");
+
+    // ATTACK: alice replays the cancel on her now-emptied slot 0 to skim bob's escrow. The pool (20_000)
+    // exceeds her 10_000 refund, so absent the slot-zeroing the replay would SUCCEED and steal 10_000 of
+    // bob's COIN. Must be refused.
+    assert!(send(&mut svm, &[&alice], cancel_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, 0)).is_err(),
+        "a re-cancel of an already-cancelled slot must be rejected (slot zeroed)");
+    assert_eq!(token_amount(&svm, &a_src), 10_000, "alice did NOT get a second refund");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 20_000, "bob's escrowed COIN is untouched");
+
+    // Bob's bid is intact: he can still cancel his own slot 1 and recover his full 20_000.
+    send(&mut svm, &[&bob], cancel_ix(&bob.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &b_src, 1)).expect("bob cancels his own slot 1");
+    assert_eq!(token_amount(&svm, &b_src), 20_000, "bob recovered his full escrow");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 0, "shared escrow cleanly drained by the two legitimate cancels only");
+}
+
 // FINDING AC (oversized-leg → ranking overflow + phantom escrow): place_bid's ranking comparator
 // `cmp_bid` is a direct cross-multiply `coin_a * usdc_b` that is only overflow-safe because BOTH
 // legs are bounded to u64 (u64*u64 < 2^128). The guard is the two `as_u64(coin_atoms)?` /

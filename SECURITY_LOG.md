@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [GAP FIXED — cancel_bid double-refund drains the shared escrow] EM.
+HOSTILE vector (replay / double-spend — cross-user LOF): cancel_bid refunds a bid's escrowed `coin_atoms`
+from the SHARED coin_escrow (which pools EVERY bidder's COIN), then ZEROES the slot (lib.rs:1728). The
+slot-zeroing is the SOLE guard — there is no separate "cancelled" flag. An aged bidder who cancels their OWN
+slot TWICE would have the second refund paid out of OTHER bidders' escrowed COIN: a direct pool drain. MISSING
+COVERAGE: mutated the cancel slot-zeroing loop `for b in d[o..o+SLOT_SIZE]{*b=0}` -> `d[o..o]` (no-op) ->
+75->... 74 chain PASS: MUTATION-BLIND (no double-cancel test; the sibling slot-zeroing in claim (:1629) is DN,
+but cancel's was never pinned). FIX: added `e2e_cancel_cannot_be_replayed_to_drain_the_shared_escrow` —
+alice(10k, slot0) + bob(20k, slot1) escrow into the shared pool; after the cooldown alice cancels slot0 once
+(refund 10k, pool=20k), then REPLAYS the cancel on her zeroed slot. Asserts the replay is refused, alice got
+NO second refund, and bob's 20k is untouched + fully reclaimable. Mutation-sharp via a DELIBERATE anti-mask:
+bob's leg (20k) EXCEEDS alice's refund (10k), so the replayed transfer would SUCCEED on balance absent the
+slot-zeroing (avoids the DM-style transfer-insufficiency mask that made the first draft mutation-blind). PASSES
+with :1728 present, FAILS (replay succeeds -> bob drained) with it removed. chain 74->75. Verdict: BLOCKED;
+double-refund COVERAGE GAP closed. (This is the cancel-side analogue of DM's claim double-claim.)
+
 ### [VERIFIED SHARP — execute holding key binding (canonical budget routing)] EL.
 HOSTILE vector (account substitution on the permissionless execute crank — last unverified execute fund
 account): execute pulls `burnable` insurance into `holding` and then transfers `total_usd` from holding ->
