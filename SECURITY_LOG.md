@@ -27,6 +27,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Squads 1-week timelock is ENFORCED, not just required (instant-rug delay)
+Vector: the whole DAO->Squads->twap->percolator authority chain leans on the 1-week timelock so depositors/
+voters get a week to react+exit before any DAO action lands. twap init_config only REQUIRES the bound
+multisig's time_lock >= 1 week (pinned by twap_config_rejects_a_multisig_below_the_one_week_timelock); if
+Squads v4 did not actually ENFORCE that delay the requirement would be cosmetic — a rushed/compromised
+multisig could instantly flip the reserve to 0 (re-expose the whole surplus to whale draining), shutdown-
+sweep the holding, or repoint coin_sink, with no reaction window.
+Verified BLOCKED end-to-end against the REAL Squads binary: create+approve a set_reserve(7/3) vault tx, then
+attempt execute (a) immediately and (b) 60s short of the week -> BOTH rejected, reserve unchanged; only after
+warping past the full TIMELOCK_1_WEEK_SECS does the SAME approved action execute and apply 7/3. The post-
+timelock success is the control that proves the premature failures were the timelock (not a malformed
+msg/accounts), ruling out a false-positive. Squads is a read-only sibling so no src-mutation; the behavioral
+premature-vs-post assertion is self-verifying.
+Test KEPT: e2e_a_squads_action_cannot_execute_before_the_one_week_timelock (chain 67). Complements the
+requirement test (that one pins the >=1wk floor at config bind; this pins enforcement at execute).
+
 ### [BLOCKED+PINNED] Foreign-distribution-config proposal registered -> votable-but-unsealable genesis stall
 Vector: register binds a votable proposal to THIS genesis's distribution config (lib.rs:459, the proposal
 header.config[8..40] must == config.distribution_config). Without it, a proposal created under a DIFFERENT

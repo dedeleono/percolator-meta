@@ -3975,6 +3975,81 @@ fn e2e_attacker_cannot_lower_the_reserve_without_squads() {
     assert_eq!(rd(&svm), (2, 1), "reserve unchanged — the surplus stays protected from whale draining");
 }
 
+// TIMELOCK ENFORCEMENT (the 1-week delay is REAL, not cosmetic): twap init_config requires the bound
+// Squads multisig's time_lock >= 1 week (twap_config_rejects_a_multisig_below_the_one_week_timelock pins
+// that REQUIREMENT). This pins that Squads v4 actually ENFORCES it: a fully-created+approved DAO action
+// (here set_reserve) cannot be executed until the timelock elapses, and only lands afterwards. Without
+// enforcement the requirement would be worthless — a rushed/compromised multisig could instantly flip the
+// reserve to 0 (re-exposing the whole surplus to whale draining), shutdown-sweep the holding, or repoint
+// the coin_sink, with no week-long window for depositors/voters to react and exit. All six binaries are
+// loaded via setup_handoff; this drives the real Squads program end-to-end.
+#[test]
+fn e2e_a_squads_action_cannot_execute_before_the_one_week_timelock() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+
+    let rd = |svm: &LiteSVM| {
+        let d = svm.get_account(&bk.book).unwrap().data;
+        (u128::from_le_bytes(d[200..216].try_into().unwrap()), u128::from_le_bytes(d[216..232].try_into().unwrap()))
+    };
+    let reserve_before = rd(&svm);
+
+    // The DAO proposes set_reserve -> 7/3 and approves it (tx index 6), but does NOT yet wait out the
+    // timelock.
+    let idx = 6u64;
+    let msg = build_set_reserve_message(&env.squads_vault, &env.twap_cfg, &bk.book, 7, 3);
+    let remaining = vec![
+        AccountMeta::new_readonly(env.squads_vault, false), AccountMeta::new(bk.book, false),
+        AccountMeta::new_readonly(env.twap_cfg, false), AccountMeta::new_readonly(twap_id(), false),
+    ];
+    let transaction = transaction_pda(&env.squads, &env.multisig, idx);
+    let proposal = proposal_pda(&env.squads, &env.multisig, idx);
+    let send_sq = |svm: &mut LiteSVM, ix: Instruction| -> Result<(), String> {
+        svm.expire_blockhash();
+        let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, &env.dao], bh))
+            .map(|_| ()).map_err(|e| format!("{:?}", e))
+    };
+    send_sq(&mut svm, vault_transaction_create_ix(&env.squads, &env.multisig, &transaction, &env.dao.pubkey(), &msg)).expect("create vault tx");
+    send_sq(&mut svm, proposal_create_ix(&env.squads, &env.multisig, &proposal, &env.dao.pubkey(), idx)).expect("create proposal");
+    send_sq(&mut svm, proposal_approve_ix(&env.squads, &env.multisig, &proposal, &env.dao.pubkey())).expect("approve");
+
+    let exec = |svm: &mut LiteSVM| -> Result<(), String> {
+        svm.expire_blockhash();
+        let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(
+            &[vault_transaction_execute_ix(&env.squads, &env.multisig, &proposal, &transaction, &env.dao.pubkey(), &remaining)],
+            Some(&payer.pubkey()), &[&payer, &env.dao], bh,
+        )).map(|_| ()).map_err(|e| format!("{:?}", e))
+    };
+
+    // PREMATURE: approved but the week has not elapsed -> Squads refuses to execute.
+    assert!(exec(&mut svm).is_err(), "an approved action must NOT execute before the 1-week timelock elapses");
+    assert_eq!(rd(&svm), reserve_before, "reserve unchanged — the timelock held the action back");
+
+    // Even just short of the week it still cannot execute.
+    let mut clock = svm.get_sysvar::<Clock>();
+    clock.unix_timestamp += i64::from(TIMELOCK_1_WEEK_SECS) - 60;
+    svm.set_sysvar::<Clock>(&clock);
+    assert!(exec(&mut svm).is_err(), "still locked one minute before the week is up");
+    assert_eq!(rd(&svm), reserve_before, "reserve still unchanged just shy of the timelock");
+
+    // Past the full week: the SAME approved action now executes and lands.
+    let mut clock = svm.get_sysvar::<Clock>();
+    clock.unix_timestamp += 120;
+    svm.set_sysvar::<Clock>(&clock);
+    exec(&mut svm).expect("after the timelock the approved action executes");
+    assert_eq!(rd(&svm), (7, 3), "reserve applied only AFTER the 1-week timelock");
+}
+
 // RECONFIGURE AUTH (missing-signer bypass): the DAO's burn-share (surplus_buy_burn_bps) is changed
 // by reconfigure, Squads-vault-gated behind the 1-week timelock. Unlike the other mutators it does
 // NOT call require_squads_vault — it inlines the gate, so it must check BOTH that the squads_vault
