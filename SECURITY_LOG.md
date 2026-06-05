@@ -58,6 +58,20 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — insurance_withdraw principal decrement blocks repeated-withdraw drain] EO.
+Continuing the EM anti-mask replay hunt on the SHARED percolator insurance vault. Candidate: `position.principal
+-= amount` (subledger lib.rs:1128) — the per-withdraw decrement (distinct from CZ's amount-cap and DR's
+outstanding decrement). If removed, a depositor with principal P could withdraw P REPEATEDLY (each time amount=P
+<= principal=P, since principal never decreases), draining co-depositors' funds from the shared vault — and the
+CZ cap (`amount > principal`) would NOT catch it (amount always == principal). Mutated :1128 to `-= 0` -> FIVE
+tests FAIL: `splitting_an_impaired_exit_cannot_beat_the_pro_rata_or_drain_a_codepositor` (the explicit anti-mask
+— a co-depositor's capital is present in the shared vault, so a repeated withdraw WOULD drain it absent the
+decrement), `cannot_redeposit_into_a_retired_position`, `a_fully_impaired_exit_still_retires_the_position...`,
+`principal_only_owner_exit_returns_funds_and_guards`, `cannot_vote_with_a_withdrawn_position`. Strongly
+mutation-SHARP and genuinely anti-masked (the `..._drain_a_codepositor` test funds another depositor whose
+principal exceeds the replay). Verdict: BLOCKED, no gap. The subledger withdraw accounting (principal :1128 EO,
+outstanding :1127 DR, over-withdraw cap CZ) is fully anti-mask-verified. No code/test change.
+
 ### [VERIFIED SHARP — replay re-audit (claim slot-zeroing; retract ballot-clearing) post-EM] EN.
 After EM (a transfer-insufficiency-MASKED replay guard slipped through), re-audited the sibling replay/double-spend
 guards with the anti-mask lens — could a "replay rejected" test be masked by the shared pool being drained below
