@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — clearing-math overflow / whole-book settle-DOS via usd*coin leg] DU.
+HOSTILE vector: the uniform-price clearing computes `coin_i = mul_div_floor(usd_i, cm, um)` (lib.rs:1496),
+which is `usd_i.checked_mul(cm).checked_div(um)`. `checked_mul` REVERTS on overflow (no silent wrap) — so if
+a marginal bid's COIN leg `cm` and a filled bid's `usd_i` are both large enough that `usd_i*cm > u128::MAX`,
+`execute` reverts EVERY time -> the whole book can never settle -> permanent buy/burn DOS with everyone's COIN
+locked. Safe ONLY if both legs <= u64::MAX: `(2^64-1)^2 = 2^128 - 2^65 + 1 < u128::MAX`, no overflow. That
+guarantee is the finding-AC u64 leg bound in place_bid: `as_u64(coin_atoms)?` (load-bearing for the transfer)
+AND the BARE `let _ = as_u64(usdc_atoms)?` (:1115) whose SOLE purpose is overflow-safety. Suspected the bare
+usdc bound might be uncovered. Mutated :1115 to `let _ = usdc_atoms` (drop the bound), build-sbf -> TWO tests
+FAIL: `e2e_place_bid_rejects_a_leg_above_u64` (part (b), usd leg = 2^64 rejected pre-escrow) AND
+`e2e_full_book_of_worst_case_rates_cannot_dos_execute` (the exact settle-DOS scenario). Mutation-SHARP,
+doubly-covered. Also confirmed the floor rounding direction is conservative (coin_i rounded DOWN => refund =
+c - coin_i >= 0, checked_sub never underflows; protocol never burns more COIN than the bidder escrowed; the
+sub-atom dust favors the bidder, not a LOF). Restored -> 73 chain green. Verdict: BLOCKED, no gap. No
+code/test change.
+
 ### [VERIFIED SHARP — place_bid book monopolization via duplicate bids (DOS)] DT.
 HOSTILE vector: a single attacker fills all 32 book slots with their own cheap bids to lock honest sellers
 out of the uniform-price auction; the strictly-better-eviction rule would then PROTECT the squat (an honest
