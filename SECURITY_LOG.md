@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — distribution seal_winner authority pair NOT masked (anti-mask sweep)] FP.
+Third signer+key pair in the FN/FO anti-mask sweep: distribution `seal_winner` gates the seal on BOTH
+`!authority.is_signer` (lib.rs:460) and `*authority.key != config.authority` (:467). Risk (the FN failure
+mode): a test naming the real authority WITHOUT its signature trips is_signer (:460), masking the key bind
+(:467) — which would let a non-authority seal a loser proposal and claim the whole COIN supply. Checked: NOT
+masked. The tests split the two attacks cleanly — `seal_rejects_naming_the_authority_without_its_signature`
+names the REAL authority NOT signing (pins :460), while the imposter-seal in `seal_then_recipients_claim_their_entries`
+(env.seal by an IMPOSTER keypair that DOES sign) makes is_signer pass so ONLY :467 rejects. Mutated :467 to
+`if false && ...` -> `seal_then_recipients_claim_their_entries` FAILS = mutation-SHARP (the signing imposter is
+the sole-decider case for the key bind). seal_winner is reachable only via gv trigger (the gv config PDA signs
+via invoke_signed), so the direct-call attacker can neither sign as the gv PDA (fails :460 if named) nor match
+config.authority with their own key (fails :467 if signing) — both covered. NET of the signer+key anti-mask
+sweep: set_vote_lock MASKED -> fixed (FN); require_squads_vault (FO) + seal_winner (FP) per-clause sharp. The
+masked case was the lone outlier; the chain.rs/distribution tests otherwise use single-violation tests per
+clause. Verdict: BLOCKED, no gap. No code/test change.
+
 ### [VERIFIED SHARP — require_squads_vault key binding NOT masked (anti-mask of the keystone Squads gate)] FO.
 After FN (a signer+key-binding pair where the test passed a NON-signing key and masked the key check), audited
 the keystone gate for the SAME failure mode: `require_squads_vault` (twap lib.rs:840) — used by reconfigure /
