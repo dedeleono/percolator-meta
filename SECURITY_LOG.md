@@ -58,6 +58,19 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED — donate-to-holding budget manipulation is a non-attack, no new test] CH.
+The holding is a known twap_authority-owned ATA (pinned book.holding, execute lib.rs:70), and execute reads
+`budget = holding.amount` (:137) — so anyone CAN transfer USD into it to inflate the buyback budget. Probed
+for honest-party harm: NONE. A larger budget fills more bids and (since the marginal moves to a lower-rate
+bid) LOWERS the clearing price P*, so bidders give LESS coin per USD and COIN holders get MORE deflation —
+all funded by the DONOR's self-inflicted loss. A bidder-donor inflating the budget to clear their own
+sub-marginal bid pays more USD donation than the USD they receive for their coin (circular, self-harming).
+The budget is bounded by the actual balance (no over-spend), and surplus left unspent rolls over / is
+shutdown-recoverable by the DAO (BP). Also: `percolator_vault == holding` aliasing is IMPOSSIBLE — percolator
+requires percolator_vault to be the canonical vault_authority-owned insurance vault, while holding is
+twap_authority-owned (owner mismatch). Verdict: BLOCKED (non-attack: donor self-harm, no honest LOF; no
+aliasing). No code/test change.
+
 ### [BLOCKED — health check + trigger account-binding completion, no new test] CG.
 Health check: 166 GREEN (subledger 50, gv 17, distribution 22, twap 77), all four build-sbf clean, no drift.
 Completed the trigger account-binding picture (with CE/CF): all THREE distribution accounts trigger forwards
