@@ -434,6 +434,26 @@ fn burn_unclaimed_is_rejected_during_the_claim_window() {
     env.burn_unclaimed().expect("burn allowed once the window has closed");
 }
 
+// PREMATURE BURN BEFORE SEAL (permissionless vault-torch DOS): burn_unclaimed is permissionless and refuses
+// to run until config.is_sealed() (lib.rs). Before the genesis vote seals a winner the vault is FUNDED but
+// undistributed, so a premature burn would destroy the ENTIRE supply and NO recipient could ever be paid.
+// The is_sealed() check is the SOLE guard here: before any seal config.seal_slot == 0, so
+// window_end = seal_slot + claim_window == claim_window — meaning once the genesis runs past claim_window
+// slots the window-gate (clock < window_end) no longer blocks a burn, and only is_sealed() stands between an
+// attacker and the funded vault. The during-window test pins the window gate; this pins the seal gate.
+#[test]
+fn burn_unclaimed_before_the_genesis_seals_cannot_torch_the_vault() {
+    let mut env = Env::new(100, 50); // supply 100, claim window 50; vault funded, NOT yet sealed
+    assert_eq!(env.token_amount(&env.vault.clone()), 100, "vault funded with the full supply, undistributed");
+
+    // Warp PAST claim_window so the window-gate would NOT block a burn — isolating the is_sealed() guard.
+    env.set_slot(60);
+
+    // ATTACK: a permissionless cranker burns the unclaimed vault BEFORE a winner is sealed.
+    assert!(env.burn_unclaimed().is_err(), "burn_unclaimed must be refused until a winner is sealed");
+    assert_eq!(env.token_amount(&env.vault.clone()), 100, "vault intact — the undistributed supply was not torched");
+}
+
 #[test]
 fn append_cannot_exceed_total_supply() {
     let mut env = Env::new(100, 1_000_000);

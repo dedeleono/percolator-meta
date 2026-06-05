@@ -31,6 +31,21 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Premature burn_unclaimed before the seal would torch the funded vault (permissionless DOS)
+Vector: burn_unclaimed is PERMISSIONLESS and refuses to run until config.is_sealed() (lib.rs:590). Before the
+genesis vote seals a winner the distribution vault is FUNDED with the full supply but undistributed, so a
+premature burn would destroy the ENTIRE supply and NO recipient could ever be paid — a catastrophic
+attacker-reachable DOS/LOF. The is_sealed() check is the SOLE guard here: before any seal config.seal_slot ==
+0, so window_end = seal_slot + claim_window == claim_window; once the genesis runs PAST claim_window slots
+the window-gate (clock < window_end) no longer blocks a burn, leaving only is_sealed() between an attacker
+and the vault. (The during-window burn test pins the window gate; this pins the seal gate, isolated by
+warping past claim_window.)
+Verified BLOCKED + mutation-SHARP: config funded 100, NOT sealed, warp to slot 60 (> window 50); a
+permissionless burn_unclaimed is refused, vault stays 100. Neutering `if !config.is_sealed()` at :590 ->
+`if false` + rebuilding the .so lets the premature burn pass the (already-elapsed) window gate and torch the
+vault (test fails).
+Test KEPT: burn_unclaimed_before_the_genesis_seals_cannot_torch_the_vault (distribution integration 16).
+
 ### [BLOCKED+PINNED] Distribution init_config rejects a zero claim window (recipient-LOF DOS)
 Vector: init_config rejects claim_window_slots == 0 || total_supply == 0 (lib.rs:276). A ZERO claim window
 is catastrophic — window_end = seal_slot + 0 = seal_slot, so claim (clock < window_end) is refused the
