@@ -49,6 +49,30 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED — terminal-state/reinit layer completion, no new test] BM.
+Following BL (insurance re-deposit into a retired position), swept the rest of the terminal-state/reinit
+layer across all programs; remaining members are pinned, no fresh gap:
+ - gv post-seal capital recovery (LOF): a WINNING voter is vote-locked; they must be able to RETRACT even
+   after the winner is sealed (vote line 553 blocks only VOTE_BACK when pv.executed, NOT retract) to clear
+   the subledger lock and withdraw — else their principal is frozen forever. Pinned by
+   `winning_voter_can_retract_and_exit_after_finalize` (insurance_percolator.rs:1790).
+ - distribution append-after-seal (LOF): once a proposal seals, `append_entries` refuses (header.sealed ||
+   config.is_sealed(), lib.rs:420) so the creator cannot inject a self-dealing entry into the unallocated
+   headroom (e.g. 40 of 100) and grab COIN that was meant to be burned as deflation. Pinned comprehensively
+   by `append_to_a_sealed_winner_cannot_grab_the_unallocated_headroom` (distribution.rs:570): append
+   rejected, no phantom entry, honest 60 paid, 40 burned not captured.
+ - distribution config reinit: `a_sealed_config_cannot_be_reinitialized...` (311) + the runtime
+   allocate-on-program-owned backstop (documented doubly-defended).
+ - gv re-trigger of the SAME executed proposal blocked by pv.executed; a SECOND proposal resealing blocked
+   by distribution is_sealed — `a_second_proposal_cannot_reseal_after_a_winner_is_sealed` (728).
+ - position/book/proposal/config reinit all guarded by data_len()!=0 / entry_count==0 + lamport-prefund
+   tolerance (finding AI); BL pinned the insurance position re-deposit.
+DELIBERATELY NOT PINNED (marginal): the OWN-VAULT process_deposit has the SAME terminal `if p.withdrawn`
+guard (lib.rs:517) as insurance, but own-vault pools are not voted on, so a re-deposit into a retired
+own-vault position is pure SELF-HARM (stuck own funds, no systemic quorum drag — the systemic effect is
+exactly what made BL worth pinning). Per the KEEP/DELETE rule it stays unpinned. Verdict: BLOCKED;
+terminal-state/reinit layer saturated. No code/test change.
+
 ### [BLOCKED+PINNED] BL. Re-deposit into a RETIRED insurance position (stuck funds + systemic quorum drag)
 Vector: a position PDA is f(pool, owner), so after a full exit (principal 0, withdrawn=true) the owner
 keeps the SAME terminal PDA. `process_insurance_deposit`'s position-load guard rejects a re-deposit via
