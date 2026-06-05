@@ -58,6 +58,16 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — claim winning-proposal binding] DL.
+Mutation-audited distribution claim's winning-proposal binding `config.sealed_proposal != *proposal_account.key`
+(lib.rs:518) — only the SEALED WINNER pays out, so a LOSING proposal (created under the same dist config,
+attacker as recipient) cannot drain the shared vault (winner-take-all supply, BB-class). Dropped just the
+sealed_proposal half (kept `!is_sealed()`), build-sbf -> `a_losing_proposal_cannot_claim_the_winners_vault`
+FAILS (the loser claims). So the load-bearing half is mutation-sharp. The sibling `!is_sealed()` half is
+DOUBLY-DEFENDED: before any seal, config.sealed_proposal == Pubkey::default(), which != any real proposal,
+so claiming pre-seal is rejected by the sealed_proposal binding regardless — funds safe either way. Restored
+-> 18 distribution green. Verdict: BLOCKED, no gap. No code/test change.
+
 ### [VERIFIED SHARP — burn_unclaimed premature-burn window guard] DK.
 Mutation-audited distribution burn_unclaimed's window guard `clock.slot < window_end -> reject` (lib.rs:601)
 — the CROSS-USER anti-griefing guard: burn_unclaimed is PERMISSIONLESS, so without it a griefer could torch
