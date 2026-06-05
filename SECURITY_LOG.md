@@ -58,6 +58,17 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — execute holding key binding (the CS sibling, done RIGHT)] CT.
+Applied the CS lens to execute's `holding` (same dual structure: key binding `holding.key != book.holding`
++ owner check `h.owner != expected_auth`, lib.rs:1352). Dropping the key binding -> ONE test FAILS:
+`e2e_execute_pulls_only_burn_share_and_ratchets_principal` (chain.rs:3339, "execute must reject a holding
+other than the book's pinned one"). Why it's SHARP (unlike CS): that test's `rogue_holding` is set
+twap_authority-OWNED (:3337) — so the owner check PASSES and ONLY the key binding can reject it. That is
+the correct way to isolate a key binding from its sibling owner check, exactly what CS's settlement_usd
+test was NOT doing (cranker-owned substitute -> masked). So the holding anti-DOS key binding is genuinely
+mutation-sharp; no gap. (Contrast: holding test = owner-passing substitute = sharp; settlement_usd test
+was owner-failing = blind, now fixed in CS.) Verdict: BLOCKED, no gap. No code/test change.
+
 ### [COVERAGE GAP FIXED] CS. execute settlement_usd KEY binding was mutation-BLIND (masked by the owner check)
 Mutation-audited execute's settlement_usd validation. It has TWO checks: the KEY binding `settlement_usd ==
 book.settlement_usd` (lib.rs:1321) and the OWNER check `su.owner == expected_escrow` (book_escrow PDA,
