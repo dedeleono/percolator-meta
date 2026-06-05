@@ -31,6 +31,21 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED+PINNED] Settle with a zero-COIN marginal: never pay USD for 0 COIN (overpay LOF)
+Vector: in a real SETTLE (total_coin > 0) the marginal bid can get a residual budget so small that
+coin_i = floor(usd_i * cm/um) == 0. execute treats any coin_i == 0 fill as UNFILLED (usd_owed -> 0, full
+COIN refund). Without the `coin_i > 0` half of the fill guard, that marginal bidder is credited
+usd_owed = residual (free USD) AND a full COIN refund — receiving USD while handing over 0 COIN and keeping
+all of it. (Generalizes: with a low P* any 0-rounding winner would be paid for nothing.)
+e2e_roll_with_a_marginal_zero_coin_fill pins the all-zero ROLL case (total_coin==0 -> roll); this pins the
+zero-coin marginal INSIDE a real settle, which was untested.
+Verified BLOCKED + mutation-SHARP: alice fills 399_600 of the 400k budget; bob (marginal, rate 1/500) gets
+the 400-USD residual -> coin_i = floor(400/500) = 0 -> unfilled. After the settle, settlement_usd == 399_600
+(NOT 400_000 — bob's residual not spent), holding == 400 (rolled over), and bob's claim pays 0 USD + refunds
+his full 1 COIN. Dropping `&& coin_i > 0` from the fill condition + rebuilding the .so credits bob the 400
+residual USD for 0 COIN (test fails).
+Test KEPT: e2e_settle_with_a_zero_coin_marginal_pays_no_usd_for_zero_coin (chain 72).
+
 ### [BLOCKED+PINNED] Claim reopen-scan: a partial claim must keep the book SETTLED (no mid-drain corruption)
 Vector: claim flips BK_STATE back to OPEN only when NO slot remains occupied (lib.rs:1639, the `if !any`
 scan after zeroing the claimed slot). If a PARTIAL claim reopened the book prematurely, a fresh place_bid

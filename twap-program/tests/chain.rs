@@ -4924,6 +4924,49 @@ fn e2e_roll_with_a_marginal_zero_coin_fill_leaves_no_phantom_claim() {
     let _ = alice;
 }
 
+// SETTLE WITH A ZERO-COIN MARGINAL (never pay USD for 0 COIN, LOF): in a real settle (total_coin > 0) the
+// marginal bid can receive a residual budget so small that coin_i = floor(usd_i * cm/um) == 0. execute
+// treats any coin_i == 0 fill as UNFILLED (usd_owed -> 0, full COIN refund). Without that `coin_i > 0`
+// guard the marginal bidder would be credited usd_owed = residual (free USD) AND a full COIN refund — i.e.
+// receive USD while handing over 0 COIN and keeping all of it. e2e_roll_with_a_marginal_zero_coin_fill pins
+// the all-zero ROLL case; this pins the zero-coin marginal inside a real SETTLE.
+#[test]
+fn e2e_settle_with_a_zero_coin_marginal_pays_no_usd_for_zero_coin() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer); // surplus 500k -> budget 400k (80%)
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0); // reserve 0/1
+
+    // alice (high rate) fills 399_600 of the 400k budget; bob (low rate, the marginal) gets the remaining
+    // 400 USD residual, which at the marginal price (P* = bob's 1/500) buys floor(400/500) = 0 COIN.
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    let (bob, b_src, b_usd) = new_bidder(&mut svm, &payer, &env, 1);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 399_600, None)).expect("alice bid");
+    send(&mut svm, &[&bob], place_bid_ix(&bob.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &b_src, &b_usd, &env.coin_mint, &env.collateral_mint, 1, 500, None)).expect("bob bid");
+    let supply_before = mint_supply(&svm, &env.coin_mint); // 400_001
+
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute settles");
+
+    // This IS a settle (alice's COIN bought + burned), but bob's zero-COIN marginal residual was NOT paid.
+    assert!(mint_supply(&svm, &env.coin_mint) < supply_before, "a SETTLE happened — alice's COIN was bought + burned");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 399_600, "only alice's 399_600 USD was spent — NOT bob's residual");
+    assert_eq!(token_amount(&svm, &bk.holding), 400, "bob's 400-USD residual rolled over, unspent (never paid for 0 COIN)");
+
+    // bob claims slot 1: ZERO USD (he sold nothing) and his full 1 COIN back.
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &b_usd, &b_src, 1)).expect("bob claim");
+    assert_eq!(token_amount(&svm, &b_usd), 0, "bob received NO USD for his zero-COIN marginal fill");
+    assert_eq!(token_amount(&svm, &b_src), 1, "bob's full 1 COIN refunded — he gave up nothing");
+    let _ = (alice, bob);
+}
+
 // FUTARCHY -> SQUADS -> TWAP control of buyback-vs-burn: the buy/burn SINK MODE is the DAO's monetary
 // policy, and it must be both settable at init AND CHANGEABLE later — but only through Squads (the
 // futarchy->Squads->twap arm), never the permissionless init_config (a front-runner there could route
