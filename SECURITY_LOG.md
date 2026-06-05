@@ -49,6 +49,26 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [BLOCKED — boundary/arith confirmations, no new test] BF.
+Three more boundaries verified safe + pinned this tick:
+ - vote_weight overflow: `vote_weight(principal, age) = age.ilog2().saturating_mul(principal)`
+   (genesis-vote lib.rs:109) uses SATURATING mul, so log2(age)*principal can never wrap; the quorum +
+   majority checks cast to u128 before `*2` (no overflow); total_cast_weight accumulates via checked_add
+   (an overflowing add reverts the whale's OWN vote, not an exploit). Saturation only caps an absurd
+   weight at u64::MAX = legitimate dominance, never a manipulation. (age<2 / principal==0 → 0 weight,
+   the too-recent/unfunded guard, pinned by a_too_recent_position_cannot_vote_or_pump_the_quorum + co.)
+ - distribution claim/burn window EXACT boundary: claim rejects `slot >= window_end`, burn_unclaimed
+   rejects `slot < window_end` — complementary strict thresholds at the same window_end, so the cutoff is
+   a clean partition (no slot where both run → no claim-vs-burn race that could burn a late claimant's
+   funds; no slot where neither runs). The exact equality IS pinned: `unclaimed_is_burned_after_window`
+   sets slot==window_end(60) and asserts claim REJECTED + burn ALLOWED there; `burn_unclaimed_is_rejected_during_the_claim_window`
+   asserts burn REJECTED at window_end-1(59). A regression of claim's `>=` to `>` (overlap at the cutoff)
+   would be caught.
+ - phantom-capital: insurance_deposit unconditionally resets `start_slot = Clock::slot` on every top-up
+   (subledger lib.rs:153), so fresh capital can't inherit an old hold-time; pinned by
+   `top_up_resets_the_position_start_slot` (2532) + the vote-weight-timing suite.
+Verdict: BLOCKED; weight-arith + window-cutoff + deposit-timing layers saturated, no fresh gap.
+
 ### [BLOCKED — health check + finding-T/recovery confirmations, no new test] BE.
 Full-suite health check: 165 tests GREEN (subledger 49, genesis-vote 17, distribution 22, twap 77), all
 four programs build-sbf clean — matches the checkpoint, no drift. Deep-verified this tick:
