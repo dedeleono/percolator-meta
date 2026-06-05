@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED SHARP — require_squads_vault key binding NOT masked (anti-mask of the keystone Squads gate)] FO.
+After FN (a signer+key-binding pair where the test passed a NON-signing key and masked the key check), audited
+the keystone gate for the SAME failure mode: `require_squads_vault` (twap lib.rs:840) — used by reconfigure /
+set_reserve / set_reserved_floor / set_coin_sink / set_bid_fee / shutdown — does `if !squads_vault.is_signer {
+reject }` (:842) then `if *squads_vault.key != squads_default_vault(config.squads_multisig) { reject }` (:844).
+Risk: a test naming the vault WITHOUT its signature is rejected by is_signer (:842), masking the key bind
+(:844). Checked: NOT masked. The tests deliberately split the two — `e2e_reconfigure_rejects_a_non_signing_or_forged_vault`
+has ATTACK 1 (real vault, NOT signing -> pins :842) and ATTACK 2 (attacker SIGNS as their own key -> is_signer
+passes, ONLY :844 rejects). Mutated :844 to `if false && ...` -> THREE tests FAIL
+(`e2e_attacker_cannot_lower_the_reserve_without_squads`, `e2e_shutdown_sweeps_holding_only_via_squads`,
+`e2e_dao_flips_burn_to_buyback_only_via_squads`), each passing a signing-but-wrong-key vault so :844 is the
+sole decider. Mutation-SHARP, per-clause covered. So the keystone DAO->TWAP gate is well-constructed (single-
+violation tests per clause), in contrast to FN's set_vote_lock where the only self-unlock test tripped
+is_signer first. (Net of the FN/FO sweep of signer+key pairs: subledger set_vote_lock was masked -> fixed FN;
+twap require_squads_vault is per-clause sharp -> FO.) Verdict: BLOCKED, no gap. No code/test change.
+
 ### [GAP FIXED — set_vote_lock vote_authority binding was MASKED (owner self-unlock -> ballot outlives capital)] FN.
 HOSTILE vector (owner self-unlocks a live-voted position to exit while the ballot still counts = finding B,
 ballot outlives capital -> a free, capital-less ballot inflates quorum/majority): set_vote_lock (subledger IX 6)
