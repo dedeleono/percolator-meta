@@ -58,6 +58,24 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [VERIFIED DOUBLY-DEFENDED — execute slab->config binding / fabricated-surplus] DS.
+HOSTILE vector: substitute a fake `market_slab` into twap `execute` whose finding-T insurance offset
+reports a huge value, fabricating a giant `surplus` to over-pull insurance and/or ratchet `reserved_floor`
+to a bogus value. `execute` binds `*market_slab.key != config.market_slab` (lib.rs:1322) as the sole
+config-binding of the slab. Mutated 1322 to `|| false` (drop the binding), build-sbf -> 73 chain PASS:
+mutation-BLIND (no test substitutes a wrong slab). BUT analyzed the attack as DOUBLY-DEFENDED, funds safe
+even with 1322 gone: (1) ATOMIC REVERT — the insurance read (1373), the `reserved_floor += retained` ratchet,
+and the `WithdrawInsuranceLimited` CPI are one `execute` tx; if the CPI fails the whole tx (ratchet included)
+reverts, so no fabricated surplus persists. (2) OPERATOR BINDING at the CPI — the pull requires
+`twap_authority` (PDA derived from `config_account`, :48-52) to be the slab's percolator insurance OPERATOR;
+it operates exactly one market (`config.market_slab`), so a fake slab — or even a second REAL percolator
+market — has a different operator and percolator's `WithdrawInsuranceLimited` rejects the non-operator signer.
+(3) :56 derives `vault_authority` from `market_slab.key`, which percolator validates against the slab.
+=> A faithful end-to-end exploit CANNOT be constructed (no substituted slab survives the real percolator CPI),
+so any "wrong-slab-rejected" test would be MASKED by :56 / the CPI rather than sharply pinning :1322 — the
+CB/CC class (percolator-backstopped, untestable-sharp without a deployed evil market `twap_authority` operates).
+Verdict: BLOCKED (defense-in-depth). No test added (would be masked/marginal per KEEP/DELETE), no code change.
+
 ### [VERIFIED SHARP — insurance_withdraw outstanding decrement (quorum denominator)] DR.
 Mutation-audited subledger `process_insurance_withdraw`'s `pool.outstanding_principal -= amount` (lib.rs:1127)
 — the cross-program integrity guard: genesis-vote's quorum bar `total_voted_principal*2 > outstanding` and
