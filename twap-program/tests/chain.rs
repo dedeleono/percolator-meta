@@ -5658,6 +5658,19 @@ fn e2e_execute_cranker_cannot_redirect_the_spent_usd() {
         "execute must reject a settlement_usd != the book's recorded account");
     assert_eq!(token_amount(&svm, &thief), 0, "no spent USD redirected to the cranker");
 
+    // SHARP for the KEY binding (anti-DOS), isolated from the owner-check above: a substitute that IS
+    // book_escrow-owned (so `su.owner == expected_escrow` PASSES) but is NOT book.settlement_usd. Only the
+    // `settlement_usd == book.settlement_usd` key binding can reject it. Without that binding the spent USD
+    // would be parked in a NON-canonical book_escrow account -> winners claim from the (empty) real
+    // settlement_usd -> claims revert, book never reopens, USD stranded unrecoverably (no twap ix moves a
+    // non-canonical book_escrow account). The cranker-owned `thief` case above is masked by the owner check;
+    // THIS pins the key binding. (Found mutation-blind: dropping the key check left the cranker-owned test green.)
+    let decoy = Pubkey::new_unique();
+    set_token(&mut svm, &decoy, &env.collateral_mint, &bk.book_escrow, 0); // book_escrow-owned, != settlement_usd
+    assert!(send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &decoy, &bk.book_escrow, &bk.coin_escrow, None)).is_err(),
+        "execute must reject a book_escrow-owned settlement_usd that is not the book's recorded one");
+    assert_eq!(token_amount(&svm, &decoy), 0, "no spent USD parked in a non-canonical book_escrow account");
+
     // Honest execute -> the spent USD is parked in the book's real settlement account (claimable by winners).
     send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("honest execute");
     assert_eq!(token_amount(&svm, &bk.settlement_usd), 400_000, "spent USD parked in the book's settlement account");

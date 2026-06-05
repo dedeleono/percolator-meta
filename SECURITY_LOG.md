@@ -58,6 +58,22 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [COVERAGE GAP FIXED] CS. execute settlement_usd KEY binding was mutation-BLIND (masked by the owner check)
+Mutation-audited execute's settlement_usd validation. It has TWO checks: the KEY binding `settlement_usd ==
+book.settlement_usd` (lib.rs:1321) and the OWNER check `su.owner == expected_escrow` (book_escrow PDA,
+:1356). Found: dropping the KEY binding left `e2e_execute_cranker_cannot_redirect_the_spent_usd` GREEN.
+Root cause (3rd CL-class): the test substituted a CRANKER-owned account, which the OWNER check rejects —
+masking the key binding. The two checks defend DIFFERENT things: owner-check = anti-THEFT (can't redirect
+to a cranker-controlled account); key-binding = anti-DOS (the spent USD must land in the CANONICAL
+settlement account, so winners can claim it). The masked danger: with the key binding gone, a griefer
+points settlement_usd at a DIFFERENT book_escrow-owned account (owner check passes, cranker can't extract
+it) -> execute parks the USD there -> winners claim from the empty real settlement_usd -> claims revert,
+book never reopens, USD STRANDED unrecoverably (no twap ix moves a non-canonical book_escrow account). FIX:
+added a book_escrow-owned `decoy` substitute (owner check passes) so ONLY the key binding rejects. Mutation
+proof: with the binding the decoy is rejected; dropping :1321 -> the decoy assertion FAILS. Restored -> 73
+chain green. Strengthened existing test (no count change). KEEP. 3rd mutation-blind find (sibling check
+masking a guard that defends a DIFFERENT failure mode — owner-check masks the anti-DOS key binding).
+
 ### [COVERAGE GAP FIXED] CR. gv one-vote-one-proposal guard was mutation-BLIND (masked by a back-out underflow)
 Mutation-audited the one-vote-one-proposal guard `ballot.has_live_ballot() && ballot.voted_proposal !=
 *proposal_account.key -> reject` (lib.rs:612): it forces a voter to RETRACT before backing a different
