@@ -68,7 +68,7 @@ const TWAP_AUTHORITY_SEED: &[u8] = b"market-0-twap";
 const CONFIG_SEED: &[u8] = b"twap_config";
 
 const CONFIG_DISC: [u8; 8] = *b"TWAPCFG1";
-const CONFIG_SIZE: usize = 200;
+const CONFIG_SIZE: usize = 232;
 
 // Default surplus share routed to buy/burn (the rest is retained as insurance).
 const DEFAULT_SURPLUS_BUY_BURN_BPS: u16 = 8_000;
@@ -281,6 +281,8 @@ struct Config {
     squads_multisig: Pubkey,
     /// The winning genesis DAO (metadao futarchy authority).
     metadao_futarchy: Pubkey,
+    /// Share of each round's surplus routed to the buy auction (burn + buyback combined).
+    /// The remainder splits between base-unit savings (below) and insurance growth.
     surplus_buy_burn_bps: u16,
     market_0_domain: u8,
     config_bump: u8,
@@ -291,6 +293,20 @@ struct Config {
     /// by the DAO through a timelock'd Squads `set_reserved_floor`, so a permissionless
     /// crank can never reach principal (closes finding O).
     reserved_floor: u128,
+    /// 4-way surplus economics (DAO-tunable, timelock'd). Each round's surplus splits:
+    ///   auction     = surplus_buy_burn_bps           -> buy COIN; of that, buyback_bps is RETAINED
+    ///                                                   to base_unit_savings_account's COIN sink, the
+    ///                                                   rest is BURNED (deflation).
+    ///   savings     = base_unit_savings_bps          -> withdrawn (tag-57) to base_unit_savings_account
+    ///                                                   in the asset's base unit (collateral/USD).
+    ///   insurance   = 10_000 - auction - savings     -> retained in insurance (ratcheted into the floor).
+    /// buyback_bps <= surplus_buy_burn_bps; surplus_buy_burn_bps + base_unit_savings_bps <= 10_000.
+    /// Defaults: savings 0, buyback 0 (= today's burn-only auction + insurance remainder).
+    base_unit_savings_bps: u16,
+    buyback_bps: u16,
+    /// DAO/futarchy-owned account that receives the savings withdraw (a collateral token account) and,
+    /// in SEND/buyback mode, the bought-back COIN sink. default() when both shares are 0.
+    base_unit_savings_account: Pubkey,
 }
 
 impl Config {
@@ -309,6 +325,9 @@ impl Config {
             config_bump: data[171],
             authority_bump: data[172],
             reserved_floor: u128::from_le_bytes(data[173..189].try_into().unwrap()),
+            base_unit_savings_bps: u16::from_le_bytes(data[189..191].try_into().unwrap()),
+            buyback_bps: u16::from_le_bytes(data[191..193].try_into().unwrap()),
+            base_unit_savings_account: Pubkey::new_from_array(data[193..225].try_into().unwrap()),
         })
     }
 
@@ -324,7 +343,10 @@ impl Config {
         data[171] = self.config_bump;
         data[172] = self.authority_bump;
         data[173..189].copy_from_slice(&self.reserved_floor.to_le_bytes());
-        data[189..CONFIG_SIZE].fill(0);
+        data[189..191].copy_from_slice(&self.base_unit_savings_bps.to_le_bytes());
+        data[191..193].copy_from_slice(&self.buyback_bps.to_le_bytes());
+        data[193..225].copy_from_slice(self.base_unit_savings_account.as_ref());
+        data[225..CONFIG_SIZE].fill(0);
     }
 }
 
@@ -446,12 +468,17 @@ fn process_init_config(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8
         percolator_program: *percolator_program.key,
         squads_multisig: *squads_multisig.key,
         metadao_futarchy: *metadao_futarchy.key,
-        surplus_buy_burn_bps: DEFAULT_SURPLUS_BUY_BURN_BPS,
+        surplus_buy_burn_bps: DEFAULT_SURPLUS_BUY_BURN_BPS, // 80% to the auction (burned by default)
         market_0_domain: 0,
         config_bump,
         authority_bump,
         // No pulls until the DAO sets a real floor via timelock'd set_reserved_floor.
         reserved_floor: u128::MAX,
+        // 4-way economics default: 80% burn / 0% savings / 0% buyback / 20% insurance growth. The DAO
+        // tunes savings + buyback (and their sink accounts) later via timelock'd setters.
+        base_unit_savings_bps: 0,
+        buyback_bps: 0,
+        base_unit_savings_account: Pubkey::default(),
     };
     config.serialize(&mut config_account.try_borrow_mut_data()?);
     Ok(())
@@ -1838,6 +1865,9 @@ mod tests {
             config_bump: 254,
             authority_bump: 251,
             reserved_floor: 123_456_789,
+            base_unit_savings_bps: 1_500,
+            buyback_bps: 2_000,
+            base_unit_savings_account: Pubkey::new_unique(),
         };
         let mut buf = [0u8; CONFIG_SIZE];
         c.serialize(&mut buf);
@@ -1850,5 +1880,8 @@ mod tests {
         assert_eq!(d.authority_bump, 251);
         assert_eq!(d.reserved_floor, 123_456_789);
         assert!(d.surplus_buy_burn_bps < BPS_DENOMINATOR);
+        assert_eq!(d.base_unit_savings_bps, 1_500);
+        assert_eq!(d.buyback_bps, 2_000);
+        assert_eq!(d.base_unit_savings_account, c.base_unit_savings_account);
     }
 }

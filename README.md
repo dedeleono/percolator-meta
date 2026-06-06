@@ -212,6 +212,25 @@ until profits refill it. Principal is never in scope.
 | Surplus (>floor) | Percolator market-0 | market profit | TWAP buy/burn of COIN |
 | Subledger pools (1..N) | per-asset, owner-bound | user deposit | owner-only exit (no DAO authority) |
 
+### 4-way surplus economics (DAO-tunable, timelock'd)
+
+Each round's surplus (above the principal floor) splits four ways — DAO-set bps shares, reconfigured only
+through the 1-week Squads timelock, asset-agnostic via the consolidated tag-57 `WithdrawInsuranceAsset`.
+**Defaults: 80% burn / 0% buyback / 0% base-unit savings / 20% insurance growth** (= today's behaviour).
+
+1. **Burn** (default 80%) — staged as the auction budget; the bought COIN is **burned** (deflation).
+2. **Buyback** (default 0%) — also staged as the auction budget; of the bought COIN, the buyback fraction
+   is **retained** to a configured COIN sink account (recycled to governance, not burned).
+3. **Base-unit savings** (default 0%) — withdrawn (tag-57) to a DAO/futarchy-owned SPL account in the
+   asset's **base unit** (USD/collateral), held as cash savings.
+4. **Insurance growth** (= 10_000 − burn − buyback − savings, default 20%) — retained in insurance,
+   ratcheted into the principal counter (compounds; stays at risk, never pulled).
+
+The DAO configures the **sink accounts and the fraction to each** (the buyback COIN sink and the base-unit
+savings account are admin-set, like the existing `coin_sink`); `execute` validates the shares sum to 100%
+and routes each. **Status:** Config carries the four shares + the savings sink (defaults above, green);
+the `execute`/settle routing (savings withdraw + bought-COIN burn/buyback split) is the next slice.
+
 ---
 
 ## Programs
