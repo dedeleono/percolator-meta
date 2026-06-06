@@ -473,17 +473,13 @@ fn process_reconfigure(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8
     if new_bps > BPS_DENOMINATOR {
         return Err(ProgramError::InvalidInstructionData);
     }
-    if !squads_vault.is_signer {
-        return Err(ProgramError::MissingRequiredSignature);
-    }
     if config_account.owner != program_id {
         return Err(ProgramError::IllegalOwner);
     }
     let mut config = Config::deserialize(&config_account.try_borrow_data()?)?;
-    // The signer must be the default vault PDA of the configured Squads multisig.
-    if *squads_vault.key != squads_default_vault(&config.squads_multisig) {
-        return Err(ProgramError::IllegalOwner);
-    }
+    // Canonical DAO gate (finding IE): use require_squads_vault so the burn-bps setter cannot
+    // diverge from the gate every other setter uses.
+    require_squads_vault(squads_vault, &config)?;
     config.surplus_buy_burn_bps = new_bps;
     config.serialize(&mut config_account.try_borrow_mut_data()?);
     Ok(())
@@ -506,15 +502,24 @@ fn process_set_reserved_floor(program_id: &Pubkey, accounts: &[AccountInfo], dat
         return Err(ProgramError::InvalidInstructionData);
     }
     let new_floor = u128::from_le_bytes(data.try_into().unwrap());
-    if !squads_vault.is_signer {
-        return Err(ProgramError::MissingRequiredSignature);
-    }
     if config_account.owner != program_id {
         return Err(ProgramError::IllegalOwner);
     }
     let mut config = Config::deserialize(&config_account.try_borrow_data()?)?;
-    if *squads_vault.key != squads_default_vault(&config.squads_multisig) {
-        return Err(ProgramError::IllegalOwner);
+    // Canonical DAO gate (finding IE): use require_squads_vault so the floor setter — the
+    // principal-drain guard — can never diverge from the gate the other setters use.
+    require_squads_vault(squads_vault, &config)?;
+    // Monotonic after the initial set (finding II): once a REAL floor is set (i.e. it is no longer the
+    // u128::MAX "unset" sentinel), it can only ever RISE. This enforces README Safety §5 ("the protected
+    // principal only ever grows; principal is never in scope") ON-CHAIN: post-handoff, depositor exits
+    // are closed (finding S), so the §3 "exit during the timelock window" backstop no longer protects
+    // them — without this, a captured/malicious DAO could lower the floor (even via a timelock'd Squads
+    // execute) and drain the now-locked depositor principal as "surplus" through execute -> buy-burn.
+    // The single allowed decrease is the initial MAX -> principal set at handoff. To RETURN principal,
+    // the DAO re-grants the subledger operator and depositors exit (the documented recovery), never by
+    // lowering the floor into principal.
+    if config.reserved_floor != u128::MAX && new_floor < config.reserved_floor {
+        return Err(ProgramError::InvalidArgument);
     }
     config.reserved_floor = new_floor;
     config.serialize(&mut config_account.try_borrow_mut_data()?);

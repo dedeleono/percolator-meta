@@ -272,13 +272,81 @@ fn with_surplus_policy_returns_yield_pro_rata() {
     mint_to(&mut env.svm, &clone_kp(&env.payer), &env.mint, &auth, &vault, 50); // balance 150
     assert_eq!(env.token_amount(&vault), 150);
 
-    // With-surplus: pro-rata against the live balance. alice 150*60/100 = 90.
+    // With-surplus, share-based: ~pro-rata against the live balance (both deposited before the
+    // surplus, so shares ∝ principal). alice ~150*60/100 = 90, minus 1 unit of virtual-offset dust.
     env.send(&[withdraw_ix(&pool, &alice.pubkey(), &alice_ata, &vault)], &[&alice]).unwrap();
-    assert_eq!(env.token_amount(&alice_ata), 90, "alice gets principal + surplus share");
-    // bob now: balance 60, outstanding 40 -> 60*40/40 = 60.
+    assert_eq!(env.token_amount(&alice_ata), 89, "alice gets principal + surplus share (1 dust to the inflation offset)");
+    // bob now: ~60.
     env.send(&[withdraw_ix(&pool, &bob.pubkey(), &bob_ata, &vault)], &[&bob]).unwrap();
     assert_eq!(env.token_amount(&bob_ata), 60, "bob gets the rest");
-    assert_eq!(env.token_amount(&vault), 0, "surplus fully distributed");
+    assert_eq!(env.token_amount(&vault), 1, "1 unit of dust retained by the virtual-offset (inflation defense)");
+}
+
+// TENURE-FAIRNESS (finding HT): the branch claims (lib.rs) POLICY_WITH_SURPLUS is SHARE-based so a
+// LATE depositor cannot claim surplus that accrued before it joined. The INSURANCE path honours that
+// (shares), but the OWN-VAULT path used pro-rata-by-principal, so a late depositor captured a pro-rata
+// slice of the PRE-EXISTING surplus — an LOF for the early depositor. Shares must be applied to
+// own-vault WITH_SURPLUS too: a deposit priced by the live balance can only redeem surplus accrued
+// during its own tenure.
+#[test]
+fn with_surplus_late_depositor_cannot_capture_pre_existing_surplus() {
+    let mut env = Env::new();
+    let asset_id = 7;
+    let pool = pool_pda(&env.mint, asset_id);
+    let vault = create_token_account(&mut env.svm, &clone_kp(&env.payer), &env.mint, &pool);
+    env.send(&[init_pool_ix(&env, &pool, &vault, asset_id, 1)], &[]).expect("init pool"); // WITH_SURPLUS
+
+    // Alice is the sole depositor while a 100 surplus accrues (balance 100 -> 200).
+    let (alice, alice_ata) = new_depositor(&mut env, 100);
+    env.send(&[deposit_ix(&env, &pool, &alice.pubkey(), &alice_ata, &vault, 100)], &[&alice]).unwrap();
+    let auth = clone_kp(&env.mint_authority);
+    mint_to(&mut env.svm, &clone_kp(&env.payer), &env.mint, &auth, &vault, 100);
+    assert_eq!(env.token_amount(&vault), 200);
+
+    // BOB joins LATE (after the surplus already exists).
+    let (bob, bob_ata) = new_depositor(&mut env, 100);
+    env.send(&[deposit_ix(&env, &pool, &bob.pubkey(), &bob_ata, &vault, 100)], &[&bob]).unwrap();
+
+    // Alice must keep her FULL pre-bob surplus: 100 principal + 100 surplus = 200. (Pro-rata would
+    // give her only 300*100/200 = 150, letting the late bob capture 50 of her surplus.)
+    env.send(&[withdraw_ix(&pool, &alice.pubkey(), &alice_ata, &vault)], &[&alice]).unwrap();
+    assert_eq!(env.token_amount(&alice_ata), 199, "alice keeps her full pre-bob surplus (1 dust to the inflation offset); the late bob cannot capture it");
+    // Bob gets only his principal (no surplus capture) — the 1 dust went to the virtual offset, NOT bob.
+    env.send(&[withdraw_ix(&pool, &bob.pubkey(), &bob_ata, &vault)], &[&bob]).unwrap();
+    assert_eq!(env.token_amount(&bob_ata), 100, "the late depositor redeems only its own-tenure surplus (none here)");
+}
+
+// FIRST-DEPOSITOR INFLATION ATTACK (finding HU): an own-vault pool's vault is a plain SPL token
+// account ANYONE can donate into. A 1-atom first depositor donates to inflate the share price and
+// skim a later depositor's rounding. The VIRTUAL_SHARES offset must bound this so the attacker can
+// never extract more than it put in (deposit + donation).
+#[test]
+fn first_depositor_inflation_attack_cannot_skim_a_later_depositor() {
+    let mut env = Env::new();
+    let asset_id = 9;
+    let pool = pool_pda(&env.mint, asset_id);
+    let vault = create_token_account(&mut env.svm, &clone_kp(&env.payer), &env.mint, &pool);
+    env.send(&[init_pool_ix(&env, &pool, &vault, asset_id, 1)], &[]).expect("init pool"); // WITH_SURPLUS
+
+    // Attacker is the FIRST depositor with 1 atom, then DONATES 3_000_000 directly into the vault.
+    let (attacker, attacker_ata) = new_depositor(&mut env, 1);
+    env.send(&[deposit_ix(&env, &pool, &attacker.pubkey(), &attacker_ata, &vault, 1)], &[&attacker]).unwrap();
+    let donation = 3_000_000u64;
+    set_token_amount(&mut env.svm, &vault, 1 + donation); // inflate the share price
+    // Victim deposits.
+    let victim_deposit = 4_000_000u64;
+    let (victim, victim_ata) = new_depositor(&mut env, victim_deposit);
+    env.send(&[deposit_ix(&env, &pool, &victim.pubkey(), &victim_ata, &vault, victim_deposit)], &[&victim]).unwrap();
+
+    // Attacker withdraws — must NOT profit: out <= (1 deposited + donation). Without the offset the
+    // attacker would skim the victim's rounding (out > in).
+    env.send(&[withdraw_ix(&pool, &attacker.pubkey(), &attacker_ata, &vault)], &[&attacker]).unwrap();
+    let attacker_out = env.token_amount(&attacker_ata);
+    assert!(attacker_out <= 1 + donation, "inflation attacker cannot extract more than deposit+donation: {attacker_out}");
+    // Victim recovers ~its principal (not materially skimmed).
+    env.send(&[withdraw_ix(&pool, &victim.pubkey(), &victim_ata, &vault)], &[&victim]).unwrap();
+    let victim_out = env.token_amount(&victim_ata);
+    assert!(victim_out >= victim_deposit - 10, "victim recovers ~its principal, not skimmed: {victim_out}");
 }
 
 fn set_token_amount(svm: &mut LiteSVM, account: &Pubkey, amount: u64) {

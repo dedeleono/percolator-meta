@@ -237,6 +237,51 @@ impl Env {
         self.send(&[ix], &[])
     }
 
+    /// init_config but passing an arbitrary `prog` as the distribution_program AND an
+    /// arbitrary `dist` as the distribution_config — to prove gv refuses to bind a genesis
+    /// to a NON-CANONICAL distribution program (anti front-run squat, the gv dual of HK).
+    fn init_gv_with_prog_and_dist(&mut self, prog: Pubkey, dist: Pubkey) -> Result<(), String> {
+        let dummy = Pubkey::new_unique();
+        let ix = Instruction {
+            program_id: gv_id(),
+            accounts: vec![
+                AccountMeta::new(self.payer.pubkey(), true),
+                AccountMeta::new_readonly(self.coin_mint, false),
+                AccountMeta::new(self.gv_config, false),
+                AccountMeta::new_readonly(prog, false),
+                AccountMeta::new_readonly(dist, false),
+                AccountMeta::new_readonly(self.sub_pid, false),
+                AccountMeta::new_readonly(self.sub_pool, false),
+                AccountMeta::new_readonly(dummy, false),
+                AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            ],
+            data: vec![0u8],
+        };
+        self.send(&[ix], &[])
+    }
+
+    /// Plant a valid-looking distribution config OWNED BY an arbitrary program `prog`
+    /// (vs plant_foreign_dist, which always owns by the real distribution program).
+    fn plant_dist_owned_by(&mut self, at: Pubkey, prog: Pubkey, coin: Pubkey, authority: Pubkey) {
+        let mut data = vec![0u8; 168];
+        data[..8].copy_from_slice(b"DISTCFG1");
+        data[8..40].copy_from_slice(coin.as_ref());
+        data[40..72].copy_from_slice(self.vault.as_ref());
+        data[72..104].copy_from_slice(authority.as_ref());
+        self.svm
+            .set_account(
+                at,
+                solana_sdk::account::Account {
+                    lamports: 2_000_000,
+                    data,
+                    owner: prog,
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .unwrap();
+    }
+
     /// Plant a fully-valid-looking distribution config (right owner/disc/coin) at an
     /// arbitrary address, with `authority` set to whatever we pass — so we can craft one
     /// whose seal authority is NOT this gv config PDA.
@@ -398,6 +443,61 @@ fn trigger_seals_the_distribution_cross_program() {
 
     // Re-trigger is rejected (gv proposal already executed; distribution already sealed).
     assert!(env.trigger(&gv_proposal, &dist_proposal).is_err(), "no double seal");
+}
+
+// SUBSTITUTED-POOL QUORUM COLLAPSE (no-capital / minority capture via account substitution). The trigger
+// re-reads the LIVE pool outstanding as the quorum denominator (the deliberate fix vs a stale cache). That
+// design is only safe if the pool ACCOUNT is bound: if the trigger trusted whatever pool the cranker
+// passes, an attacker with a tiny minority of voted principal could pass a FOREIGN, zero-outstanding pool
+// so `total_voted_principal*2 > 0` trivially clears quorum -> a minority seals the entire COIN
+// distribution. lib.rs:761 binds the pool to (owner == subledger_program AND key == config.subledger_pool).
+// Every existing trigger test passes the canonical pool; the substitution reject side was untested.
+#[test]
+fn trigger_rejects_a_substituted_pool_that_would_collapse_the_quorum() {
+    let mut env = Env::new();
+    let alice = Pubkey::new_unique();
+    let bob = Pubkey::new_unique();
+    let dist_proposal = env.create_dist_proposal(1, &[(alice, 60), (bob, 40)]);
+    let gv_proposal = env.register(&dist_proposal);
+
+    // Real pool: large outstanding (100). A minority (5) voted but holds a clear weighted majority, so
+    // ONLY the principal quorum stands between the attacker and a seal.
+    env.set_pool_outstanding(100);
+    env.inject_tally(&gv_proposal, 5, 8, 100, 8, 5); // voted 5 of 100 -> 5*2=10 !> 100 (no quorum); majority 8 of 8
+    assert!(env.trigger(&gv_proposal, &dist_proposal).is_err(), "minority cannot seal against the real pool");
+    assert_eq!(env.dist_sealed_proposal(), Pubkey::default(), "not sealed");
+
+    // ATTACK: substitute a foreign, ZERO-outstanding pool to collapse the quorum denominator. Were the
+    // passed pool trusted, quorum would read 0 and 5*2=10 > 0 -> seal. The canonical-pool binding rejects
+    // any pool whose key != config.subledger_pool (here a fresh key, though correctly subledger-owned).
+    let foreign_pool = Pubkey::new_unique();
+    let mut data = vec![0u8; 192];
+    data[..8].copy_from_slice(b"SUBPOOL1");
+    data[8..40].copy_from_slice(env.coin_mint.as_ref());
+    data[80..88].copy_from_slice(&0u64.to_le_bytes()); // outstanding = 0 (the bypass value)
+    data[160..192].copy_from_slice(env.gv_config.as_ref());
+    env.svm
+        .set_account(
+            foreign_pool,
+            solana_sdk::account::Account { lamports: 1_000_000, data, owner: env.sub_pid, executable: false, rent_epoch: 0 },
+        )
+        .unwrap();
+
+    let ix = Instruction {
+        program_id: gv_id(),
+        accounts: vec![
+            AccountMeta::new(env.payer.pubkey(), true),
+            AccountMeta::new(env.gv_config, false),
+            AccountMeta::new(gv_proposal, false),
+            AccountMeta::new_readonly(dist_id(), false),
+            AccountMeta::new(env.dist_config, false),
+            AccountMeta::new(dist_proposal, false),
+            AccountMeta::new_readonly(foreign_pool, false), // substituted zero-outstanding pool
+        ],
+        data: vec![4u8],
+    };
+    assert!(env.send(&[ix], &[]).is_err(), "trigger must reject a non-canonical pool (quorum cannot be collapsed by substitution)");
+    assert_eq!(env.dist_sealed_proposal(), Pubkey::default(), "still not sealed after the substitution attempt");
 }
 
 // STRICT MAJORITY/QUORUM (a tie is NOT enough): trigger requires total_voted_principal*2 > live_outstanding
@@ -807,6 +907,33 @@ fn init_config_rejects_a_distribution_not_authority_bound_to_this_config() {
     // not a blanket reject.
     let real = env.dist_config;
     env.init_gv_with_dist(real).expect("the authority+coin-bound distribution is accepted");
+}
+
+// INIT SQUAT via a FAKE distribution PROGRAM (finalize DOS, finding IC; the gv dual of residual's HK):
+// init_config bound the distribution_config by `owner == <the PASSED distribution_program>` + coin +
+// authority==this-config, but did NOT pin the distribution_program to the canonical program ID. The
+// gv_config PDA is predictable (f(coin_mint, pool)), so an attacker could deploy a trivial fake
+// "distribution program", craft a config OWNED BY it that satisfies every byte check (disc, coin, and
+// authority == the deterministic gv PDA), and front-run init_config to SQUAT the canonical gv_config.
+// The squat redirects nothing — the trigger's stored fake program cannot touch the REAL COIN vault —
+// but it permanently bricks sealing the real distribution through this gv_config: a recoverable-only-
+// by-re-mint finalize DOS. Mirrors residual's HK (rd_init_rejects_a_fake_distribution_program).
+#[test]
+fn init_rejects_a_fake_distribution_program() {
+    let mut env = Env::new_unwired();
+    // A config owned by a FAKE program, with otherwise-perfect bytes (coin + authority == gv PDA).
+    let fake_prog = Pubkey::new_unique();
+    let fake_cfg = Pubkey::new_unique();
+    let gv = env.gv_config;
+    env.plant_dist_owned_by(fake_cfg, fake_prog, env.coin_mint, gv);
+    assert!(
+        env.init_gv_with_prog_and_dist(fake_prog, fake_cfg).is_err(),
+        "gv init must reject a non-canonical distribution program (anti front-run squat)"
+    );
+    // Boundary check: the SAME bytes under the REAL distribution program are accepted — the reject is
+    // the program-pin, not some unrelated failure. (The real dist_config is authority+coin bound.)
+    let real = env.dist_config;
+    env.init_gv_with_dist(real).expect("the canonical distribution program + bound config is accepted");
 }
 
 // Finding R regression: the gv config PDA now commits to its subledger_pool. init_config

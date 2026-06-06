@@ -47,8 +47,28 @@ const POSITION_DISC: [u8; 8] = *b"SUBPOS01";
 // an insurance pool can sign TopUpInsurance / WithdrawInsuranceLimited as the
 // asset-0 insurance authority/operator. Own-vault pools leave them zero. The trailing
 // vote_authority (the genesis-vote config PDA) may toggle a position's vote-lock.
-const POOL_SIZE: usize = 192;
-const POSITION_SIZE: usize = 104;
+// Branch `risidual_genesis_never_push_upstream`: POLICY_WITH_SURPLUS pools are now
+// SHARE-based so exit pays a TENURE-FAIR slice of the surplus (a late depositor cannot
+// claim surplus that accrued before it joined — and cannot extract early backers' surplus
+// on exit, the soft-veto fairness prerequisite). Pool grows by `total_shares` (u128 @192);
+// Position grows by `shares` (u128 @104). All cross-program reads (genesis-vote
+// principal@72 / start_slot@89 / outstanding@80) keep their offsets — the new fields are
+// appended, so those programs are unaffected.
+const POOL_SIZE: usize = 208;
+const POSITION_SIZE: usize = 120;
+
+// Position field byte offsets, exposed so cross-program readers (genesis-vote, residual-distributor)
+// can PIN their hardcoded reads against this canonical layout instead of guessing (finding HF: a
+// consumer's wrong owner offset slipped past mocked tests). Authoritative: the `position_layout`
+// canary below asserts these match `Position::serialize`.
+pub const POS_POOL_OFF: usize = 8;
+pub const POS_OWNER_OFF: usize = 40;
+pub const POS_PRINCIPAL_OFF: usize = 72;
+pub const POS_WITHDRAWN_OFF: usize = 88;
+pub const POS_START_SLOT_OFF: usize = 89;
+// Pool.outstanding_principal — the quorum denominator the genesis-vote reads (finding ID). Exported
+// + canaried so a consumer's mirror offset can be cross-pinned, same discipline as the POS_* offsets.
+pub const POOL_OUTSTANDING_PRINCIPAL_OFF: usize = 80;
 
 const POLICY_PRINCIPAL: u8 = 0;
 const POLICY_WITH_SURPLUS: u8 = 1;
@@ -163,6 +183,11 @@ struct Pool {
     /// Authority allowed to toggle a position's vote-lock (the genesis-vote config
     /// PDA). `Pubkey::default()` disables vote-locking (own-vault pools).
     vote_authority: Pubkey,
+    /// Total outstanding shares (POLICY_WITH_SURPLUS). A deposit mints
+    /// `amount * total_shares / insurance_balance` shares (1:1 for the first); a
+    /// withdraw redeems `shares * insurance_balance / total_shares`. The share price
+    /// = balance/total_shares moves with market PnL, so exit is tenure-fair.
+    total_shares: u128,
 }
 
 impl Pool {
@@ -186,6 +211,7 @@ impl Pool {
             market_slab: Pubkey::new_from_array(data[96..128].try_into().unwrap()),
             percolator_program: Pubkey::new_from_array(data[128..160].try_into().unwrap()),
             vote_authority: Pubkey::new_from_array(data[160..192].try_into().unwrap()),
+            total_shares: u128::from_le_bytes(data[192..208].try_into().unwrap()),
         })
     }
 
@@ -202,6 +228,7 @@ impl Pool {
         data[96..128].copy_from_slice(self.market_slab.as_ref());
         data[128..160].copy_from_slice(self.percolator_program.as_ref());
         data[160..192].copy_from_slice(self.vote_authority.as_ref());
+        data[192..208].copy_from_slice(&self.total_shares.to_le_bytes());
     }
 
     fn is_insurance(&self) -> bool {
@@ -223,6 +250,10 @@ struct Position {
     /// Set by the pool's vote_authority while a genesis vote is live on this
     /// position. Blocks insurance-withdraw until the vote is retracted.
     vote_locked: bool,
+    /// Shares held (POLICY_WITH_SURPLUS). Minted at deposit priced by the live
+    /// insurance balance, so this position only ever redeems the surplus that
+    /// accrued during its own tenure. 0 for POLICY_PRINCIPAL pools.
+    shares: u128,
 }
 
 impl Position {
@@ -243,6 +274,7 @@ impl Position {
             withdrawn: withdrawn == 1,
             start_slot: u64::from_le_bytes(data[89..97].try_into().unwrap()),
             vote_locked: vote_locked == 1,
+            shares: u128::from_le_bytes(data[104..120].try_into().unwrap()),
         })
     }
 
@@ -255,7 +287,8 @@ impl Position {
         data[88] = self.withdrawn as u8;
         data[89..97].copy_from_slice(&self.start_slot.to_le_bytes());
         data[97] = self.vote_locked as u8;
-        data[98..POSITION_SIZE].fill(0);
+        data[98..104].fill(0);
+        data[104..120].copy_from_slice(&self.shares.to_le_bytes());
     }
 }
 
@@ -268,6 +301,33 @@ fn mul_div_floor(a: u64, b: u64, denom: u64) -> Option<u64> {
         return None;
     }
     Some((a as u128 * b as u128 / denom as u128) as u64)
+}
+
+// Tenure-fair share accounting for POLICY_WITH_SURPLUS (branch residual-genesis).
+// Shares are priced by the LIVE balance so a deposit only ever redeems the surplus that accrued
+// during its own tenure. VIRTUAL-OFFSET inflation defense (finding HU): the pricing uses
+// `total_shares + VIRTUAL_SHARES` over `balance + 1` (ERC4626-style), so the classic first-depositor
+// inflation/donation rounding-skim is bounded to ~amount/VIRTUAL_SHARES. This matters because an
+// own-vault pool's vault is a plain SPL token account ANYONE can donate into; without the offset a
+// 1-atom first depositor could donate to inflate the share price and skim a later depositor's
+// rounding. The dust the offset diverts (≤ ~1 unit/op) accrues to the never-redeemable virtual shares.
+const VIRTUAL_SHARES: u128 = 1_000_000;
+
+/// Shares minted for `amount`, priced by the pre-deposit `balance` with the virtual offset.
+fn mint_shares(amount: u64, total_shares: u128, balance: u64) -> Result<u128, ProgramError> {
+    (amount as u128)
+        .checked_mul(total_shares.checked_add(VIRTUAL_SHARES).ok_or(ProgramError::ArithmeticOverflow)?)
+        .and_then(|v| v.checked_div((balance as u128).checked_add(1)?))
+        .ok_or(ProgramError::ArithmeticOverflow)
+}
+
+/// Tokens redeemed for `shares`: `shares * (balance + 1) / (total_shares + VIRTUAL_SHARES)` (floor).
+fn redeem_shares(shares: u128, balance: u64, total_shares: u128) -> Result<u64, ProgramError> {
+    let owed = shares
+        .checked_mul((balance as u128).checked_add(1).ok_or(ProgramError::ArithmeticOverflow)?)
+        .and_then(|v| v.checked_div(total_shares.checked_add(VIRTUAL_SHARES)?))
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    u64::try_from(owed).map_err(|_| ProgramError::ArithmeticOverflow)
 }
 
 /// Payout for a full position exit. `balance` is the pool's live token balance.
@@ -433,6 +493,7 @@ fn process_init_pool(
         market_slab: Pubkey::default(),
         percolator_program: Pubkey::default(),
         vote_authority: Pubkey::default(),
+        total_shares: 0,
     };
     pool.serialize(&mut pool_account.try_borrow_mut_data()?);
     Ok(())
@@ -505,6 +566,7 @@ fn process_deposit(
             withdrawn: false,
             start_slot: 0,
             vote_locked: false,
+            shares: 0,
         }
     } else {
         if position_account.owner != program_id {
@@ -518,6 +580,20 @@ fn process_deposit(
             return Err(ProgramError::InvalidAccountData);
         }
         p
+    };
+
+    // Tenure-fair shares (POLICY_WITH_SURPLUS, finding HT): price this deposit by the LIVE vault
+    // balance BEFORE the pull, so a late depositor can only ever redeem surplus accrued during its own
+    // tenure (matches the insurance path + the documented share model; POLICY_PRINCIPAL mints none).
+    let shares_minted = if pool.policy == POLICY_WITH_SURPLUS {
+        let balance_before = token_balance(vault)?;
+        let s = mint_shares(amount, pool.total_shares, balance_before)?;
+        if s == 0 {
+            return Err(ProgramError::InvalidArgument); // never accept principal for 0 shares (cf. HB)
+        }
+        s
+    } else {
+        0
     };
 
     // Pull principal into the vault (owner-signed).
@@ -540,6 +616,14 @@ fn process_deposit(
     position.principal = position
         .principal
         .checked_add(amount)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    pool.total_shares = pool
+        .total_shares
+        .checked_add(shares_minted)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    position.shares = position
+        .shares
+        .checked_add(shares_minted)
         .ok_or(ProgramError::ArithmeticOverflow)?;
     // Last-write-time: topping up resets the vote clock, so late additions don't
     // earn early-join weight.
@@ -612,7 +696,16 @@ fn process_withdraw(
     }
 
     let balance = token_balance(vault)?;
-    let paid = payout(pool.policy, balance, pool.outstanding_principal, position.principal)?;
+    // POLICY_WITH_SURPLUS redeems the position's SHARES at the live balance (tenure-fair, finding HT):
+    // shares were priced at deposit, so a late depositor only redeems its own-tenure surplus. A
+    // full own-vault exit burns all of the position's shares. POLICY_PRINCIPAL keeps the pro-rata/
+    // principal payout.
+    let (paid, shares_to_burn) = if pool.policy == POLICY_WITH_SURPLUS {
+        let stb = position.shares;
+        (redeem_shares(stb, balance, pool.total_shares)?, stb)
+    } else {
+        (payout(pool.policy, balance, pool.outstanding_principal, position.principal)?, 0u128)
+    };
 
     if paid > 0 {
         let bump_arr = [pool.bump];
@@ -641,6 +734,8 @@ fn process_withdraw(
     // A zero-payout exit still retires the position so an impaired/empty pool
     // cannot be replayed to distort other depositors' outstanding accounting.
     pool.outstanding_principal -= position.principal;
+    pool.total_shares = pool.total_shares.saturating_sub(shares_to_burn);
+    position.shares = 0;
     position.withdrawn = true;
     position.withdrawn_amount = paid;
 
@@ -792,6 +887,7 @@ fn process_init_insurance_pool(
         market_slab: *market_slab.key,
         percolator_program: *percolator_program.key,
         vote_authority: *vote_authority.key,
+        total_shares: 0,
     };
     pool.serialize(&mut pool_account.try_borrow_mut_data()?);
     Ok(())
@@ -865,6 +961,21 @@ fn process_insurance_deposit(
         }
     }
 
+    // Tenure-fair shares (POLICY_WITH_SURPLUS): price this deposit by the LIVE insurance
+    // balance BEFORE the top-up below, so a late depositor cannot claim pre-existing surplus
+    // (and cannot extract early backers' surplus on exit — the soft-veto fairness prerequisite).
+    let insurance_before = read_asset0_insurance(&market_slab.try_borrow_data()?)?;
+    let shares_minted = mint_shares(amount, pool.total_shares, insurance_before)?;
+    // Inflation/rounding guard (finding HB): never accept principal for ZERO shares. If a large
+    // surplus has inflated the share price (balance >> total_shares) so this deposit would round to
+    // 0 shares, the depositor would hand over principal that the existing shareholders' shares then
+    // redeem — the classic share-vault first-depositor/inflation theft. Reject instead. (Not
+    // reachable in the genesis flow, where deposits close at kickstart before PnL diverges balance;
+    // this hardens the reusable pool for any with-surplus reuse with deposits open during live PnL.)
+    if shares_minted == 0 {
+        return Err(ProgramError::InvalidArgument);
+    }
+
     // Position PDA (one per owner per pool).
     let pos_seeds = position_seeds(pool_account.key, owner.key);
     let (expected_pos, pos_bump) = Pubkey::find_program_address(&pos_seeds, program_id);
@@ -888,6 +999,7 @@ fn process_insurance_deposit(
             withdrawn: false,
             start_slot: 0,
             vote_locked: false,
+            shares: 0,
         }
     } else {
         if position_account.owner != program_id {
@@ -955,6 +1067,16 @@ fn process_insurance_deposit(
     position.principal = position
         .principal
         .checked_add(amount)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    // Mint the priced shares (a top-up mints at the current price, accumulating onto the
+    // position — its total shares represent its principal-weighted entry).
+    pool.total_shares = pool
+        .total_shares
+        .checked_add(shares_minted)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    position.shares = position
+        .shares
+        .checked_add(shares_minted)
         .ok_or(ProgramError::ArithmeticOverflow)?;
     // Last-write-time: topping up resets the vote clock.
     position.start_slot = Clock::get()?.slot;
@@ -1064,7 +1186,24 @@ fn process_insurance_withdraw(
     // only their pro-rata share `owed`. (POLICY_WITH_SURPLUS pools always pro-rata, returning
     // any yield too.)
     let insurance = read_asset0_insurance(&market_slab.try_borrow_data()?)?;
-    let owed = payout(pool.policy, insurance, pool.outstanding_principal, amount)?;
+    // POLICY_WITH_SURPLUS exits by redeeming shares priced at the LIVE balance — a
+    // tenure-fair slice of (principal + surplus). POLICY_PRINCIPAL keeps the original
+    // pro-rata/principal payout. `shares_to_burn` is the share fraction matching the
+    // withdrawn principal fraction `amount / position.principal`.
+    let (owed, shares_to_burn) = if pool.policy == POLICY_WITH_SURPLUS {
+        let stb = if position.principal == 0 {
+            0u128
+        } else {
+            position
+                .shares
+                .checked_mul(amount as u128)
+                .and_then(|v| v.checked_div(position.principal as u128))
+                .ok_or(ProgramError::ArithmeticOverflow)?
+        };
+        (redeem_shares(stb, insurance, pool.total_shares)?, stb)
+    } else {
+        (payout(pool.policy, insurance, pool.outstanding_principal, amount)?, 0u128)
+    };
 
     // The pool PDA (asset-0 insurance operator) signs WithdrawInsuranceLimited,
     // moving Percolator insurance -> pool-PDA-owned holding.
@@ -1126,6 +1265,14 @@ fn process_insurance_withdraw(
     // realized); the owner collected `owed` (their pro-rata share).
     pool.outstanding_principal -= amount;
     position.principal -= amount;
+    // Burn the redeemed shares (POLICY_WITH_SURPLUS). saturating_sub guards rounding;
+    // a full exit (principal -> 0) sweeps any share dust so no stranded shares remain.
+    pool.total_shares = pool.total_shares.saturating_sub(shares_to_burn);
+    position.shares = position.shares.saturating_sub(shares_to_burn);
+    if position.principal == 0 {
+        pool.total_shares = pool.total_shares.saturating_sub(position.shares);
+        position.shares = 0;
+    }
     position.withdrawn_amount = position
         .withdrawn_amount
         .checked_add(owed)
@@ -1297,6 +1444,32 @@ fn process_accept_operator(
 mod tests {
     use super::*;
 
+    // Authoritative pin for the exported POS_* offsets (finding HF follow-up): a Position serialized
+    // with distinct field values must decode those values at exactly the published offsets. If the
+    // layout ever shifts, this fails — and so does residual-distributor's cross-pin in offsets.rs.
+    #[test]
+    fn position_layout_offsets_match_serialize() {
+        let pool = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let p = Position {
+            pool,
+            owner,
+            principal: 0x1122_3344_5566_7788,
+            withdrawn_amount: 0,
+            withdrawn: true,
+            start_slot: 0x0102_0304_0506_0708,
+            vote_locked: false,
+            shares: 0,
+        };
+        let mut d = vec![0u8; POSITION_SIZE];
+        p.serialize(&mut d);
+        assert_eq!(&d[POS_POOL_OFF..POS_POOL_OFF + 32], pool.as_ref());
+        assert_eq!(&d[POS_OWNER_OFF..POS_OWNER_OFF + 32], owner.as_ref());
+        assert_eq!(u64::from_le_bytes(d[POS_PRINCIPAL_OFF..POS_PRINCIPAL_OFF + 8].try_into().unwrap()), p.principal);
+        assert_eq!(d[POS_WITHDRAWN_OFF], 1);
+        assert_eq!(u64::from_le_bytes(d[POS_START_SLOT_OFF..POS_START_SLOT_OFF + 8].try_into().unwrap()), p.start_slot);
+    }
+
     #[test]
     fn principal_policy_healthy_pays_principal_keeps_surplus() {
         // balance 150 >= outstanding 100: each principal-100 exit gets exactly principal.
@@ -1340,9 +1513,16 @@ mod tests {
             market_slab: slab,
             percolator_program: perc,
             vote_authority: Pubkey::new_unique(),
+            total_shares: 7_777,
         };
         let mut buf = [0u8; POOL_SIZE];
         pool.serialize(&mut buf);
+        // Canary the exported quorum-denominator offset (finding ID) so consumers can cross-pin it.
+        assert_eq!(
+            u64::from_le_bytes(buf[POOL_OUTSTANDING_PRINCIPAL_OFF..POOL_OUTSTANDING_PRINCIPAL_OFF + 8].try_into().unwrap()),
+            12345,
+            "Pool.outstanding_principal must serialize at POOL_OUTSTANDING_PRINCIPAL_OFF"
+        );
         let d = Pool::deserialize(&buf).unwrap();
         assert_eq!(d.mint, pool.mint);
         assert_eq!(d.asset_id, 7);
@@ -1364,6 +1544,7 @@ mod tests {
             withdrawn: true,
             start_slot: 4242,
             vote_locked: true,
+            shares: 5_555,
         };
         let mut pbuf = [0u8; POSITION_SIZE];
         pos.serialize(&mut pbuf);
@@ -1373,5 +1554,27 @@ mod tests {
         assert!(dp.withdrawn);
         assert_eq!(dp.start_slot, 4242);
         assert!(dp.vote_locked);
+        assert_eq!(dp.shares, 5_555);
+    }
+
+    // Soft-veto fairness: a depositor who joins AFTER surplus accrued cannot claim it. Property-based
+    // (robust to the VIRTUAL_SHARES offset, finding HU): the offset diverts ≤1 unit/op as dust.
+    #[test]
+    fn shares_are_tenure_fair() {
+        // Alice deposits 100 into an empty pool. 50 surplus accrues during her tenure (balance 100 ->
+        // 150). Bob deposits 100 priced at 150, so gets FEWER shares (he can't buy into surplus he
+        // didn't earn).
+        let alice = mint_shares(100, 0, 0).unwrap();
+        let bob = mint_shares(100, alice, 150).unwrap();
+        assert!(bob < alice, "late bob mints fewer shares than early alice for the same principal");
+        let total = alice + bob;
+        // Pool balance 250. Alice redeems ~her principal + the 50 tenure surplus (~150); Bob redeems
+        // only ~his principal (~100), capturing ~none of the pre-existing surplus (dust to the
+        // virtual offset). A late entrant cannot extract early backers' surplus — the soft-veto base.
+        let alice_out = redeem_shares(alice, 250, total).unwrap();
+        let bob_out = redeem_shares(bob, 250 - alice_out, total - alice).unwrap();
+        assert!((148..=150).contains(&alice_out), "alice gets principal+tenure surplus ~150: {alice_out}");
+        assert!((99..=100).contains(&bob_out), "bob gets ~principal, ~0 pre-existing surplus: {bob_out}");
+        assert!(bob_out < alice_out, "the late depositor cannot capture the early backer's surplus");
     }
 }

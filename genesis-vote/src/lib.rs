@@ -53,11 +53,27 @@ const PROPOSAL_SIZE: usize = 112; // support_weight widened u64->u128 (GG fix)
 // pool's outstanding_principal at vote time.
 const SUB_POSITION_DISC: [u8; 8] = *b"SUBPOS01";
 const SUB_POOL_DISC: [u8; 8] = *b"SUBPOOL1";
+// Mirror of the subledger Position/Pool byte offsets gv reads at vote time. UNPINNED literals here are
+// the HF bug class (a stale offset reads the wrong field -> miscomputed vote weight = governance
+// capture/LOF); these are cross-pinned against the subledger's canonical POS_*/POOL_* consts by
+// tests/offsets.rs (finding ID — the gv counterpart of residual's offsets.rs / HL).
+pub const SUB_POS_POOL_OFF: usize = 8;
+pub const SUB_POS_OWNER_OFF: usize = 40;
+pub const SUB_POS_PRINCIPAL_OFF: usize = 72;
+pub const SUB_POS_START_SLOT_OFF: usize = 89;
+pub const SUB_POOL_OUTSTANDING_OFF: usize = 80;
 // Distribution proposal: disc[8], config[8..40]. Used to bind a registered vote to
 // the genesis's OWN distribution config (so a winning vote is always sealable).
 const DIST_PROPOSAL_DISC: [u8; 8] = *b"DISTPRP1";
 // Distribution config: disc[8], coin_mint[8..40], vault[40..72], authority[72..104].
 const DIST_CONFIG_DISC: [u8; 8] = *b"DISTCFG1";
+// Canonical distribution program (finding IC; the gv dual of residual's HK). init_config must pin the
+// wired distribution_program to THIS id — without it an attacker could deploy a fake "distribution
+// program", craft a config owned by it that passes every byte check (disc/coin/authority), and
+// front-run the predictable gv_config PDA to squat it, bricking the real seal (finalize DOS). The
+// distribution crate is only a dev-dependency, so the id is hardcoded (matches distribution::id()).
+pub const DISTRIBUTION_PROGRAM_ID: Pubkey =
+    solana_program::pubkey!("D1str1but1on11111111111111111111111111111111");
 
 // Distribution program: SealWinner.
 const DIST_IX_SEAL_WINNER: u8 = 3;
@@ -212,13 +228,13 @@ fn read_sub_position(
     if data.len() < 97 || data[..8] != SUB_POSITION_DISC {
         return Err(ProgramError::InvalidAccountData);
     }
-    let pool = Pubkey::new_from_array(data[8..40].try_into().unwrap());
-    let owner = Pubkey::new_from_array(data[40..72].try_into().unwrap());
+    let pool = Pubkey::new_from_array(data[SUB_POS_POOL_OFF..SUB_POS_POOL_OFF + 32].try_into().unwrap());
+    let owner = Pubkey::new_from_array(data[SUB_POS_OWNER_OFF..SUB_POS_OWNER_OFF + 32].try_into().unwrap());
     if pool != *expected_pool || owner != *expected_owner {
         return Err(ProgramError::InvalidAccountData);
     }
-    let principal = u64::from_le_bytes(data[72..80].try_into().unwrap());
-    let start_slot = u64::from_le_bytes(data[89..97].try_into().unwrap());
+    let principal = u64::from_le_bytes(data[SUB_POS_PRINCIPAL_OFF..SUB_POS_PRINCIPAL_OFF + 8].try_into().unwrap());
+    let start_slot = u64::from_le_bytes(data[SUB_POS_START_SLOT_OFF..SUB_POS_START_SLOT_OFF + 8].try_into().unwrap());
     Ok((principal, start_slot))
 }
 
@@ -228,7 +244,7 @@ fn read_sub_pool_outstanding(data: &[u8]) -> Result<u64, ProgramError> {
     if data.len() < 88 || data[..8] != SUB_POOL_DISC {
         return Err(ProgramError::InvalidAccountData);
     }
-    Ok(u64::from_le_bytes(data[80..88].try_into().unwrap()))
+    Ok(u64::from_le_bytes(data[SUB_POOL_OUTSTANDING_OFF..SUB_POOL_OUTSTANDING_OFF + 8].try_into().unwrap()))
 }
 
 struct ProposalVote {
@@ -373,6 +389,11 @@ fn init_config<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>]) -> Prog
     //    different mint -> trigger's SealWinner can never succeed -> finalize DOS.
     // The config PDA (`expected`) must be the distribution seal authority AND the
     // subledger pool's vote_authority, both for this coin_mint.
+    // Pin the distribution program to the canonical id (finding IC) BEFORE trusting `owner ==
+    // distribution_program`: otherwise a fake program could own a byte-perfect squat config.
+    if *distribution_program.key != DISTRIBUTION_PROGRAM_ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
     {
         let dc = distribution_config.try_borrow_data()?;
         if distribution_config.owner != distribution_program.key

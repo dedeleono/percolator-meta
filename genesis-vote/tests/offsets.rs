@@ -1,0 +1,35 @@
+//! [branch-only, DO NOT PUSH] Finding ID — the gv counterpart of residual's offsets.rs (HL).
+//! genesis-vote reads the subledger Position (principal, start_slot) for vote WEIGHT and the subledger
+//! Pool (outstanding_principal) for QUORUM, via a hardcoded byte-offset MIRROR (gv depends on neither
+//! crate at runtime). If the subledger reorders those structs, the subledger's own canaries + this
+//! cross-pin fail — preventing the HF-class drift where gv silently reads the wrong field and
+//! miscomputes governance weight/quorum (capture/LOF). Also pins finding IC's hardcoded distribution
+//! program id against the real deployed program.
+
+use genesis_vote_program::{
+    SUB_POOL_OUTSTANDING_OFF, SUB_POS_OWNER_OFF, SUB_POS_POOL_OFF, SUB_POS_PRINCIPAL_OFF,
+    SUB_POS_START_SLOT_OFF,
+};
+
+#[test]
+fn subledger_mirror_offsets_match_the_real_subledger_layout() {
+    assert_eq!(SUB_POS_POOL_OFF, subledger_program::POS_POOL_OFF, "Position.pool offset");
+    assert_eq!(SUB_POS_OWNER_OFF, subledger_program::POS_OWNER_OFF, "Position.owner offset");
+    assert_eq!(SUB_POS_PRINCIPAL_OFF, subledger_program::POS_PRINCIPAL_OFF, "Position.principal (vote weight) offset");
+    assert_eq!(SUB_POS_START_SLOT_OFF, subledger_program::POS_START_SLOT_OFF, "Position.start_slot (tenure) offset");
+    assert_eq!(
+        SUB_POOL_OUTSTANDING_OFF, subledger_program::POOL_OUTSTANDING_PRINCIPAL_OFF,
+        "Pool.outstanding_principal (quorum denominator) offset"
+    );
+}
+
+#[test]
+fn pinned_distribution_program_id_matches_the_real_program() {
+    // Finding IC: gv hardcodes the canonical distribution program id (the distribution crate is only a
+    // dev-dependency). This catches a typo in that literal against the actually-deployed program.
+    assert_eq!(
+        genesis_vote_program::DISTRIBUTION_PROGRAM_ID,
+        distribution_program::id(),
+        "gv's pinned distribution program id must equal the deployed distribution program"
+    );
+}

@@ -1962,6 +1962,170 @@ fn vote_locked_principal_cannot_exit_until_retracted() {
     assert_eq!(env.token_amount(&env.perc_vault.clone()), 0, "insurance drained");
 }
 
+// CROSS-TAG FORFEITURE BYPASS: a voter whose insurance principal is vote-locked is refused the
+// insurance exit (tag 5, which checks vote_locked). The escape an attacker would reach for is the OTHER
+// withdraw — the own-vault `process_withdraw` (tag 2), which has NO vote_locked check at all (locking is
+// an insurance-only concept). If tag 2 could operate on an insurance pool it would skip the lock AND try
+// to pay from the percolator insurance vault — letting a live ballot outlive its capital (finding B).
+// process_withdraw's is_insurance type guard (lib.rs:670) rejects an insurance pool outright, BEFORE any
+// vault/seed work, so the vote-lock cannot be sidestepped by routing the exit through a different tag.
+// The existing vote_locked test only drives tag 5; this pins tag 2 as the forfeiture-bypass defense.
+// Because every check preceding line 670 passes here (owner signs, token_program ok, pool+position are
+// subledger-owned, data empty), an is_err is PRECISELY the is_insurance guard firing — not incidental.
+#[test]
+fn vote_locked_insurance_position_cannot_be_drained_via_own_vault_withdraw() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("deposit");
+
+    let dest = Pubkey::new_unique();
+    let (_dist_proposal, gv_proposal) = create_and_register_proposal(&mut env, &ve, 1, &dest);
+
+    // Vote → the position is now vote-locked; the insurance exit (tag 5) is refused.
+    env.warp_slot(1124);
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("vote backs proposal");
+    assert_eq!(env.svm.get_account(&env.position_pda(&alice.pubkey())).unwrap().data[97], 1, "vote-locked");
+    assert!(env.insurance_withdraw(&alice, &alice_ata, &holding, &alice, amount).is_err(), "tag-5 exit blocked by the lock");
+
+    // ATTACK: route the exit through tag 2 (own-vault withdraw) to dodge the vote_locked check.
+    let tag2 = Instruction {
+        program_id: sub_id(),
+        accounts: vec![
+            AccountMeta::new_readonly(alice.pubkey(), true),
+            AccountMeta::new(pool, false),
+            AccountMeta::new(env.position_pda(&alice.pubkey()), false),
+            AccountMeta::new(alice_ata, false),
+            AccountMeta::new(env.perc_vault, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+        ],
+        data: vec![2u8],
+    };
+    assert!(env.send(&[tag2], &[&alice]).is_err(), "tag-2 own-vault withdraw must reject an insurance pool (is_insurance guard)");
+
+    // Capital stayed at risk; the position is intact and still lockable/retractable as before.
+    assert_eq!(env.token_amount(&env.perc_vault), amount, "insurance vault untouched");
+    let (principal, _s, withdrawn) = env.read_position(&alice.pubkey());
+    assert_eq!(principal, amount, "principal intact");
+    assert!(!withdrawn, "not marked withdrawn");
+}
+
+// STALE-WEIGHT VOTING (vote-outlives-capital, the partial-withdraw facet of finding B). vote_weight is
+// floor(log2(age)) * principal, read from the LIVE subledger Position each call (genesis-vote never caches
+// a ballot's weight from an earlier vote, and never trusts the position's `withdrawn` flag — it relies on
+// principal being eager-decremented by process_insurance_withdraw, lib.rs:1267). So a voter who reduces
+// their at-risk capital must immediately get reduced voting power on a re-vote — they cannot keep voting
+// with stale-high weight after pulling capital out. The full-withdraw case (principal -> 0 -> weight 0 ->
+// rejected) has cannot_vote_with_a_withdrawn_position, but that drives the REAL tag-23 withdraw (red post-
+// percolator-rebuild); the partial-withdraw RE-VOTE was untested. Here the post-withdraw position state
+// (principal cut 10x, still active) is set directly so the REAL genesis-vote binary is exercised without
+// the broken withdraw CPI. Slot is held fixed, so the ONLY change between the two votes is the principal.
+#[test]
+fn a_revote_after_reducing_capital_uses_the_live_principal_not_stale_weight() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("deposit");
+    let (_dist, gv_proposal) = create_and_register_proposal(&mut env, &ve, 1, &Pubkey::new_unique());
+
+    // Vote with the full 1_000_000 at risk.
+    env.warp_slot(1124); // age 1024 -> floor_log2 = 10
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("vote with full capital");
+    let (w_full, p_full) = gv_proposal_support(&env, &gv_proposal);
+    assert_eq!(p_full, 1_000_000, "support principal = full deposit");
+    assert_eq!(w_full, 10_000_000, "weight = 1_000_000 * floor_log2(1024)=10");
+
+    // Retract to clear the ballot + lock (the only legitimate way to free the principal for a withdraw).
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 2).expect("retract");
+
+    // SIMULATE a partial insurance withdraw: process_insurance_withdraw eager-decrements
+    // position.principal (lib.rs:1267); a 9/10 withdraw leaves principal = 100_000, withdrawn = false.
+    // (Mocked directly because the real tag-23 withdraw CPI is fail-closed post-rebuild.)
+    let pos_key = env.position_pda(&alice.pubkey());
+    let mut pos = env.svm.get_account(&pos_key).unwrap();
+    pos.data[72..80].copy_from_slice(&100_000u64.to_le_bytes());
+    env.svm.set_account(pos_key, pos).unwrap();
+    let (live_principal, _s, withdrawn) = env.read_position(&alice.pubkey());
+    assert_eq!(live_principal, 100_000, "live principal reduced 10x");
+    assert!(!withdrawn, "still an active (partially-funded) position");
+
+    // RE-VOTE (same slot, so age is unchanged) -> weight must reflect the LIVE 100_000, not the stale 1M.
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("re-vote with reduced capital");
+    let (w_live, p_live) = gv_proposal_support(&env, &gv_proposal);
+    assert_eq!(p_live, 100_000, "re-vote records the LIVE principal, not the stale 1_000_000");
+    assert_eq!(w_live, 1_000_000, "weight = 100_000 * 10 (live), 10x less than the stale-capital weight");
+}
+
+// CROSS-PROPOSAL TALLY INTEGRITY (quorum/majority manipulation across competing proposals): one voter,
+// two competing proposals A and B sharing one gv_config. The real vote handler enforces one-vote-one-
+// proposal (lib.rs:634 — a live ballot must be on THIS proposal) and migrates the GLOBAL tallies on a
+// switch (lib.rs:641-648 — back out the prior contribution from the proposal AND from
+// total_cast_weight/total_voted_principal before applying the new one). If either side leaked, a voter
+// could (a) leave phantom support on A after moving to B, or (b) double-count their weight into the
+// global majority/quorum denominators — manipulating which proposal triggers. All prior seal.rs trigger
+// tests INJECT tallies; this drives the REAL deposit->vote->switch path against the real subledger +
+// genesis-vote binaries, which is where the migration arithmetic actually lives.
+#[test]
+fn switching_a_vote_between_competing_proposals_migrates_the_global_tallies() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+    let gv_config = ve.gv_config;
+    let read_tallies = |env: &Env| -> (u64, u128) {
+        let cfg = env.svm.get_account(&gv_config).unwrap();
+        (
+            u64::from_le_bytes(cfg.data[200..208].try_into().unwrap()),   // total_voted_principal
+            u128::from_le_bytes(cfg.data[208..224].try_into().unwrap()),  // total_cast_weight (GG: u128)
+        )
+    };
+
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("deposit");
+
+    let (a_dist, a_gv) = create_and_register_proposal(&mut env, &ve, 1, &Pubkey::new_unique());
+    let (_b_dist, b_gv) = create_and_register_proposal(&mut env, &ve, 2, &Pubkey::new_unique());
+
+    // Give the position tenure so its weight is non-zero, then back A.
+    env.warp_slot(1124);
+    gv_vote(&mut env, &ve, &alice, &a_gv, 1).expect("alice backs A");
+    let (a_w, a_p) = gv_proposal_support(&env, &a_gv);
+    assert!(a_w > 0 && a_p == amount, "A holds alice's full weight+principal");
+    assert_eq!(read_tallies(&env), (a_p, a_w as u128), "globals == A's contribution");
+
+    // (1) One-vote-one-proposal: backing B while the A ballot is live is REJECTED (no switch without
+    // retract). The failed tx must not mutate any tally.
+    assert!(gv_vote(&mut env, &ve, &alice, &b_gv, 1).is_err(), "cannot back a second proposal while live");
+    assert_eq!(gv_proposal_support(&env, &b_gv), (0, 0), "B gained nothing from the rejected back");
+    assert_eq!(gv_proposal_support(&env, &a_gv), (a_w, a_p), "A's tally intact after the rejected back");
+    assert_eq!(read_tallies(&env), (a_p, a_w as u128), "globals unchanged by the rejected back");
+
+    // (2) Retract A -> A's support AND the globals zero out (no phantom support left behind).
+    gv_vote(&mut env, &ve, &alice, &a_gv, 2).expect("retract A");
+    assert_eq!(gv_proposal_support(&env, &a_gv), (0, 0), "A drained on retract");
+    assert_eq!(read_tallies(&env), (0, 0), "globals zeroed on retract");
+
+    // (3) Back B (no slot change, so weight is identical) -> B holds the weight, A stays zero, and the
+    // globals equal exactly ONE contribution (not doubled).
+    gv_vote(&mut env, &ve, &alice, &b_gv, 1).expect("alice backs B");
+    assert_eq!(gv_proposal_support(&env, &b_gv), (a_w, a_p), "B now holds the full weight+principal");
+    assert_eq!(gv_proposal_support(&env, &a_gv), (0, 0), "A still zero — no phantom support");
+    assert_eq!(read_tallies(&env), (a_p, a_w as u128), "globals == ONE contribution, not double-counted");
+    let _ = a_dist;
+}
+
 // FLASH-DEPOSIT QUORUM PUMP (Sybil timing): vote weight = floor(log2(hold_age)) * principal, and a
 // position with age < 2 has ZERO weight. The vote handler rejects a weight-0 vote OUTRIGHT. That
 // rejection is load-bearing: a vote ADDS the position's PRINCIPAL to total_voted_principal (the quorum
@@ -2909,3 +3073,4 @@ fn top_up_resets_the_position_start_slot() {
     assert_eq!(start1, 1_000, "top-up RESET start_slot to now — the huge late capital earns no early-join age");
     assert!(start1 > start0, "start_slot moved forward (no inherited early-join hold time)");
 }
+
