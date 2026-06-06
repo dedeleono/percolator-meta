@@ -822,21 +822,21 @@ fn set_economics_rejects_an_over_allocation_that_would_overpull_the_floor() {
     );
     assert_eq!(read_savings_bps(&svm, &cfg_pda), 0, "savings share unchanged after the over-allocation");
 
-    // (2) BUYBACK OVERFLOW: buyback 8001 > auction 8000 — the buyback can't exceed the bought COIN. Rejected.
-    let msg = build_set_economics_message(&vault, &cfg_pda, &savings_acct, 0, 8_001);
+    // (2) BUYBACK OVERFLOW: buyback 10001 > 100% — you can't retain more than the whole bought COIN. Rejected.
+    let msg = build_set_economics_message(&vault, &cfg_pda, &savings_acct, 0, 10_001);
     assert!(
         squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 2, &msg, &remaining(&savings_acct)).is_err(),
-        "set_economics must reject buyback > auction share"
+        "set_economics must reject buyback_bps > 10000 (more than 100% of bought COIN)"
     );
     assert_eq!(read_buyback_bps(&svm, &cfg_pda), 0, "buyback share unchanged after the overflow");
 
-    // (3) VALID BOUNDARY: auction 8000 + savings 2000 = exactly 100%, buyback 8000 = exactly the auction.
-    // Accepted; all three fields land and the savings sink binds.
-    let msg = build_set_economics_message(&vault, &cfg_pda, &savings_acct, 2_000, 8_000);
+    // (3) VALID BOUNDARIES: auction 8000 + savings 2000 = exactly 100% (floor), buyback 10000 = 100% of the
+    // bought COIN (retain-all). Accepted; all three fields land and the savings sink binds.
+    let msg = build_set_economics_message(&vault, &cfg_pda, &savings_acct, 2_000, 10_000);
     squads_execute(&mut svm, &squads, &multisig, &dao, &payer, 3, &msg, &remaining(&savings_acct))
         .expect("valid 4-way split at the boundary executes via Squads");
-    assert_eq!(read_savings_bps(&svm, &cfg_pda), 2_000, "savings share set at the 100% boundary");
-    assert_eq!(read_buyback_bps(&svm, &cfg_pda), 8_000, "buyback share set at the auction boundary");
+    assert_eq!(read_savings_bps(&svm, &cfg_pda), 2_000, "savings share set at the 100% floor boundary");
+    assert_eq!(read_buyback_bps(&svm, &cfg_pda), 10_000, "buyback share set at the 100%-of-bought-COIN boundary");
     assert_eq!(read_savings_account(&svm, &cfg_pda), savings_acct, "savings sink bound");
 }
 
@@ -4305,11 +4305,13 @@ fn e2e_closing_refund_ata_cannot_permanently_brick_the_book() {
     let _ = (winner, attacker, late);
 }
 
-// ADVERSARIAL (coin-sink redirection) + COVERAGE (SEND branch was untested): in SEND mode the
-// bought COIN is transferred to the DAO-configured treasury instead of burned. A cranker must not
-// be able to redirect it to their own account — the sink is pinned to book.coin_sink.
+// 4-WAY BUYBACK SPLIT at settle + coin-sink redirect pin: of the auction's BOUGHT COIN, the DAO-set
+// buyback_bps fraction is RETAINED to the configured COIN sink (recycled to governance), the rest is
+// BURNED (deflation). The split is sharp (a real partial transfer AND a real burn in one settle), and a
+// permissionless cranker must not be able to redirect the retained share — coin_sink is pinned to
+// book.coin_sink. This is the settle-side complement to KU/KV (the pull-side floor + savings pins).
 #[test]
-fn e2e_send_mode_routes_bought_coin_to_treasury_not_attacker() {
+fn e2e_execute_buyback_retains_fraction_to_sink_and_burns_the_rest() {
     let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
         compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
         ..solana_program_runtime::compute_budget::ComputeBudget::default()
@@ -4320,12 +4322,23 @@ fn e2e_send_mode_routes_bought_coin_to_treasury_not_attacker() {
     svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
     let env = setup_handoff(&mut svm, &payer);
 
-    // DAO treasury COIN account = the configured sink.
+    // DAO treasury COIN account = the configured coin_sink (book-level, set at init_book).
     let treasury = Pubkey::new_unique();
     set_token(&mut svm, &treasury, &env.coin_mint, &Pubkey::new_unique(), 0);
-    let bk = setup_auction(&mut svm, &payer, &env, 10, 1 /* SINK_SEND */, Some(treasury), 0);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 1 /* SINK_SEND = coin_sink configured */, Some(treasury), 0); // squads idx 5
 
-    // A bidder sells 400k COIN for the 400k surplus budget (rate 1, fully filled).
+    // DAO sets the buyback fraction to 30% of bought COIN (config-level, set via set_economics, idx 6).
+    let em = build_set_economics_message(&env.squads_vault, &env.twap_cfg, &treasury, 0, 3_000);
+    let er = vec![
+        AccountMeta::new_readonly(env.squads_vault, false),
+        AccountMeta::new(env.twap_cfg, false),
+        AccountMeta::new_readonly(treasury, false),
+        AccountMeta::new_readonly(twap_id(), false),
+    ];
+    squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 6, &em, &er).expect("dao sets buyback 30%");
+    assert_eq!(read_buyback_bps(&svm, &env.twap_cfg), 3_000, "buyback fraction armed");
+
+    // A bidder sells 400k COIN for the 400k surplus budget (rate 1, fully filled) -> bought = 400k.
     let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
     send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("alice bid");
 
@@ -4333,7 +4346,7 @@ fn e2e_send_mode_routes_bought_coin_to_treasury_not_attacker() {
     let supply_before = mint_supply(&svm, &env.coin_mint);
     let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
 
-    // ATTACK: a cranker tries to redirect the bought COIN to their OWN account.
+    // ATTACK: a cranker tries to redirect the retained buyback share to their OWN account.
     let rogue_sink = Pubkey::new_unique();
     set_token(&mut svm, &rogue_sink, &env.coin_mint, &cranker.pubkey(), 0);
     assert!(send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, Some(rogue_sink))).is_err(),
@@ -4341,10 +4354,10 @@ fn e2e_send_mode_routes_bought_coin_to_treasury_not_attacker() {
     assert_eq!(token_amount(&svm, &rogue_sink), 0, "no COIN redirected to the attacker");
     assert_eq!(token_amount(&svm, &treasury), 0, "nothing moved yet (rogue execute fully reverted)");
 
-    // Honest execute routes the bought COIN to the configured treasury — NOT burned.
-    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, Some(treasury))).expect("execute (send mode)");
-    assert_eq!(mint_supply(&svm, &env.coin_mint), supply_before, "SEND mode does not burn — supply unchanged");
-    assert_eq!(token_amount(&svm, &treasury), 400_000, "bought COIN routed to the DAO treasury");
+    // Honest execute: 30% (120k) retained to the treasury, 70% (280k) burned, spent USD parked.
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, Some(treasury))).expect("execute (buyback split)");
+    assert_eq!(token_amount(&svm, &treasury), 120_000, "30% of bought COIN retained to the DAO sink");
+    assert_eq!(supply_before - mint_supply(&svm, &env.coin_mint), 280_000, "the other 70% of bought COIN is burned (deflation)");
     assert_eq!(token_amount(&svm, &bk.settlement_usd), 400_000, "spent USD parked for the winner");
     let _ = (alice, a_usd);
 }
@@ -5482,7 +5495,8 @@ fn e2e_settle_with_a_zero_coin_marginal_pays_no_usd_for_zero_coin() {
 // sink_mode burn<->send. This pins the CHANGE path end-to-end: an auction starts in BURN mode, the
 // DAO flips it to SEND (buyback to treasury) via a timelock'd Squads execute, and the next `execute`
 // routes the bought COIN to the treasury instead of burning it — while a non-Squads caller is
-// rejected. (The init-time SEND routing is covered by e2e_send_mode_routes_...; this covers the flip.)
+// rejected. (The fractional split + sink-redirect pin is covered by
+// e2e_execute_buyback_retains_fraction_to_sink_and_burns_the_rest; this covers the Squads-gated flip.)
 #[test]
 fn e2e_dao_flips_burn_to_buyback_only_via_squads() {
     let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
@@ -5522,12 +5536,21 @@ fn e2e_dao_flips_burn_to_buyback_only_via_squads() {
     ];
     squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 6, &msg, &rem).expect("dao flips to buyback");
 
+    // The flip configures the SINK; the buyback FRACTION is the separate set_economics control. Set it to
+    // 100% (retain-all) so this pins the send-all boundary (no burn). (idx 7.)
+    let em = build_set_economics_message(&env.squads_vault, &env.twap_cfg, &treasury, 0, 10_000);
+    let er = vec![
+        AccountMeta::new_readonly(env.squads_vault, false), AccountMeta::new(env.twap_cfg, false),
+        AccountMeta::new_readonly(treasury, false), AccountMeta::new_readonly(twap_id(), false),
+    ];
+    squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 7, &em, &er).expect("dao sets buyback 100%");
+
     // execute now BUYS BACK: the 400k bought COIN is sent to the treasury, NOT burned.
     let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
     warp_to(&mut svm, 111);
     send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, Some(treasury))).expect("execute in buyback mode");
-    assert_eq!(token_amount(&svm, &treasury), 400_000, "bought COIN routed to the DAO treasury (buyback)");
-    assert_eq!(mint_supply(&svm, &env.coin_mint), supply_before, "supply unchanged — buyback does NOT burn");
+    assert_eq!(token_amount(&svm, &treasury), 400_000, "100% buyback: all bought COIN routed to the DAO treasury");
+    assert_eq!(mint_supply(&svm, &env.coin_mint), supply_before, "supply unchanged — 100% buyback does NOT burn");
     let _ = (alice, a_usd);
 }
 
@@ -5979,45 +6002,6 @@ fn e2e_init_book_send_sink_cannot_be_the_coin_escrow() {
     assert!(svm.get_account(&book).map_or(true, |a| a.data.is_empty()), "book never created with the self-loop sink");
 }
 
-// SEND-SINK REDIRECT BY A PERMISSIONLESS CRANKER (external LOF): execute is permissionless and, in
-// SEND (buyback) mode, transfers the bought COIN to the book's recorded coin_sink (passed as a
-// trailing account). If that sink were not pinned, any cranker could pass THEIR OWN COIN account and
-// steal the entire buyback. execute checks `coin_sink.key == book.coin_sink`, so a substituted sink is
-// rejected; the honest execute routes the COIN to the DAO treasury. Distinct from AS (set-time
-// self-loop guard) and AH (happy-path burn->send flip) — this is the execute-time redirect.
-#[test]
-fn e2e_execute_send_cranker_cannot_redirect_the_buyback() {
-    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
-        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
-        ..solana_program_runtime::compute_budget::ComputeBudget::default()
-    });
-    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
-    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
-    let payer = Keypair::new();
-    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
-    let env = setup_handoff(&mut svm, &payer);
-    let treasury = Pubkey::new_unique();
-    set_token(&mut svm, &treasury, &env.coin_mint, &payer.pubkey(), 0);
-    let bk = setup_auction(&mut svm, &payer, &env, 10, 1 /* SINK_SEND */, Some(treasury), 0);
-
-    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
-    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("alice bid");
-    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
-    warp_to(&mut svm, 111);
-
-    // ATTACK: the cranker substitutes their OWN COIN account as the SEND sink.
-    let thief = Pubkey::new_unique();
-    set_token(&mut svm, &thief, &env.coin_mint, &cranker.pubkey(), 0);
-    assert!(send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, Some(thief))).is_err(),
-        "execute must reject a coin_sink != the book's recorded sink");
-    assert_eq!(token_amount(&svm, &thief), 0, "no buyback COIN redirected to the cranker");
-
-    // The honest execute (correct, book-recorded sink) routes the bought COIN to the DAO treasury.
-    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, Some(treasury))).expect("honest execute");
-    assert_eq!(token_amount(&svm, &treasury), 400_000, "bought COIN routed to the DAO treasury, not the cranker");
-    let _ = (alice, a_src, a_usd);
-}
-
 // SAVINGS-SINK REDIRECT BY A PERMISSIONLESS CRANKER (external LOF, 4-way split): execute's SECOND surplus
 // pull (the base-unit savings share) withdraws collateral to config.base_unit_savings_account via tag-57.
 // execute is permissionless, so if that destination weren't pinned, any cranker could pass a DIFFERENT
@@ -6025,8 +6009,8 @@ fn e2e_execute_send_cranker_cannot_redirect_the_buyback() {
 // operator-owned withdrawal destinations), so to ISOLATE the twap-side guard
 // (savings_dest.key == config.base_unit_savings_account) from percolator's owner check, the substitute is
 // ALSO twap_authority-owned but is NOT the configured sink: percolator would accept its owner, yet execute
-// rejects it by key BEFORE the CPI. Mirror of e2e_execute_send_cranker_cannot_redirect_the_buyback for the
-// new savings pull; complements KU (which pinned the floor, not the destination).
+// rejects it by key BEFORE the CPI. Mirror of e2e_execute_buyback_retains_fraction_to_sink_and_burns_the_rest
+// (the coin-sink redirect pin) for the savings pull; complements KU (which pinned the floor, not the destination).
 #[test]
 fn e2e_execute_cranker_cannot_redirect_the_savings_pull() {
     let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {

@@ -219,21 +219,23 @@ through the 1-week Squads timelock, asset-agnostic via the consolidated tag-57 `
 **Defaults: 80% burn / 0% buyback / 0% base-unit savings / 20% insurance growth** (= today's behaviour).
 
 1. **Burn** (default 80%) — staged as the auction budget; the bought COIN is **burned** (deflation).
-2. **Buyback** (default 0%) — also staged as the auction budget; of the bought COIN, the buyback fraction
-   is **retained** to a configured COIN sink account (recycled to governance, not burned).
+2. **Buyback** (default 0%) — `buyback_bps` (0–100% of the **bought** COIN) is **retained** at settle to the
+   configured COIN sink (`book.coin_sink`, recycled to governance); the remaining fraction is burned.
 3. **Base-unit savings** (default 0%) — withdrawn (tag-57) to a DAO/futarchy-owned SPL account in the
    asset's **base unit** (USD/collateral), held as cash savings.
 4. **Insurance growth** (= 10_000 − burn − buyback − savings, default 20%) — retained in insurance,
    ratcheted into the principal counter (compounds; stays at risk, never pulled).
 
-The DAO configures the **sink accounts and the fraction to each** (the buyback COIN sink and the base-unit
-savings account are admin-set, like the existing `coin_sink`) via the Squads-vault-gated `set_economics`
-(tag 14), which validates `burn + savings <= 100%` and `buyback <= burn` so the two surplus pulls can never
-breach the principal floor. **Status:** Config + `set_economics` setter landed; `execute` now routes the
-savings withdraw (a second tag-57 pull into the twap-owned savings reserve, bounded to stop at the floor).
-The base-unit savings sink must be a twap_authority(operator)-owned collateral account (percolator forces
-operator-owned withdrawal destinations). **Remaining slice:** the bought-COIN burn/buyback split at settle
-(`buyback_bps` is stored + validated but not yet routed). 84/84 twap chain green.
+The DAO configures the **sink accounts and the fraction to each** via the Squads-vault-gated `set_economics`
+(tag 14): `burn + savings <= 100%` (the floor-protection invariant — the two surplus *pulls* can never breach
+the principal floor) and `buyback <= 100%` (a fraction of the **bought** COIN, applied post-purchase at
+settle, so it never touches insurance/principal). The COIN sink (`book.coin_sink`) is configured separately
+via the Squads-gated `set_coin_sink`. **Status:** fully landed — `execute` routes the savings withdraw (a
+second tag-57 pull into the twap-owned savings reserve, bounded to stop at the floor) **and** the settle
+burn/buyback split (retain `buyback_bps` of bought COIN to the sink, burn the rest). The base-unit savings
+sink must be a twap_authority(operator)-owned collateral account (percolator forces operator-owned
+withdrawal destinations); the buyback COIN sink is pinned to `book.coin_sink` (no cranker redirect). 84/84
+twap chain green.
 
 ---
 

@@ -299,13 +299,14 @@ struct Config {
     /// crank can never reach principal (closes finding O).
     reserved_floor: u128,
     /// 4-way surplus economics (DAO-tunable, timelock'd). Each round's surplus splits:
-    ///   auction     = surplus_buy_burn_bps           -> buy COIN; of that, buyback_bps is RETAINED
-    ///                                                   to base_unit_savings_account's COIN sink, the
-    ///                                                   rest is BURNED (deflation).
+    ///   auction     = surplus_buy_burn_bps           -> buy COIN; of the BOUGHT COIN, buyback_bps is
+    ///                                                   RETAINED to the book's COIN sink (book.coin_sink,
+    ///                                                   set via init_book / set_coin_sink), the rest BURNED.
     ///   savings     = base_unit_savings_bps          -> withdrawn (tag-57) to base_unit_savings_account
     ///                                                   in the asset's base unit (collateral/USD).
     ///   insurance   = 10_000 - auction - savings     -> retained in insurance (ratcheted into the floor).
-    /// buyback_bps <= surplus_buy_burn_bps; surplus_buy_burn_bps + base_unit_savings_bps <= 10_000.
+    /// buyback_bps <= 10_000 (a fraction of bought COIN, post-purchase — never touches principal);
+    /// surplus_buy_burn_bps + base_unit_savings_bps <= 10_000 (the floor-protection invariant).
     /// Defaults: savings 0, buyback 0 (= today's burn-only auction + insurance remainder).
     base_unit_savings_bps: u16,
     buyback_bps: u16,
@@ -527,11 +528,13 @@ fn process_reconfigure(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8
 //
 // Squads-vault-gated (timelock'd) DAO control of the 4-way surplus split. Sets the savings share (surplus
 // withdrawn to the base-unit/collateral savings sink) and the buyback share (of the auction's bought COIN,
-// the fraction retained to the sink rather than burned), and binds the savings sink account.
+// the fraction retained to the book's COIN sink rather than burned), and binds the savings sink account.
 // PRINCIPAL-PROTECTION VALIDATION: surplus_buy_burn_bps + base_unit_savings_bps <= 10_000, so the auction
 // pull and the savings pull together can never exceed the surplus (insurance_growth = remainder stays >= 0;
-// neither tag-57 pull can reach the reserved principal floor); and buyback_bps <= surplus_buy_burn_bps
-// (the buyback is a sub-share of the auction's bought COIN). A non-default savings account is required once
+// neither tag-57 pull can reach the reserved principal floor); and buyback_bps <= 10_000 (a fraction of the
+// bought COIN, applied post-purchase at settle — it never touches insurance/principal, so it is bounded only
+// by 100%; the COIN sink itself is the book's coin_sink, configured separately via set_coin_sink). A
+// non-default savings account is required once
 // the savings share is non-zero, so surplus is never withdrawn to the zero address. The sink must be a
 // twap_authority(operator)-owned collateral token account — percolator's tag-57 forces every insurance
 // withdrawal to an operator-owned destination — so the savings accrue in a segregated twap-owned reserve
@@ -557,7 +560,9 @@ fn process_set_economics(program_id: &Pubkey, accounts: &[AccountInfo], data: &[
     if (config.surplus_buy_burn_bps as u32) + (savings_bps as u32) > BPS_DENOMINATOR as u32 {
         return Err(ProgramError::InvalidInstructionData);
     }
-    if buyback_bps > config.surplus_buy_burn_bps {
+    // buyback_bps is the fraction of the AUCTION's bought COIN retained to the COIN sink (vs burned) at
+    // settle — a post-purchase split that never touches insurance/principal, so it is bounded only by 100%.
+    if buyback_bps > BPS_DENOMINATOR {
         return Err(ProgramError::InvalidInstructionData);
     }
     if savings_bps > 0 && *savings_account.key == Pubkey::default() {
@@ -1677,16 +1682,33 @@ fn process_execute(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
         d[BK_ROUND_END..BK_ROUND_END + 8].copy_from_slice(&next_end.to_le_bytes());
     }
 
-    // 5) move the bought COIN to its sink and the spent USD to the settlement account.
+    // 5) split the bought COIN per the 4-way economics: retain buyback_bps (of the bought COIN) to the
+    //    configured COIN sink (recycled to governance), BURN the rest. `sink_mode == SINK_SEND` is the
+    //    "a coin_sink is configured" gate (set via init_book / set_coin_sink); `buyback_bps` (set via
+    //    set_economics) is the fraction. With no sink (BURN mode) OR buyback_bps == 0, the whole bought
+    //    amount is burned, exactly as before. Then move the spent USD to the settlement account.
     if settled {
+        let to_sink = if book.sink_mode == SINK_SEND {
+            mul_div_floor(total_coin, config.buyback_bps as u128, BPS_DENOMINATOR as u128)?
+        } else {
+            0
+        };
+        let to_burn = total_coin
+            .checked_sub(to_sink)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
         if book.sink_mode == SINK_SEND {
+            // The coin_sink trailing account is always supplied in SINK_SEND mode (account ordering is
+            // independent of the runtime buyback fraction); validate it even when to_sink == 0.
             let coin_sink = next_account_info(iter)?;
             if *coin_sink.key != book.coin_sink {
                 return Err(ProgramError::InvalidAccountData);
             }
-            spl_transfer(token_program, coin_escrow, coin_sink, book_escrow, as_u64(total_coin)?, Some(&escrow_seeds))?;
-        } else {
-            spl_burn_signed(token_program, coin_escrow, coin_mint, book_escrow, as_u64(total_coin)?, &escrow_seeds)?;
+            if to_sink > 0 {
+                spl_transfer(token_program, coin_escrow, coin_sink, book_escrow, as_u64(to_sink)?, Some(&escrow_seeds))?;
+            }
+        }
+        if to_burn > 0 {
+            spl_burn_signed(token_program, coin_escrow, coin_mint, book_escrow, as_u64(to_burn)?, &escrow_seeds)?;
         }
         spl_transfer(token_program, holding, settlement_usd, twap_authority, as_u64(total_usd)?, Some(&auth_seeds))?;
     }
