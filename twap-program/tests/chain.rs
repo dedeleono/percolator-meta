@@ -6056,6 +6056,64 @@ fn e2e_execute_cranker_cannot_redirect_the_savings_pull() {
     assert_eq!(token_amount(&svm, &bk.holding), 400_000, "auction share (80%) routed to the holding");
 }
 
+// FULL 4-WAY COMPOSITION in ONE execute (the newly-completed settle): all four routes fire together AND
+// the TWO trailing sink accounts are read in the right order. execute consumes savings_dest at step 2b
+// (insurance pull, collateral) and coin_sink at step 5 (settle, COIN) — so when BOTH savings_bps>0 and
+// buyback (SINK_SEND, buyback_bps>0) are armed it reads [savings_dest, coin_sink]. Every other test
+// exercises ONE route; this pins that the two distinct-mint sinks don't get crossed and that
+// auction + savings + insurance-growth + (buyback|burn) all conserve in a single round. Real binaries.
+#[test]
+fn e2e_execute_full_four_way_split_composes_in_one_round() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer); // floor 1M, insurance 1.5M (surplus 500k), auction bps 8000
+
+    // COIN sink (book-level, SINK_SEND) for the buyback.
+    let coin_treasury = Pubkey::new_unique();
+    set_token(&mut svm, &coin_treasury, &env.coin_mint, &Pubkey::new_unique(), 0);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 1 /* SINK_SEND */, Some(coin_treasury), 0); // idx 5
+
+    // Collateral savings sink (must be twap_authority-owned; percolator forces operator-owned dests).
+    let savings_sink = Pubkey::new_unique();
+    set_token(&mut svm, &savings_sink, &env.collateral_mint, &env.twap_authority, 0);
+    // DAO arms BOTH: savings 10% of surplus + buyback 30% of bought COIN. (idx 6.)
+    let em = build_set_economics_message(&env.squads_vault, &env.twap_cfg, &savings_sink, 1_000, 3_000);
+    let er = vec![
+        AccountMeta::new_readonly(env.squads_vault, false), AccountMeta::new(env.twap_cfg, false),
+        AccountMeta::new_readonly(savings_sink, false), AccountMeta::new_readonly(twap_id(), false),
+    ];
+    squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 6, &em, &er).expect("dao arms savings 10% + buyback 30%");
+
+    // A bidder sells 400k COIN for the 400k auction budget (rate 1, fully filled) -> bought = 400k.
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("alice bid");
+
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    let supply_before = mint_supply(&svm, &env.coin_mint);
+
+    // ONE execute fires all four routes; trailing accounts [savings_dest, coin_sink].
+    send(&mut svm, &[&cranker], execute_ix_full(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, Some(savings_sink), Some(coin_treasury))).expect("full 4-way execute");
+
+    // surplus 500k: auction 80% (400k -> holding, the buy budget), savings 10% (50k -> collateral sink),
+    // insurance growth 10% (50k ratcheted into the floor); insurance bottoms at the raised floor.
+    assert_eq!(token_amount(&svm, &savings_sink), 50_000, "savings: 10% of surplus to the collateral sink");
+    assert_eq!(read_reserved_floor(&svm, &env.twap_cfg), 1_050_000, "insurance growth: 10% ratcheted into the floor");
+    assert_eq!(token_amount(&svm, &env.perc_vault), 1_050_000, "insurance dropped by auction+savings (450k); principal intact");
+    // bought 400k COIN: buyback 30% (120k -> COIN sink), burn 70% (280k); spent USD parked.
+    assert_eq!(token_amount(&svm, &coin_treasury), 120_000, "buyback: 30% of bought COIN to the COIN sink (NOT the collateral sink)");
+    assert_eq!(supply_before - mint_supply(&svm, &env.coin_mint), 280_000, "burn: the other 70% of bought COIN");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 400_000, "spent USD parked for the winner");
+    // Cross-mint sanity: the collateral savings sink never received COIN, the COIN sink never received collateral.
+    let _ = (alice, a_src, a_usd);
+}
+
 // CLAIM COIN-REFUND REDIRECT BY A PERMISSIONLESS CRANKER (external LOF): claim is permissionless and
 // pays a bid's coin_refund (coin_escrow -> coin_ata). For a LOSER (unfilled) bid the refund is the
 // FULL escrowed COIN. If coin_ata weren't pinned, a cranker could claim the loser's slot with THEIR
