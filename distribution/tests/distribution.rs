@@ -413,6 +413,47 @@ fn seal_rejects_naming_the_authority_without_its_signature() {
     env.seal(&proposal, &auth).expect("the real authority seals with its signature");
 }
 
+// CROSS-CONFIG SEAL (decider-agnostic self-protection). distribution is a pluggable seam — it must NOT
+// assume the calling decider passes one of its OWN proposals. seal_winner binds `header.config ==
+// config_account.key` (lib.rs:511) so config B's authority can never seal config A's proposal (which would
+// make B's vault pay A's recipients — a mis-distribution / LOF). A buggy or hostile decider that hands
+// seal_winner a foreign proposal is rejected at the program level. This isolates that bind: config B's
+// real authority signs (auth check passes), the proposal is program-owned and fits B's supply (so absent
+// the bind it WOULD seal), and the only deviation is its header.config -> rejected; B stays unsealed.
+#[test]
+fn seal_rejects_a_proposal_from_a_foreign_config() {
+    // Config A with a real proposal (header.config = A).
+    let mut env = Env::new(1_000, 1_000_000);
+    let alice = Pubkey::new_unique();
+    let proposal_a = env.create_proposal(1, 4);
+    env.append(&proposal_a, &[(alice, 1_000)]).expect("append to A");
+
+    // Stand up an independent config B (own coin_mint + authority + funded vault).
+    let mint_auth_b = Keypair::new();
+    let coin_b = create_mint(&mut env.svm, &env.payer, &mint_auth_b.pubkey());
+    let authority_b = Keypair::new();
+    let config_b = Pubkey::find_program_address(&[b"dist_config", coin_b.as_ref(), authority_b.pubkey().as_ref()], &pid()).0;
+    let vault_b = create_token_account(&mut env.svm, &env.payer, &coin_b, &config_b);
+    mint_to(&mut env.svm, &env.payer, &coin_b, &mint_auth_b, &vault_b, 1_000);
+    revoke_mint_authority(&mut env.svm, &env.payer, &coin_b, &mint_auth_b);
+    let mut d = vec![0u8]; d.extend_from_slice(&1_000_000u64.to_le_bytes()); d.extend_from_slice(&1_000u64.to_le_bytes());
+    env.send(&[Instruction { program_id: pid(), accounts: vec![
+        AccountMeta::new(env.payer.pubkey(), true), AccountMeta::new_readonly(coin_b, false),
+        AccountMeta::new(config_b, false), AccountMeta::new_readonly(vault_b, false),
+        AccountMeta::new_readonly(authority_b.pubkey(), false), AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+    ], data: d }], &[]).expect("init config B");
+
+    // ATTACK: config B's authority seals config A's proposal. header.config (A) != config B -> rejected.
+    let bad = Instruction { program_id: pid(), accounts: vec![
+        AccountMeta::new_readonly(authority_b.pubkey(), true),
+        AccountMeta::new(config_b, false),
+        AccountMeta::new(proposal_a, false),
+    ], data: vec![3u8] };
+    assert!(env.send(&[bad], &[&authority_b]).is_err(), "config B must not seal a proposal belonging to config A");
+    let cfg_b = env.svm.get_account(&config_b).unwrap();
+    assert_eq!(&cfg_b.data[120..152], &[0u8; 32], "config B stayed unsealed — no cross-config seal");
+}
+
 // LOF boundary: competing proposals share ONE config and ONE funded vault (the genesis
 // votes among several candidate COIN distributions, only one wins + is sealed). A losing
 // proposal's recipients must NEVER be able to pull from that vault. claim binds
