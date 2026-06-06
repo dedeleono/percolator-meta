@@ -316,6 +316,12 @@ fn init_config(program_id: &Pubkey, accounts: &[AccountInfo], mut data: &[u8]) -
     // every recipient's governance/value ("no mint to drain"). The freeze authority
     // must also be revoked, or it could freeze the vault (DOS all claims) or a
     // recipient's account. This makes the fixed pool the entire COIN supply, period.
+    // Pack::unpack does NOT verify the owning program, so a non-SPL account with
+    // token-shaped bytes would otherwise pass; require SPL Token ownership first
+    // (same guard as token_balance, :234) to block a type-cosplay init squat.
+    if coin_mint.owner != &spl_token::ID {
+        return Err(ProgramError::IllegalOwner);
+    }
     let mint = spl_token::state::Mint::unpack(&coin_mint.try_borrow_data()?)?;
     if mint.mint_authority.is_some() || mint.freeze_authority.is_some() {
         return Err(ProgramError::InvalidAccountData);
@@ -330,7 +336,12 @@ fn init_config(program_id: &Pubkey, accounts: &[AccountInfo], mut data: &[u8]) -
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // Vault is the COIN holding account, authority = config PDA.
+    // Vault is the COIN holding account, authority = config PDA. Require SPL Token
+    // ownership before unpacking (see the mint check above) so a non-SPL token-shaped
+    // account can't squat the canonical config PDA with an unusable vault.
+    if vault.owner != &spl_token::ID {
+        return Err(ProgramError::IllegalOwner);
+    }
     let vault_state = spl_token::state::Account::unpack(&vault.try_borrow_data()?)?;
     if vault_state.mint != *coin_mint.key || vault_state.owner != expected_config {
         return Err(ProgramError::InvalidAccountData);

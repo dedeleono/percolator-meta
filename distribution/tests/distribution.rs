@@ -4,8 +4,10 @@
 
 use litesvm::LiteSVM;
 use solana_sdk::{
+    account::Account,
     clock::Clock,
     instruction::{AccountMeta, Instruction},
+    program_option::COption,
     program_pack::Pack,
     pubkey::Pubkey,
     signature::{Keypair, Signer},
@@ -737,6 +739,83 @@ fn init_config_rejects_a_vault_underfunded_below_a_fully_minted_supply() {
     assert!(r.is_err(), "a vault holding 60 of a fully-minted 100 supply must be rejected (solvency, :318)");
     // No config PDA was created — the underfunded bind was refused.
     assert!(svm.get_account(&config).map_or(true, |a| a.data.is_empty()), "no config bound to the underfunded vault");
+}
+
+// TYPE-COSPLAY INIT SQUAT (permissionless-init DOS): init_config unpacks the caller-supplied
+// `vault` as an SPL Token account via Pack::unpack, which does NOT verify the account's owning
+// program. A front-runner can therefore hand init_config a NON-SPL-owned account whose bytes are
+// shaped like an initialized token account (mint == COIN, owner == config PDA, amount ==
+// total_supply) so it clears every structural check (mint/owner/amount). Because the config PDA is
+// canonical per (mint, authority) and cannot be re-initialized, this squats the one real
+// distribution config with a vault that no SPL Token CPI (claim/burn) can ever drive: permanent
+// distribution DOS. init_config must reject vault.owner != spl_token::ID before unpacking. (The
+// coin_mint owner check is symmetric, guarding the same type-cosplay on the mint input.)
+#[test]
+fn init_config_rejects_a_non_spl_owned_token_shaped_vault() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(pid(), so_path()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let mint_authority = Keypair::new();
+    let coin_mint = create_mint(&mut svm, &payer, &mint_authority.pubkey());
+
+    let authority = Keypair::new();
+    let config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref(), authority.pubkey().as_ref()], &pid()).0;
+
+    // Mint the full supply to a real holder and revoke authority, so the COIN mint itself satisfies
+    // the fixed-supply invariants (mint.supply == total_supply, no mint/freeze authority). This
+    // isolates the vault-owner check as the sole reason the init must fail.
+    let real_holder = create_token_account(&mut svm, &payer, &coin_mint, &payer.pubkey());
+    mint_to(&mut svm, &payer, &coin_mint, &mint_authority, &real_holder, 100);
+    revoke_mint_authority(&mut svm, &payer, &coin_mint, &mint_authority);
+
+    // Craft a SYSTEM-owned account whose data round-trips through SPL Token's own packer as an
+    // initialized token account claiming the full supply, owned by the config PDA — i.e. it passes
+    // everything init_config checks EXCEPT the owning program.
+    let fake_state = spl_token::state::Account {
+        mint: coin_mint,
+        owner: config,
+        amount: 100,
+        delegate: COption::None,
+        state: spl_token::state::AccountState::Initialized,
+        is_native: COption::None,
+        delegated_amount: 0,
+        close_authority: COption::None,
+    };
+    let mut fake_data = vec![0u8; spl_token::state::Account::LEN];
+    spl_token::state::Account::pack(fake_state, &mut fake_data).unwrap();
+    let fake_vault = Pubkey::new_unique();
+    svm.set_account(
+        fake_vault,
+        Account {
+            lamports: svm.minimum_balance_for_rent_exemption(fake_data.len()),
+            data: fake_data,
+            owner: solana_sdk::system_program::ID,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+
+    let mut data = vec![0u8]; // IX_INIT_CONFIG
+    data.extend_from_slice(&1_000_000u64.to_le_bytes()); // claim window
+    data.extend_from_slice(&100u64.to_le_bytes()); // total_supply == mint.supply == fake vault amount
+    let ix = Instruction {
+        program_id: pid(),
+        accounts: vec![
+            AccountMeta::new(payer.pubkey(), true),
+            AccountMeta::new_readonly(coin_mint, false),
+            AccountMeta::new(config, false),
+            AccountMeta::new_readonly(fake_vault, false),
+            AccountMeta::new_readonly(authority.pubkey(), false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        ],
+        data,
+    };
+    let bh = svm.latest_blockhash();
+    let r = svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer], bh));
+    assert!(r.is_err(), "a token-shaped vault not owned by SPL Token must be rejected");
+    assert!(svm.get_account(&config).map_or(true, |a| a.data.is_empty()), "the fake vault must not squat the config PDA");
 }
 
 // ZERO CLAIM WINDOW (recipient-LOF DOS): init_config rejects claim_window_slots == 0 (lib.rs:276). A zero

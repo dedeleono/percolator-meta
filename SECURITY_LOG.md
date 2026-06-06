@@ -58,6 +58,28 @@ to one of those, or pausing it.
 
 ## Analyzed
 
+### [REAL BUG FIXED (type-cosplay init squat / permissionless-init DOS) — distribution::init_config missing SPL-owner check] GX.
+A reported finding (GitHub issue #29 / PR #30 from an UNTRUSTED external submitter) was independently
+reproduced and fixed via LOCAL CLEAN-ROOM TDD — no remote code pulled in (hard rule: never trust remote
+submitters; reproduce + fix every reported bug with our own test + our own patch). VECTOR: `distribution::
+init_config` is permissionless and the config PDA is canonical per (coin_mint, authority). It unpacked the
+caller-supplied `coin_mint` and `vault` via `Pack::unpack`, which does NOT verify the owning program. So a
+front-runner could hand init_config a NON-SPL-owned account with token-shaped bytes (mint == COIN, owner ==
+config PDA, amount >= total_supply) that clears every structural check (mint/owner/amount). Since the PDA
+can't be re-initialized (AccountAlreadyInitialized), this squats the one real distribution config with a
+vault no SPL Token CPI (claim/burn) can ever drive -> permanent distribution DOS (config-squat, not theft).
+PROVED non-tautological: with the fix reverted, the new test FAILS (fake vault accepted, config squatted);
+patched, it passes. FIX (distribution/src/lib.rs init_config): add `coin_mint.owner != &spl_token::ID ->
+IllegalOwner` and `vault.owner != &spl_token::ID -> IllegalOwner` before the respective unpacks — matching the
+existing `token_balance` guard at :234. Consistent with the system being exclusively classic SPL Token (claim
+:536 / burn :608 both require token_program == spl_token::ID), so no Token-2022 vault is locked out. TEST
+(distribution/tests/distribution.rs init_config_rejects_a_non_spl_owned_token_shaped_vault): plants a
+system-owned account whose bytes round-trip through spl_token's OWN packer as an initialized token account
+(mint=COIN, owner=config PDA, amount=supply) and asserts init is rejected + the config PDA stays
+uninitialized. VERIFY: build-sbf green; distribution suite 21/21. NOTE: PR #30 is NOT merged — the upstream
+fix is byte-identical in spirit but we never land untrusted commits; close the PR/issue referencing this
+clean-room landing.
+
 ### [GR-FIXED — integration suite reconciled to the rebuilt percolator; 40-test target met (39 green, 1 obsolete merged)] GW.
 Completed the GR migration deferred by GT/GV. The percolator/squads rebuild surfaced FIVE independent test-side
 drifts (none new vectors — all "test asserts the OLD ABI/feature"); each reconciled to the real binaries:
