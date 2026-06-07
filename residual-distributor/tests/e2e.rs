@@ -395,6 +395,59 @@ fn share_value_claim_rejects_a_substituted_position_no_soft_veto_bypass() {
     assert_eq!(token_amount(&svm, &b_ata), 25_000, "b gets its honest 100_000 * 100/400");
 }
 
+// ATTACK PROBE (denominator inflation via a SUBSTITUTED ledger at CRYSTALLIZE). crystallize for a share-value
+// (insurance/backing) stake OVERWRITES stake.points from the LIVE shares of the passed ledger AND updates the
+// cohort denominator (subtract-old/add-new). It binds backing_ledger == stake.backing_ledger (src:726). This
+// is the crystallize-side complement of the claim-side position bind (902): without 726, an owner could
+// crystallize a DECOY high-share ledger to push their points (and the frozen cohort denominator) far above
+// their real bound position — DILUTING every honest claimant (payout = supply * pts / inflated_denom). The
+// claim-side cap (902) would still bound the ATTACKER'S own payout, but the inflated DENOMINATOR has already
+// shrunk everyone else's share. 726 keeps the denominator honest. None of the crystallize tests substitute the
+// ledger; this pins it. Real rd .so.
+#[test]
+fn crystallize_rejects_a_substituted_ledger_no_denominator_inflation() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let supply = 1_000_000u64; // insurance cohort = 10% = 100_000
+    let env = setup(&mut svm, &payer, supply);
+    set_slot(&mut svm, 100);
+
+    let (a, b) = (Keypair::new(), Keypair::new());
+    let a_pos = Pubkey::new_unique();
+    let b_pos = Pubkey::new_unique();
+    set_position(&mut svm, &a_pos, &env.stub_sub, &env.ins_pool, &a.pubkey(), 100, false);
+    set_position(&mut svm, &b_pos, &env.stub_sub, &env.ins_pool, &b.pubkey(), 100, false);
+    register(&mut svm, &payer, &env, &a, &a.pubkey(), &a_pos, COHORT_INSURANCE).expect("reg a");
+    register(&mut svm, &payer, &env, &b, &b.pubkey(), &b_pos, COHORT_INSURANCE).expect("reg b");
+
+    // A decoy position with HIGH live shares (subledger-owned), which a will try to crystallize INSTEAD of
+    // its bound a_pos to inflate its points + the cohort denominator.
+    let decoy = Pubkey::new_unique();
+    set_position(&mut svm, &decoy, &env.stub_sub, &env.ins_pool, &a.pubkey(), 9_999, false);
+    assert!(crystallize(&mut svm, &payer, &env, &a, &decoy).is_err(),
+        "a substituted ledger at crystallize is rejected (backing_ledger != stake.backing_ledger)");
+
+    // Honest crystallize of the BOUND ledgers -> denominator = 100 + 100 = 200 (NOT inflated by the decoy).
+    crystallize(&mut svm, &payer, &env, &a, &a_pos).expect("a crystallizes its bound ledger");
+    crystallize(&mut svm, &payer, &env, &b, &b_pos).expect("b crystallizes its bound ledger");
+    let denom = u128::from_le_bytes(svm.get_account(&env.rd_config).unwrap().data[174..190].try_into().unwrap());
+    assert_eq!(denom, 200, "insurance denominator reflects the real bound shares, not the 9_999 decoy");
+
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    freeze(&mut svm, &payer, &env).expect("freeze");
+
+    // Both claim an UNDILUTED 50/50: 100_000 * 100/200 = 50_000 each. A decoy-inflated denominator (10_099)
+    // would have starved b to ~990 — the bind prevents that.
+    let a_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &a.pubkey());
+    let b_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &b.pubkey());
+    claim(&mut svm, &payer, &env, &a, &a_ata, Some(&a_pos)).expect("a claims");
+    claim(&mut svm, &payer, &env, &b, &b_ata, Some(&b_pos)).expect("b claims");
+    assert_eq!(token_amount(&svm, &a_ata), 50_000, "a gets its honest half — no self-inflation");
+    assert_eq!(token_amount(&svm, &b_ata), 50_000, "b is NOT diluted by a phantom decoy in the denominator");
+}
+
 // finding KM: a share-value claim must be authorized by the stake's OWN owner. claim caps the payout by
 // LIVE shares, so a permissionless trigger would let an attacker force the victim's claim during a
 // transient low-share moment (mid partial-withdraw: withdrawn=false, shares reduced) and the irreversible

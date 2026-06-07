@@ -6636,3 +6636,20 @@ foreign-creator + after-seal; seal authority key+sig + empty (no-dead-genesis) +
 + reinit; claim recipient-binding + double-claim + losing/cross-config (sealed_proposal) + window; burn
 seal-gate + window-gate + conservation incl. unallocated headroom. No code change, no redundant test added
 (loop guidance). distribution suite 27 green, sbf clean.
+
+### [VERIFIED — denominator inflation via a substituted ledger at CRYSTALLIZE is BLOCKED] sweep tick (D)
+SURFACE (residual-distributor crystallize, share-value cohorts). crystallize OVERWRITES a share-value stake's
+points from the LIVE shares of the passed ledger and updates the cohort denominator (subtract-old/add-new); it
+binds backing_ledger == stake.backing_ledger (src:726). This is the CRYSTALLIZE-side complement of the
+claim-side position bind (902, pinned last tick). DISTINCT EFFECT: without 726 an owner could crystallize a
+DECOY high-share ledger to push their points AND the frozen cohort DENOMINATOR far above their real bound
+position — DILUTING every honest claimant (payout = supply * pts / inflated_denom). The claim-side 902 cap
+would still bound the ATTACKER'S own payout, but the inflated denominator has already shrunk everyone else's
+share. 726 keeps the denominator honest. COVERAGE GAP: the replay / KO / KM crystallize tests all pass the
+BOUND ledger; none substitutes a foreign one.
+TEST: added `crystallize_rejects_a_substituted_ledger_no_denominator_inflation` (real rd .so): a(100)+b(100)
+insurance stakes; a tries to crystallize a 9_999-share DECOY instead of its bound a_pos -> rejected (726);
+honest crystallize of the bound ledgers leaves the insurance denominator at 200 (config@174), NOT 10_099; after
+freeze both claim an UNDILUTED 50_000 each (a decoy-inflated denom would have starved b to ~990). VERDICT:
+BLOCKED. KEEP (pins the crystallize-side ledger bind = denominator integrity, distinct from the claim-side
+soft-veto bind). No behavior change. rd e2e 23 green.
