@@ -6224,3 +6224,21 @@ VERDICT: BLOCKED, two independent ways:
 TEST: added subledger unit `first_depositor_inflation_skim_is_bounded_and_self_defeating` (pure mint/redeem math
 — the sharp level; an e2e cannot exercise a donation that has no route). KEEP (pins a real, previously-untested
 boundary on new Feature A code). No behavior change. subledger lib 9 green.
+
+### [VERIFIED — quorum-tally integrity: double-retract / retract-without-back cannot underflow] sweep tick (B)
+SURFACE (genesis-vote vote handler, retract path). Retract decrements the GLOBAL quorum tally
+total_voted_principal (u64, config@200) and total_cast_weight (u128, config@208). The sharp attack: a
+retract-without-back or a DOUBLE-retract that subtracts again from an already-zeroed tally would WRAP the u64
+to ~2^64, making `total_voted_principal*2 > outstanding` trivially true at trigger → an attacker seals a
+proposal with FORGED quorum. Two guards block it: gv:611-612 (retract with no ballot account — nothing to
+retract) and gv:646-647 (ballot exists but not live — the back-out block at 641-645 is gated on
+has_live_ballot(), so a non-live retract never reaches the checked_sub, and 646 turns the no-op into an
+explicit reject). Each ballot also stores its OWN exact contribution (voted_weight/voted_principal), and the
+position is vote-locked while live, so the stored contribution can never desync from the tally.
+COVERAGE GAP: the only prior retract test (e2e_voter_cannot_back_two_proposals_without_retracting) uses a single
+legit retract as a setup step — neither retract-without-back nor double-retract, and never asserts the tally is
+untouched. Added e2e `e2e_double_retract_and_retract_without_back_cannot_underflow_the_quorum_tally` (real
+genesis-vote + subledger): (1) retract before any back → rejected, tally stays (0,0); back→retract zeroes it
+exactly; (2) double-retract → rejected, tally still (0,0) — NOT wrapped to a huge value; then a permissionless
+trigger fails for lack of quorum (the integrity payoff: no forged seal). VERDICT: BLOCKED. KEEP (pins a real,
+previously-untested quorum-integrity boundary on the Feature A vote path). No behavior change. chain 87 green.

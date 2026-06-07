@@ -2577,6 +2577,78 @@ fn e2e_voter_veto_exits_one_tx_retract_then_withdraw_else_atomic_fail() {
     assert_eq!(pos.data[88], 1, "position marked withdrawn — no capital-less ballot left behind");
 }
 
+// ATTACK PROBE (quorum integrity via tally underflow): retract decrements the GLOBAL
+// total_voted_principal (u64, config@200) / total_cast_weight (u128, config@208). If a retract-without-back
+// or a DOUBLE-retract subtracted again from an already-zeroed tally, the u64 would WRAP to ~2^64 and the
+// quorum test `total_voted_principal*2 > outstanding` would be trivially true — an attacker would seal a
+// proposal with FAKE quorum. The handler must reject both (genesis-vote:611-612 no-ballot; 646-647
+// not-live), leaving the tally byte-for-byte unchanged. Proven end-to-end against the real genesis-vote +
+// subledger binaries.
+#[test]
+fn e2e_double_retract_and_retract_without_back_cannot_underflow_the_quorum_tally() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(sub_id(), so_deploy("subledger_program")).unwrap();
+    svm.add_program_from_file(gv_id_e2e(), so_deploy("genesis_vote_program")).unwrap();
+    svm.add_program_from_file(dist_id_e2e(), so_deploy("distribution_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_genesis(&mut svm, &payer);
+    let dest = Pubkey::new_unique();
+    let (_d, gv_p) = register_proposal(&mut svm, &payer, &env, 1, &dest, 100);
+
+    // alice deposits into the share pool, then holds so her position has weight.
+    let alice = Keypair::new(); svm.airdrop(&alice.pubkey(), 1_000_000_000).unwrap();
+    let amount = 1_000_000u64;
+    let alice_ata = Pubkey::new_unique(); set_token(&mut svm, &alice_ata, &env.collateral_mint, &alice.pubkey(), amount);
+    let holding = Pubkey::new_unique(); set_token(&mut svm, &holding, &env.collateral_mint, &env.pool, 0);
+    let position = sub_position_pda(&env.pool, &alice.pubkey());
+    let mut dep = vec![4u8]; dep.extend_from_slice(&amount.to_le_bytes());
+    let deposit = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(position, false), AccountMeta::new(alice_ata, false),
+        AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(system_program::ID, false)], data: dep };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[deposit], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("deposit");
+    let mut c = svm.get_sysvar::<Clock>(); c.slot += 8; svm.set_sysvar::<Clock>(&c);
+
+    let gv_ballot = Pubkey::find_program_address(&[b"gv_ballot", env.gv_config.as_ref(), alice.pubkey().as_ref()], &gv_id_e2e()).0;
+    let vote = |action: u8| Instruction { program_id: gv_id_e2e(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(gv_ballot, false), AccountMeta::new(gv_p, false),
+        AccountMeta::new(position, false), AccountMeta::new_readonly(env.pool, false), AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(sub_id(), false)], data: vec![3u8, action] };
+    let send = |svm: &mut LiteSVM, ix: Instruction| { svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, &alice], bh)) };
+    let tally = |svm: &LiteSVM| -> (u64, u128) { let d = svm.get_account(&env.gv_config).unwrap().data;
+        (u64::from_le_bytes(d[200..208].try_into().unwrap()), u128::from_le_bytes(d[208..224].try_into().unwrap())) };
+
+    // (1) retract WITHOUT ever backing — the ballot account doesn't exist yet -> rejected (gv:611-612).
+    assert!(send(&mut svm, vote(2)).is_err(), "retract with no live ballot is rejected (nothing to retract)");
+    assert_eq!(tally(&svm), (0, 0), "a failed retract-without-back left the global tally at zero");
+
+    // Back, then retract once (legitimate). The tally goes principal -> 0.
+    send(&mut svm, vote(1)).expect("back");
+    let (vp, cw) = tally(&svm); assert!(vp == amount && cw > 0, "backing recorded the principal + weight");
+    send(&mut svm, vote(2)).expect("retract once");
+    assert_eq!(tally(&svm), (0, 0), "retract zeroed this voter's contribution exactly");
+
+    // (2) DOUBLE retract — the ballot now exists but is not live -> rejected (gv:646-647), NOT a second
+    //     subtraction. The u64 tally must NOT wrap to ~2^64 (which would forge quorum).
+    assert!(send(&mut svm, vote(2)).is_err(), "double-retract is rejected — no second back-out");
+    assert_eq!(tally(&svm), (0, 0), "double-retract did NOT underflow total_voted_principal to a huge value");
+
+    // The integrity payoff: with the tally honestly at zero, an attacker cannot seal on forged quorum.
+    let trigger = Instruction { program_id: gv_id_e2e(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(gv_p, false),
+        AccountMeta::new_readonly(dist_id_e2e(), false), AccountMeta::new(env.dist_config, false), AccountMeta::new(_d, false),
+        AccountMeta::new_readonly(env.pool, false)], data: vec![4u8] };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    assert!(svm.send_transaction(Transaction::new_signed_with_payer(&[trigger], Some(&payer.pubkey()), &[&payer], bh)).is_err(),
+        "no quorum after the retract cycle — the tally integrity holds, no fake seal");
+}
+
 // ATTACK PROBE (low-turnout capture): a minority-capital voter tries to seal their proposal
 // by being the ONLY one to vote — they then hold 100% of the CAST weight (majority trivially
 // passes), but quorum is measured against the LIVE pool outstanding (including non-voters), so
