@@ -5994,3 +5994,33 @@ authorizes as the owner; chain.rs insurance crystallize (alice) now owner-signed
 chain 84 green. NOTE: the paired stack audit this iteration found NO new external LOF/DOS (the
 subledger/genesis-vote/distribution/twap-program surface remains hardened; closest seam examined — the
 POLICY_WITH_SURPLUS partial-withdraw share math — was fuzzed conservation-safe).
+
+### [STATE/CLEAN] Dual-loop tick — 3rd stack pass + 3rd distributor pass: nothing new exploitable
+Both surfaces audited fresh this tick (read-only subagents + spot-checks); no new LOF/DOS found.
+
+STACK (subledger/genesis-vote/distribution/twap-program): went deep on the untrodden arithmetic — the TWAP
+uniform-price (Dutch) clearing is provably COIN-conservative (Σ refund + total_coin = Σ escrowed; coin_i =
+usd_i*cm/um <= c for every bid, so no over-withdraw/underflow) and USD-bounded (total_usd <= budget <=
+holding), with the settled/open roll-reset (AE) and canonical-ATA payout pins intact. Closest-but-blocked:
+(1) execute savings pull does not assert savings_dest != holding — a Squads-timelocked captured DAO could fold
+its own savings back into the auction budget; protocol-owned both sides, floor still subtracts first, no
+depositor LOF (timelock foot-gun, not a vuln); (2) subledger insurance slab read u128->u64 unwrap_or(MAX) —
+unreachable (balances are u64; a clamp only raises a depositor's own impaired payout, bounded by amount);
+(3) distribution burn_unclaimed burns donated COIN too — post-window, donor self-harm, solvency invariant
+guarantees legit recipients paid first.
+
+DISTRIBUTOR (residual-distributor): Σ-claims <= supply holds globally (4 cohort bps sum to 10000; per-cohort
+numerator <= frozen denom; share-value min-cap only lowers; single rd_config-PDA vault, only spend path is the
+claim transfer). One-stake-per-(config,owner) blocks cross-cohort/same-portfolio double-count. The old seal
+CPI seam is fully retired (no live invoke_signed but system-create + SPL claim transfer). Freeze vault binding
+sound (no mint/freeze authority, supply==total_supply, config-owned full-supply vault — no fundable decoy).
+Closest-but-blocked: (1) the BackingDomainLedger reward path (read_backing_counters / OFF_BACKING_* /
+insurance_points / read_subledger_position / window_points / fee_supported_eligible) is ENTIRELY DEAD CODE —
+referenced only in unit tests, never in a handler (the live backing cohort reads subledger Position.shares), so
+the offset-confusion angle on it is UNREACHABLE; (2) attacker-scoped init keys = the atomic-init-squat that is
+moot (one atomic genesis tx) + HC/HK binding; (3) soft-veto residue under-allocation is intended + conservative
+(Σ < supply), and the forced-low-share grief is already closed by KO+KM owner-gates.
+
+HYGIENE NOTE (not a vuln, candidate for a future dedicated tick): delete the dead BackingDomainLedger reward
+reads + their OFF_BACKING_* consts and the now-misleading offset pins in tests/offsets.rs to shrink the audit
+surface. Left in place this tick to keep it small/green.
