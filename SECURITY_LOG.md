@@ -6178,3 +6178,13 @@ coupling as intentional. I did NOT autonomously rewrite master's chain.rs.
 NO CHANGE pushed to master this tick (local master == origin/master == 44a1d5b, untouched). The
 accept_operator market/percolator binding test (this tick's work) is pinned on the secret branch (6bfe594);
 porting it to master is deferred pending the above decision.
+
+### [COVERAGE] Dual-loop tick — distributor init-validation guards pinned (incl. IL init guard)
+DISTRIBUTOR (secret branch): the init validators had no negative test. Added
+`init_rejects_zero_supply_overallocation_and_unscoped_cohorts` (real rd .so): rejects zero supply; a cohort
+bps sum > 100%; an active insurance/backing cohort with no pool scope; and (finding IL, init layer) an active
+LP/trader cohort with a default market_group — the complement to the register-side IL test. Fully-scoped config
+accepted (control). No behavior change. e2e 14 green.
+STACK: no new vector. The keystone accept_operator binding was pinned on secret last tick (6bfe594); its master
+port remains BLOCKED on the user's decision re: the inherited distributor-coupled master chain.rs (see prior
+entry b8acc9b). No master push this tick (master == 44a1d5b, untouched).

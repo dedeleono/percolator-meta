@@ -478,6 +478,55 @@ fn claim_before_freeze_is_rejected() {
     assert!(claim(&mut svm, &payer, &env, &lp, &ata, None).is_err(), "claim before freeze must reject");
 }
 
+// init validation guards: reject zero supply, a cohort bps sum > 100%, an active insurance/backing cohort
+// with no pool scope, and an active LP/trader cohort with no market_group (finding IL — else an unscoped
+// genesis could mint COIN to positions from any pool / any market). init reads only coin_mint.key (the mint
+// is unpacked at freeze, not init), so a fresh random pubkey suffices as the coin_mint. Real .so.
+fn try_init(svm: &mut LiteSVM, payer: &Keypair, supply: u64, ins: u16, back: u16, lp: u16, ins_pool: Pubkey, back_pool: Pubkey, market: Pubkey) -> Result<(), String> {
+    let coin_mint = Pubkey::new_unique();
+    let rd_config = Pubkey::find_program_address(&[b"rd_config", coin_mint.as_ref()], &rd_id()).0;
+    let dist_config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref(), rd_config.as_ref()], &dist_id()).0;
+    let mut d = vec![0u8];
+    d.extend_from_slice(&supply.to_le_bytes());
+    d.extend_from_slice(&2_000u64.to_le_bytes());     // emission_end
+    d.extend_from_slice(&ins.to_le_bytes());
+    d.extend_from_slice(&back.to_le_bytes());
+    d.extend_from_slice(&lp.to_le_bytes());
+    d.extend_from_slice(&500u64.to_le_bytes());        // finalize_window
+    d.extend_from_slice(ins_pool.as_ref());
+    d.extend_from_slice(back_pool.as_ref());
+    d.extend_from_slice(market.as_ref());
+    send(svm, payer, &[Instruction { program_id: rd_id(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(coin_mint, false),
+        AccountMeta::new_readonly(dist_id(), false), AccountMeta::new_readonly(dist_config, false),
+        AccountMeta::new_readonly(Pubkey::new_unique(), false), AccountMeta::new_readonly(Pubkey::new_unique(), false),
+        AccountMeta::new(rd_config, false), AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+    ], data: d }], &[])
+}
+
+#[test]
+fn init_rejects_zero_supply_overallocation_and_unscoped_cohorts() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let p = Pubkey::new_unique;
+    let z = Pubkey::default();
+
+    // zero supply -> rejected.
+    assert!(try_init(&mut svm, &payer, 0, 1_000, 1_000, 4_000, p(), p(), p()).is_err(), "zero supply");
+    // cohort bps sum > 100% (5000+4000+2000=11000) -> rejected.
+    assert!(try_init(&mut svm, &payer, 1_000_000, 5_000, 4_000, 2_000, p(), p(), p()).is_err(), "bps sum > 100%");
+    // insurance active (10000, trader=0) but NO insurance pool -> rejected.
+    assert!(try_init(&mut svm, &payer, 1_000_000, 10_000, 0, 0, z, z, z).is_err(), "insurance cohort without a pool scope");
+    // backing active (10000, trader=0) but NO backing pool -> rejected.
+    assert!(try_init(&mut svm, &payer, 1_000_000, 0, 10_000, 0, z, z, z).is_err(), "backing cohort without a pool scope");
+    // LP+trader active (lp 4000, trader 4000) with pools set but NO market_group -> rejected (finding IL).
+    assert!(try_init(&mut svm, &payer, 1_000_000, 1_000, 1_000, 4_000, p(), p(), z).is_err(), "lp/trader cohort without a market scope");
+    // fully-valid config -> accepted.
+    try_init(&mut svm, &payer, 1_000_000, 1_000, 1_000, 4_000, p(), p(), p()).expect("a fully-scoped config initializes");
+}
+
 // claim anti-theft (GY at the claim layer): LP/trader claim is PERMISSIONLESS (any cranker may finalize a
 // backer's claim), so the cranker must NOT be able to (a) redirect the COIN to an account it controls, nor
 // (b) pay from a decoy vault. The bound recipient + the config.vault are the only acceptable endpoints. Real .so.
