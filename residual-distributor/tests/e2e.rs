@@ -477,3 +477,109 @@ fn claim_before_freeze_is_rejected() {
     let ata = create_token_account(&mut svm, &payer, &env.coin_mint, &lp.pubkey());
     assert!(claim(&mut svm, &payer, &env, &lp, &ata, None).is_err(), "claim before freeze must reject");
 }
+
+// --- freeze GX/EZ guards (previously only the happy path was exercised; the src comment even cited a
+// `set_authority_clears_delegate_no_vault_rug` test that never existed). These pin the negatives. ---
+fn create_mint_with_freeze(svm: &mut LiteSVM, payer: &Keypair, mint_auth: &Pubkey, freeze_auth: Option<&Pubkey>) -> Pubkey {
+    let mint = Keypair::new();
+    let rent = svm.minimum_balance_for_rent_exemption(spl_token::state::Mint::LEN);
+    let ixs = [
+        system_instruction::create_account(&payer.pubkey(), &mint.pubkey(), rent, spl_token::state::Mint::LEN as u64, &spl_token::ID),
+        spl_token::instruction::initialize_mint(&spl_token::ID, &mint.pubkey(), mint_auth, freeze_auth, 6).unwrap(),
+    ];
+    let tx = Transaction::new_signed_with_payer(&ixs, Some(&payer.pubkey()), &[payer, &mint], svm.latest_blockhash());
+    svm.send_transaction(tx).unwrap();
+    mint.pubkey()
+}
+// Init an rd_config for a prepared coin_mint (the vault is bound later at freeze). emission_end=2000, window=500.
+fn rd_init(svm: &mut LiteSVM, payer: &Keypair, supply: u64, coin_mint: &Pubkey) -> Pubkey {
+    let rd_config = Pubkey::find_program_address(&[b"rd_config", coin_mint.as_ref()], &rd_id()).0;
+    let dist_config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref(), rd_config.as_ref()], &dist_id()).0;
+    let mut d = vec![0u8];
+    d.extend_from_slice(&supply.to_le_bytes());
+    d.extend_from_slice(&2_000u64.to_le_bytes()); // emission_end
+    d.extend_from_slice(&1_000u16.to_le_bytes()); // insurance
+    d.extend_from_slice(&1_000u16.to_le_bytes()); // backing
+    d.extend_from_slice(&4_000u16.to_le_bytes()); // lp (trader remainder)
+    d.extend_from_slice(&500u64.to_le_bytes());   // finalize_window
+    d.extend_from_slice(Pubkey::new_unique().as_ref()); // ins_pool
+    d.extend_from_slice(Pubkey::new_unique().as_ref()); // back_pool
+    d.extend_from_slice(Pubkey::new_unique().as_ref()); // market
+    send(svm, payer, &[Instruction { program_id: rd_id(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(*coin_mint, false),
+        AccountMeta::new_readonly(dist_id(), false), AccountMeta::new_readonly(dist_config, false),
+        AccountMeta::new_readonly(Pubkey::new_unique(), false), AccountMeta::new_readonly(Pubkey::new_unique(), false),
+        AccountMeta::new(rd_config, false), AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+    ], data: d }], &[]).expect("rd init");
+    rd_config
+}
+fn freeze_ix(svm: &mut LiteSVM, payer: &Keypair, rd_config: Pubkey, coin_mint: Pubkey, vault: Pubkey) -> Result<(), String> {
+    send(svm, payer, &[Instruction { program_id: rd_id(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new(rd_config, false),
+        AccountMeta::new_readonly(coin_mint, false), AccountMeta::new(vault, false),
+    ], data: vec![4u8] }], &[])
+}
+
+// finding GX/EZ: freeze BINDS the fixed-supply COIN vault, so it must reject any mint that could still be
+// inflated (live mint authority) or freeze claimers (live freeze authority), and any vault that isn't the
+// rd_config-owned full-supply account. Each case uses its own mint so the global mint.supply check isolates
+// the guard under test.
+#[test]
+fn freeze_enforces_fixed_supply_and_vault_integrity() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let supply = 1_000_000u64;
+    let past = 2_000u64 + 500 + 1;
+
+    // (GX) a mint that still has a MINT authority is rejected (supply could be inflated under claimers);
+    // after revoking it, the fixed-supply mint + rd-owned full vault is accepted.
+    let ma = Keypair::new();
+    let mint = create_mint(&mut svm, &payer, &ma.pubkey());
+    let rd_config = rd_init(&mut svm, &payer, supply, &mint);
+    let vault = create_token_account(&mut svm, &payer, &mint, &rd_config);
+    mint_to(&mut svm, &payer, &mint, &ma, &vault, supply);
+    set_slot(&mut svm, past);
+    assert!(freeze_ix(&mut svm, &payer, rd_config, mint, vault).is_err(), "live mint authority must be rejected (GX inflation)");
+    revoke_mint(&mut svm, &payer, &mint, &ma);
+    assert!(freeze_ix(&mut svm, &payer, rd_config, mint, vault).is_ok(), "fixed-supply mint + rd-owned full vault accepted");
+
+    // (GX) a mint that still has a FREEZE authority is rejected (claimers' COIN could be frozen = censorship);
+    // after clearing it, accepted.
+    let ma2 = Keypair::new();
+    let fa = Keypair::new();
+    let mint2 = create_mint_with_freeze(&mut svm, &payer, &ma2.pubkey(), Some(&fa.pubkey()));
+    let rd2 = rd_init(&mut svm, &payer, supply, &mint2);
+    let vault2 = create_token_account(&mut svm, &payer, &mint2, &rd2);
+    mint_to(&mut svm, &payer, &mint2, &ma2, &vault2, supply);
+    revoke_mint(&mut svm, &payer, &mint2, &ma2); // clear mint authority; freeze authority remains
+    set_slot(&mut svm, past);
+    assert!(freeze_ix(&mut svm, &payer, rd2, mint2, vault2).is_err(), "live freeze authority must be rejected (GX freeze-claimers)");
+    let clear = spl_token::instruction::set_authority(&spl_token::ID, &mint2, None, AuthorityType::FreezeAccount, &fa.pubkey(), &[]).unwrap();
+    send(&mut svm, &payer, &[clear], &[&fa]).expect("clear freeze authority");
+    assert!(freeze_ix(&mut svm, &payer, rd2, mint2, vault2).is_ok(), "after clearing freeze authority, accepted");
+
+    // (EZ) a vault NOT owned by rd_config is rejected even when fully funded.
+    let ma3 = Keypair::new();
+    let mint3 = create_mint(&mut svm, &payer, &ma3.pubkey());
+    let rd3 = rd_init(&mut svm, &payer, supply, &mint3);
+    let attacker = Pubkey::new_unique();
+    let decoy = create_token_account(&mut svm, &payer, &mint3, &attacker);
+    mint_to(&mut svm, &payer, &mint3, &ma3, &decoy, supply);
+    revoke_mint(&mut svm, &payer, &mint3, &ma3);
+    set_slot(&mut svm, past);
+    assert!(freeze_ix(&mut svm, &payer, rd3, mint3, decoy).is_err(), "non-rd-owned vault must be rejected (EZ)");
+
+    // (EZ) an rd-owned but UNDER-funded vault is rejected (mint.supply == total, but the bound vault holds < it).
+    let ma4 = Keypair::new();
+    let mint4 = create_mint(&mut svm, &payer, &ma4.pubkey());
+    let rd4 = rd_init(&mut svm, &payer, supply, &mint4);
+    let under = create_token_account(&mut svm, &payer, &mint4, &rd4);
+    let sink = create_token_account(&mut svm, &payer, &mint4, &Pubkey::new_unique());
+    mint_to(&mut svm, &payer, &mint4, &ma4, &under, supply - 1);
+    mint_to(&mut svm, &payer, &mint4, &ma4, &sink, 1); // total minted == supply, but `under` holds supply-1
+    revoke_mint(&mut svm, &payer, &mint4, &ma4);
+    set_slot(&mut svm, past);
+    assert!(freeze_ix(&mut svm, &payer, rd4, mint4, under).is_err(), "under-funded rd-owned vault must be rejected (EZ)");
+}

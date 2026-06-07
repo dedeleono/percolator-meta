@@ -6047,3 +6047,20 @@ OFF_TOTAL_EARNINGS/OFF_CUMULATIVE_LOSS, SUB_POS_PRINCIPAL/SUB_POS_START_SLOT; th
 offsets.rs backing-ledger pin block (kept the DISTRIBUTION_PROGRAM_ID pin (HK), the PERC_HEADER_LEN==16 pin, the
 portfolio pins, and the live subledger pool/owner/withdrawn/shares pins). Net -144 LOC. Pure dead-code removal —
 the .so is functionally identical; no handler logic changed. lib 3 + e2e 8 + offsets 3 + chain 84 green.
+
+### [STATE/CLEAN + COVERAGE] Dual-loop tick — stack clean; pinned the distributor freeze GX/EZ guards
+STACK: nothing new (5th look). Spot-checked that the key exit boundary is already pinned by a real-binary
+test — `subledger/tests/insurance_percolator.rs::vote_locked_principal_cannot_exit_until_retracted` (a
+vote-locked position cannot withdraw until the voter retracts, which clears the lock via the gv->subledger
+SetVoteLock CPI). No code change -> no master push.
+
+DISTRIBUTOR (coverage, secret branch): the freeze GX/EZ guards (the COIN vault is bound at freeze and must be
+rd_config-owned + hold the full fixed supply, with the coin_mint carrying NO mint authority and NO freeze
+authority) previously had only the happy path tested — and the src comment even cited a
+`set_authority_clears_delegate_no_vault_rug` test that NEVER EXISTED. Added the negatives as a real-binary
+litesvm test `freeze_enforces_fixed_supply_and_vault_integrity` (each case its own mint so the global
+mint.supply check isolates the guard): (1) live MINT authority rejected (could inflate supply under claimers),
+then accepted after revoke; (2) live FREEZE authority rejected (could freeze/censor claimers' COIN), then
+accepted after clearing it; (3) a fully-funded but NON-rd-owned vault rejected; (4) an rd-owned but
+UNDER-funded vault rejected. Fixed the stale comment to point at the new test. No behavior change — pins the
+existing guards (BLOCKED, as designed). lib 3 + e2e 9 + offsets 3 + chain 84 green.

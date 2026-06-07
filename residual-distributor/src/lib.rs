@@ -758,7 +758,8 @@ fn freeze(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     // owner == rd_config + funded with the whole supply (EZ). No delegate/close_authority check is
     // needed: SPL's set_authority(AccountOwner) clears delegate + delegated_amount + close_authority,
     // and rd_config (a PDA with no approve instruction) can never set them — so a vault handed to
-    // rd_config is SOLELY rd-controlled. Verified by `set_authority_clears_delegate_no_vault_rug`.
+    // rd_config is SOLELY rd-controlled. The freeze vault/mint guards (owner, full funding, no mint/freeze
+    // authority) are pinned by the e2e test `freeze_enforces_fixed_supply_and_vault_integrity`.
     if v.owner != *config_account.key || v.mint != config.coin_mint || v.amount < config.total_supply {
         return Err(ProgramError::InvalidAccountData);
     }
