@@ -182,6 +182,92 @@ fn setup_with_fee(svm: &mut LiteSVM, payer: &Keypair, supply: u64, fee_bps: u16)
     Env { rd_config, coin_mint, vault, mint_auth, stub_sub, stub_perc, ins_pool, back_pool, market, supply, emission_end, finalize_window }
 }
 
+// Like setup(), but configures the IL+ multi-market allow-list: `extras` are ADDITIONAL trusted-Pyth markets
+// (beyond the primary `market`) the LP/trader cohorts will also accept. Returns the Env (primary market).
+fn setup_with_extra_markets(svm: &mut LiteSVM, payer: &Keypair, supply: u64, extras: &[Pubkey]) -> Env {
+    let emission_end = 2_000u64; let finalize_window = 500u64;
+    let mint_auth = Keypair::new();
+    let coin_mint = create_mint(svm, payer, &mint_auth.pubkey());
+    let rd_config = Pubkey::find_program_address(&[b"rd_config", coin_mint.as_ref()], &rd_id()).0;
+    let dist_config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref(), rd_config.as_ref()], &dist_id()).0;
+    let vault = create_token_account(svm, payer, &coin_mint, &rd_config);
+    mint_to(svm, payer, &coin_mint, &mint_auth, &vault, supply);
+    revoke_mint(svm, payer, &coin_mint, &mint_auth);
+    let (stub_sub, stub_perc, ins_pool, back_pool, market) =
+        (Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique());
+    let mut d = vec![0u8];
+    d.extend_from_slice(&supply.to_le_bytes());
+    d.extend_from_slice(&emission_end.to_le_bytes());
+    d.extend_from_slice(&1_000u16.to_le_bytes()); d.extend_from_slice(&1_000u16.to_le_bytes()); d.extend_from_slice(&4_000u16.to_le_bytes());
+    d.extend_from_slice(&finalize_window.to_le_bytes());
+    d.extend_from_slice(ins_pool.as_ref()); d.extend_from_slice(back_pool.as_ref()); d.extend_from_slice(market.as_ref());
+    d.extend_from_slice(&[extras.len() as u8]); // extra market allow-list count
+    for e in extras { d.extend_from_slice(e.as_ref()); }
+    send(svm, payer, &[Instruction { program_id: rd_id(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(coin_mint, false),
+        AccountMeta::new_readonly(dist_id(), false), AccountMeta::new_readonly(dist_config, false),
+        AccountMeta::new_readonly(stub_perc, false), AccountMeta::new_readonly(stub_sub, false),
+        AccountMeta::new(rd_config, false), AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+    ], data: d }], &[]).expect("rd init with extra markets");
+    Env { rd_config, coin_mint, vault, mint_auth, stub_sub, stub_perc, ins_pool, back_pool, market, supply, emission_end, finalize_window }
+}
+
+// FREE-FARM PROBE (finding IL+ multi-market allow-list, sweep tick D): register_rejects_portfolio_from_a_foreign_market
+// pins the SINGLE-market case (count 0). The IL+ extension allows up to 9 EXTRA trusted-Pyth markets, and that
+// path was untested: it must (a) ACCEPT a portfolio from an allow-listed extra, and (b) still REJECT one from an
+// off-list market — even though the list is now longer. An off-list market is an attacker's own auth-mark oracle
+// on which crystallized_loss/received are freely manufacturable, so a leak here is a direct COIN free-farm.
+#[test]
+fn allow_list_accepts_a_listed_extra_market_and_still_rejects_an_off_list_market() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let extra_a = Pubkey::new_unique();
+    let extra_b = Pubkey::new_unique();
+    let env = setup_with_extra_markets(&mut svm, &payer, 1_000_000, &[extra_a, extra_b]);
+    set_slot(&mut svm, 100);
+
+    // (1) trader portfolio whose provenance is an allow-listed EXTRA market -> ACCEPTED.
+    let t1 = Keypair::new(); let pf1 = Pubkey::new_unique();
+    set_portfolio(&mut svm, &pf1, &env.stub_perc, &extra_b, &t1.pubkey(), 0, 9_000);
+    register(&mut svm, &payer, &env, &t1, &t1.pubkey(), &pf1, COHORT_TRADER).expect("an allow-listed extra market must be accepted");
+
+    // (2) trader portfolio from an OFF-list market (attacker's own auth-mark oracle) -> REJECTED, even with the
+    // longer list. This is the free-farm boundary: no off-list market can mint trader/LP points.
+    let t2 = Keypair::new(); let pf2 = Pubkey::new_unique();
+    let off_list = Pubkey::new_unique();
+    set_portfolio(&mut svm, &pf2, &env.stub_perc, &off_list, &t2.pubkey(), 0, 9_000);
+    assert!(register(&mut svm, &payer, &env, &t2, &t2.pubkey(), &pf2, COHORT_TRADER).is_err(),
+        "an off-list (attacker-oracle'd) market must be rejected even when extras are configured");
+
+    // (3) the PRIMARY market still counts (the extras didn't displace it).
+    let t3 = Keypair::new(); let pf3 = Pubkey::new_unique();
+    set_portfolio(&mut svm, &pf3, &env.stub_perc, &env.market, &t3.pubkey(), 0, 9_000);
+    register(&mut svm, &payer, &env, &t3, &t3.pubkey(), &pf3, COHORT_TRADER).expect("the primary market still counts");
+}
+
+// DoS/HYGIENE PROBE (allow-list init bounds, sweep tick D): the extra-market tail is `count: u8` + count keys.
+// init must bound count to MAX_EXTRA_MARKETS (=9) and reject a default or primary-duplicate extra — else a
+// malformed list could over-read or admit a junk/aliased market into the trusted scope.
+#[test]
+fn init_rejects_a_malformed_or_overlong_extra_market_allow_list() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    // count = 10 (> MAX_EXTRA_MARKETS 9) is rejected before any key is read (no over-read).
+    let over = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        setup_with_extra_markets(&mut svm, &payer, 1_000_000, &[Pubkey::new_unique(); 10])
+    }));
+    assert!(over.is_err(), "an allow-list of 10 extras (> MAX 9) must be rejected at init");
+    // a default (zero) extra key is rejected.
+    let zero = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        setup_with_extra_markets(&mut svm, &payer, 1_000_000, &[Pubkey::default()])
+    }));
+    assert!(zero.is_err(), "a default extra market key must be rejected");
+}
+
 // FINDING NZ: the anti-wash fee is skimmed from LP/trader (PnL-flow) claims and RETAINED in the vault, but
 // NOT from the share-value (insurance/backing, capital-at-risk) cohorts. A sole LP staker with a 20% fee
 // claims 80% of its cohort; the 20% stays locked in the vault. A sole insurance staker pays nothing.

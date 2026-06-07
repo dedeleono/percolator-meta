@@ -6927,3 +6927,16 @@ TEST: claim_requires_the_named_recipients_signature_no_third_party_redirect_thef
 the victim's index with the victim NON-signer + attacker ata is rejected, attacker gets 0, vault untouched, and
 the real recipient still claims in full. VERDICT: BLOCKED. KEEP (pins the signer guard, distinct from the pubkey
 bind). No behavior change. distribution 28 green.
+
+### [VERIFIED — free-farm: the IL+ MULTI-market allow-list accepts listed extras but still rejects off-list] tick (D)
+SURFACE (rd register/crystallize market allow-list, finding IL+). register_rejects_portfolio_from_a_foreign_market
+pins only the SINGLE-market case (extra count 0). The IL+ extension allows up to MAX_EXTRA_MARKETS=9 ADDITIONAL
+trusted-Pyth markets (market_allowed() = primary + first `extra_market_count` extras), and that path was untested.
+An off-list market is an attacker's own auth-mark oracle where crystallized_loss/received are freely
+manufacturable, so any leak in the multi-market path is a direct COIN free-farm.
+TESTS (real rd .so): allow_list_accepts_a_listed_extra_market_and_still_rejects_an_off_list_market — with 2 extras
+configured, a trader portfolio from a listed EXTRA is ACCEPTED, one from an OFF-list market is REJECTED, and the
+PRIMARY market still counts. init_rejects_a_malformed_or_overlong_extra_market_allow_list — count 10 (> MAX 9)
+rejected before any key is read (no over-read), and a default extra key rejected (lib.rs:518/524).
+VERDICT: BLOCKED (no off-list market can mint LP/trader points; the allow-list tail is bounded + sanitized).
+KEEP (pins the multi-market path, distinct from the single-market test). No behavior change. rd e2e 29 green.
