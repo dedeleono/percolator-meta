@@ -369,6 +369,45 @@ fn claim_index_is_bound_to_its_named_recipient_no_cross_or_outsider_claim() {
     assert_eq!(env.token_amount(&bob_ata), 90, "bob got exactly his entry");
 }
 
+// LOF PROBE (third-party claim-theft, sweep tick C): the cross/outsider test above has the attacker SIGN as
+// themselves and get rejected on the pubkey bind (lib.rs:577). The DISTINCT, load-bearing guard is
+// `recipient.is_signer` (lib.rs:544): a cranker passes the VICTIM as a NON-signer recipient account (so the
+// entry pubkey == recipient.key bind PASSES) but routes the payout to the attacker's OWN ata. Without the
+// signer check this is a clean claim-theft LOF — anyone could drain every named recipient into their own
+// wallet. Pins that the claim is a genuine pull authorized by the recipient's signature, not a permissionless
+// push a third party can redirect.
+#[test]
+fn claim_requires_the_named_recipients_signature_no_third_party_redirect_theft() {
+    let mut env = Env::new(100, 1_000_000);
+    let proposal = env.create_proposal(1, 4);
+    let (victim, victim_ata) = env.new_recipient();
+    let (_attacker, attacker_ata) = env.new_recipient();
+    env.append(&proposal, &[(victim.pubkey(), 100)]).expect("append");
+    let auth = clone_kp(&env.authority);
+    env.seal(&proposal, &auth).expect("seal");
+
+    let vault = env.vault;
+    let config = env.config;
+    // Crank a claim for the victim's index 0 with the victim as a NON-signer, paying the attacker's ata.
+    let mut data = vec![4u8]; // IX_CLAIM
+    data.extend_from_slice(&0u32.to_le_bytes());
+    let ix = Instruction { program_id: pid(), accounts: vec![
+        AccountMeta::new_readonly(victim.pubkey(), false), // VICTIM, but NOT a signer
+        AccountMeta::new_readonly(config, false),
+        AccountMeta::new(proposal, false),
+        AccountMeta::new(vault, false),
+        AccountMeta::new(attacker_ata, false),             // payout redirected to the attacker's own ata
+        AccountMeta::new_readonly(spl_token::ID, false),
+    ], data };
+    assert!(env.send(&[ix], &[]).is_err(), "a claim without the named recipient's signature must be rejected (no third-party theft)");
+    assert_eq!(env.token_amount(&attacker_ata), 0, "attacker harvested nothing");
+    assert_eq!(env.token_amount(&vault), 100, "vault byte-for-byte untouched by the unsigned claim");
+
+    // The legitimate recipient still claims their own entry in full (the guard didn't trap the funds).
+    env.claim(&proposal, &victim, &victim_ata, 0).expect("victim claims their own entry");
+    assert_eq!(env.token_amount(&victim_ata), 100, "victim recovers their full entry");
+}
+
 // REINIT A SEALED CONFIG (vault-redirect, finding AJ for distribution): re-initializing a LIVE, sealed
 // config would reset config.sealed_proposal + seal_slot — un-sealing it so an attacker could re-seal to
 // THEIR proposal and redirect the entire COIN vault, or re-open the claim window. End-to-end safety test

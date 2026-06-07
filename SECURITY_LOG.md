@@ -6914,3 +6914,16 @@ percolator). Also corrected the sim's stale "trading fees 0 here" header note (f
 the farmer's real cost, so the wash-unprofitability conclusion holds a fortiori).
 VERDICT: BLOCKED/HEALTH — the buy/burn loop has real fuel; no bypass/over-pull/brick. KEEP (pins fee accrual end
 to end + the asset-0 redirect semantics). sim farm 3 tests green.
+
+### [VERIFIED — LOF: claim requires the named recipient's SIGNATURE (no third-party redirect theft)] tick (C)
+SURFACE (distribution claim). The existing cross/outsider test has the attacker SIGN as themselves and get
+rejected on the entry-pubkey bind (lib.rs:577). The DISTINCT, load-bearing guard is recipient.is_signer
+(lib.rs:544): a cranker passes the VICTIM as a NON-signer recipient account — so the entry-pubkey == recipient.key
+bind PASSES — but routes the payout to the attacker's OWN ata. Without the signer check this is a clean
+claim-theft LOF (anyone drains every named recipient into their own wallet). Also re-read & confirmed this tick:
+re-seal blocked (is_sealed guard :506), burn_unclaimed requires is_sealed (:626) + window-closed (:637), claim
+index bounds-checked (:571), SPL enforces vault/recipient_ata mint match.
+TEST: claim_requires_the_named_recipients_signature_no_third_party_redirect_theft (distribution .so): a claim for
+the victim's index with the victim NON-signer + attacker ata is rejected, attacker gets 0, vault untouched, and
+the real recipient still claims in full. VERDICT: BLOCKED. KEEP (pins the signer guard, distinct from the pubkey
+bind). No behavior change. distribution 28 green.
