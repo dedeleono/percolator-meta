@@ -6532,3 +6532,17 @@ claims her preserved 100. VERDICT: BLOCKED. DOUBLY-DEFENDED like the config (the
 create_pda_robust's System allocate only runs on a system-owned empty account; a live proposal is
 distribution-owned). KEEP (proposal-account integrity, the sibling of the config-reinit). No behavior change.
 distribution 27 green.
+
+### [VERIFIED — impaired-pool share-redemption conservation (pro-rata, no insolvency)] sweep tick (B)
+SURFACE (subledger POLICY_WITH_SURPLUS share math, redeem_shares under a market loss). Genesis-pool exits
+redeem shares at the LIVE balance. Under impairment (insurance < deposited principal) the risk is a rounding /
+ordering flaw where a first-mover exits in FULL and a late exiter is stranded (paid less than pro-rata, or the
+pool goes insolvent / underflows). The prompt's "share redemption rounding" corner, and the loss-direction
+complement of first_depositor_inflation (the gain/donation direction).
+TEST: added subledger unit `impaired_pool_redemptions_are_pro_rata_and_conserve_no_insolvency` (pure
+mint/redeem math — the sharp level): 3 depositors fund a 1000-principal pool; a 40% loss drops the live balance
+to 600; all three exit in order. Each takes the SAME ~60% haircut regardless of order (pro-rata fairness); no
+redemption exceeds the live balance; the sum of exits is EXACTLY 600 (conserved — nothing minted/stranded); and
+the last exiter drains the pool to 0 (no insolvency, no trapped dust). VERDICT: CORRECT/BLOCKED — order-
+independent proportional haircut, full conservation. KEEP (pins the loss-direction redemption conservation,
+complement of the inflation test). No behavior change. subledger lib 10 green.

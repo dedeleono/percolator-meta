@@ -1621,4 +1621,40 @@ mod tests {
         assert!(v_out + max_skim >= victim_deposit,
             "victim recovers ~all principal: out {v_out} of {victim_deposit} (skim {})", victim_deposit - v_out);
     }
+
+    // IMPAIRED-POOL CONSERVATION (share redemption under a market loss). POLICY_WITH_SURPLUS exits redeem
+    // shares at the LIVE balance; under impairment (insurance < deposited principal) every holder takes a
+    // PROPORTIONAL haircut and exits are ORDER-INDEPENDENT — no first-mover gets paid in full at the expense
+    // of a stranded late exiter, and the SUM of all redemptions never exceeds the impaired balance (no
+    // insolvency / over-redemption from rounding). This is the loss-direction complement of the
+    // first-depositor inflation test (the gain/donation direction).
+    #[test]
+    fn impaired_pool_redemptions_are_pro_rata_and_conserve_no_insolvency() {
+        // Three depositors fund an empty pool to a balance of 1000 principal.
+        let a = mint_shares(300, 0, 0).unwrap();
+        let b = mint_shares(200, a, 300).unwrap();
+        let c = mint_shares(500, a + b, 500).unwrap();
+        let total_shares = a + b + c;
+
+        // A 40% market loss: the live insurance backing the pool drops 1000 -> 600.
+        let mut balance: u64 = 600;
+        let mut shares_left = total_shares;
+        let mut redeemed: u64 = 0;
+        // Exit in order a, b, c — each prices its shares at the CURRENT (shrinking) balance/shares.
+        for (sh, principal) in [(a, 300u64), (b, 200), (c, 500)] {
+            let owed = redeem_shares(sh, balance, shares_left).unwrap();
+            // Each holder takes the SAME ~60% haircut regardless of exit order (pro-rata fairness).
+            let pct = owed * 100 / principal;
+            assert!((59..=60).contains(&pct), "pro-rata haircut ~60% for principal {principal}: got {owed} ({pct}%)");
+            // Never pay more than the pool currently holds (no over-redemption).
+            assert!(owed <= balance, "a redemption can never exceed the live balance");
+            balance -= owed; // saturating not needed: owed <= balance pinned above
+            shares_left -= sh;
+            redeemed += owed;
+        }
+        // Conservation: the sum of all exits equals the impaired balance — nothing minted, nothing stranded,
+        // and the LAST exiter drained the pool to exactly empty (no insolvency, no leftover dust trapped).
+        assert_eq!(redeemed, 600, "all exits sum to exactly the impaired insurance — pool conserved");
+        assert_eq!(balance, 0, "the pool drains to zero; the last exiter is not stranded");
+    }
 }
