@@ -262,6 +262,69 @@ fn trader_cohort_claim_also_pays_the_anti_wash_fee() {
     assert_eq!(token_amount(&svm, &env.vault), supply - 320_000, "the 80_000 trader fee is retained in the vault");
 }
 
+// FREE-FARM PROBE (time-weight semantics, sweep): the log2(tenure) weight keys off `start_slot`, set at
+// REGISTER (lib.rs:725) — NOT off when the residual was actually created. So two stakers with the IDENTICAL
+// net residual but different registration times earn different points: an early registrant out-captures a late
+// one. A farmer can pre-register a residual-EMPTY stake cheaply (just a percolator portfolio, no capital/loss),
+// accrue tenure for free, then manufacture the loss late and still bank the full-tenure multiplier. This pins
+// that behavior so it is not misread as a hard "position held open the whole time" lock.
+//
+// VERDICT: ACCEPTED LIMITATION, not a LOF/DoS and not free COIN. The multiplier only shifts RELATIVE share
+// toward early committers (parity with the genesis-vote early-deposit weight); the EARNING — the net residual R
+// itself — still costs real capital-at-risk + the 3bps per-trade fee + the anti-wash claim fee, all of which
+// scale with farm size (Sybil-flat). Tying tenure to residual-age instead would need a per-increment ledger the
+// design deliberately avoids, and ANY single anchor (register OR first-crystallize) is bypassable with a cheap
+// early dust loss — so there is no clean on-chain fix; the manufacturing cost is the real bound.
+#[test]
+fn time_weight_rewards_registration_tenure_not_residual_age_early_over_captures() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let supply = 1_000_000u64; // trader cohort = remainder 40% = 400_000
+    let env = setup(&mut svm, &payer, supply); // no fee -> isolate the time-weight
+
+    let r = 9_000u128; // IDENTICAL net residual for both stakers
+    // EARLY: register at slot 100 (residual-empty), manufacture R only at slot 10_000 -> tenure 9_900, log2=13.
+    let early = Keypair::new();
+    let early_pf = Pubkey::new_unique();
+    set_slot(&mut svm, 100);
+    set_portfolio(&mut svm, &early_pf, &env.stub_perc, &env.market, &early.pubkey(), 0, 0);
+    register(&mut svm, &payer, &env, &early, &early.pubkey(), &early_pf, COHORT_TRADER).expect("reg early");
+    // LATE: register at slot 9_000 -> crystallize at 10_000 gives tenure 1_000, log2=9 (same R).
+    let late = Keypair::new();
+    let late_pf = Pubkey::new_unique();
+    set_slot(&mut svm, 9_000);
+    set_portfolio(&mut svm, &late_pf, &env.stub_perc, &env.market, &late.pubkey(), 0, 0);
+    register(&mut svm, &payer, &env, &late, &late.pubkey(), &late_pf, COHORT_TRADER).expect("reg late");
+
+    // Both manufacture the SAME loss at the SAME slot, then crystallize together.
+    set_slot(&mut svm, 10_000);
+    set_portfolio(&mut svm, &early_pf, &env.stub_perc, &env.market, &early.pubkey(), 0, r);
+    set_portfolio(&mut svm, &late_pf, &env.stub_perc, &env.market, &late.pubkey(), 0, r);
+    crystallize(&mut svm, &payer, &env, &early, &early_pf).expect("cry early");
+    crystallize(&mut svm, &payer, &env, &late, &late_pf).expect("cry late");
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    freeze(&mut svm, &payer, &env).expect("freeze");
+
+    let early_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &early.pubkey());
+    let late_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &late.pubkey());
+    claim(&mut svm, &payer, &env, &early, &early_ata, None).expect("early claim");
+    claim(&mut svm, &payer, &env, &late, &late_ata, None).expect("late claim");
+
+    // points: early = 13*9_000 = 117_000, late = 9*9_000 = 81_000; denom = 198_000; cohort = 400_000.
+    let early_paid = token_amount(&svm, &early_ata);
+    let late_paid = token_amount(&svm, &late_ata);
+    assert_eq!(early_paid, 400_000u64 * 117_000 / 198_000, "early registrant captures the log2(9_900)=13 multiplier");
+    assert_eq!(late_paid, 400_000u64 * 81_000 / 198_000, "late registrant only gets log2(1_000)=9 on the SAME residual");
+    // The pin: SAME residual, different registration -> early over-captures (~59% vs ~41%). The weight rewards
+    // stake-tenure, not how long the loss was held; the bound is the cost to manufacture R, not the multiplier.
+    assert!(early_paid > late_paid, "pre-registration over-captures vs a late registrant with identical residual");
+    // Conserved: the two split the whole cohort up to 1 atom of independent-floor rounding dust (stays locked).
+    assert_eq!(early_paid + late_paid, 399_999, "cohort fully shared between the two minus 1-atom floor dust");
+    assert!(400_000 - (early_paid + late_paid) <= 1, "at most 1 atom of rounding dust stays locked in the vault");
+}
+
 // DoS PROBE (claim-underflow via an out-of-range anti-wash fee, sweep): claim pays `payout = amount - fee`
 // with `fee = amount * fee_support_bps / 10000`. If fee_support_bps could exceed 10000, fee > amount and the
 // u64 subtraction underflows -> every LP/trader claim reverts forever (a permanent fund-FREEZE on those

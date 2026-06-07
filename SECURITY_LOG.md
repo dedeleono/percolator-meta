@@ -6864,3 +6864,21 @@ TEST: added init_rejects_an_anti_wash_fee_above_100pct_no_claim_underflow_dos (r
 u16::MAX rejected at init; exactly 10_000 (100%, all skimmed, payout 0, no underflow) and 0 accepted. VERDICT:
 BLOCKED. KEEP (pins the fee-bps bound that prevents the claim-underflow DoS on the new anti-wash fee). No
 behavior change. rd e2e 26 green.
+
+### [ACCEPTED LIMITATION — free-farm: time-weight rewards REGISTRATION tenure, not residual-age] sweep tick (D)
+SURFACE (rd crystallize time-weight). points = floor_log2(tenure) * net_delta, tenure = crystallize_slot -
+start_slot, and start_slot is set at REGISTER (lib.rs:725) — NOT when the residual was created. So two stakers
+with the IDENTICAL net residual but different registration times earn different points; an early registrant
+out-captures a late one. A farmer can pre-register a residual-EMPTY stake cheaply (a percolator portfolio, no
+capital/loss), accrue tenure for free, then manufacture the loss late and still bank the full-tenure multiplier.
+TEST: time_weight_rewards_registration_tenure_not_residual_age_early_over_captures (real rd .so): two trader
+stakers, SAME residual 9_000, register at slot 100 vs 9_000, both crystallize at 10_000 -> early gets log2(9_900)
+=13, late gets log2(1_000)=9 -> early 236_363 vs late 163_636 of the 400_000 cohort (~59/41), conserved minus 1
+atom floor dust.
+VERDICT: ACCEPTED LIMITATION — NOT a LOF/DoS and NOT free COIN. The multiplier only shifts RELATIVE share toward
+early committers (parity with the genesis-vote early-deposit weight); the EARNING (net residual R) still costs
+real capital-at-risk + the 3bps per-trade fee + the anti-wash claim fee, all Sybil-flat (scale with farm size).
+Tying tenure to residual-age needs a per-increment ledger the design avoids, and ANY single anchor (register OR
+first-crystallize) is bypassable with a cheap early dust loss -> no clean on-chain fix; manufacturing cost is the
+bound. KEEP (pins the weight's actual stake-tenure semantics so it isn't misread as a hard position-hold lock).
+rd e2e 27 green.
