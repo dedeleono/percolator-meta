@@ -6791,3 +6791,24 @@ fee + the capital the miner must LOCK in the delta-neutral pairs (the Sybil cost
 A hard per-participant CAP remains the stronger lever for a guaranteed bound. Tests: rd
 lp_trader_claim_pays_the_anti_wash_fee_share_value_cohorts_dont; sim asserts spent==0 + post-fee 80% capture.
 rd 24 e2e + 3 offsets + 3 lib green; sim green.
+
+### [FIXED — NZ time-weight: log2(tenure) * net-by-spent residual; + self-referential spend confirmed] design
+Per your refinement ("register at increases; points = log(time) * (crystallized@start - spent@end); close+open
+-> nothing"): residual (LP/trader) points are now TIME-WEIGHTED — points = floor(log2(now - start_slot)) *
+netΔ(counter), where the trader counter is the net drain (crystallized - spent). Parity with genesis-vote's
+floor(log2(hold)) * principal and the rd's original (disabled) GZ design.
+SELF-REFERENTIAL SPEND (confirmed from percolator's own test execute_account_residual_counter_trade_path,
+v16_cu.rs:10958): a budget-holder's OWN subsequent fill spends THEIR crystallized budget (taker.spent rises,
+the counterparty's received rises). A THIRD PARTY cannot spend another account's budget. CONSEQUENCES:
+  - The earlier "third-party exit demand raises the miner's spent" hypothesis is FALSE — net-by-spent gets no
+    live help from exit demand (the sim asserts Σ spent == 0 in the isolated wash, and the mechanic explains why
+    it would stay 0 even with real traders present).
+  - BUT it ENABLES the time-weight's churn-penalty: the miner closing/reopening to recycle capital is THEIR OWN
+    fill -> raises THEIR spent -> net drops -> fewer points. So "close and open -> get (nearly) nothing" works
+    against the budget holder, exactly as intended. The combination forces the miner to keep the loss leg OPEN
+    and the capital LOCKED for the full tenure to earn (the log-time multiplier), which is the real Sybil cost.
+ANTI-FLASH: floor(log2(tenure)) = 0 for tenure < 2, so register+crystallize in the same slot earns 0 (parity
+with the vote weight). HONEST BOUND now: anti-wash fee (taxes) + time-weighted LOCKED CAPITAL (the Sybil cost,
+maximized by forcing continuous openness) + spent-netting (catches the holder's own churn). A hard per-
+participant cap remains the only GUARANTEED bound. Tests updated for the time-weight (idempotency/full-delta
+properties preserved, values now log2(tenure)-scaled). rd 3 lib + 24 e2e + 3 offsets green; sim green.

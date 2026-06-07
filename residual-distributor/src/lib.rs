@@ -195,6 +195,12 @@ fn residual_counter(cohort: u8, received: u128, crystallized: u128, spent: u128)
     }
 }
 
+/// floor(log2(n)); 0 for n < 2. The residual time-weight multiplier (parity with genesis-vote's
+/// floor(log2(hold_time)) and the rd's original GZ design).
+fn floor_log2(n: u64) -> u128 {
+    if n < 2 { 0 } else { (63 - n.leading_zeros()) as u128 }
+}
+
 // ===========================================================================
 // State
 // ===========================================================================
@@ -777,17 +783,22 @@ fn crystallize(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
             stake.points = new_pts;
         }
         _ => {
-            // Residual cohort (LP/trader): points = Δ(counter) since register. The TRADER counter is the NET
-            // drain `crystallized - spent` (finding NZ): a delta-neutral self-deal has its crystallized loss
-            // recovered by the counterparty leg (spent == crystallized) -> net 0 -> earns nothing, even though
-            // the gross loss is "real". Only un-recovered loss (a true backstop drain) counts. The LP counter
-            // (`received`) has no symmetric net and is bounded by the claim fee, NOT here.
+            // Residual cohort (LP/trader): points = TIME-WEIGHTED Δ(net counter) since register. The TRADER
+            // counter is the NET drain `crystallized - spent` (finding NZ): a delta-neutral self-deal has its
+            // crystallized loss recovered by its OWN counterparty leg only if it churns (close/reopen spends its
+            // own budget -> spent rises -> net 0). The LP counter (`received`) has no symmetric net and is also
+            // bounded by the claim fee. TIME-WEIGHT (GZ): points = floor(log2(now - start_slot)) * netΔ, so the
+            // budget must stay OUTSTANDING (position open, capital locked) as long as possible to earn — and
+            // churning to recycle capital spends the budget (spent up -> net down) for nothing. Parity with the
+            // genesis-vote floor(log2(hold)) * principal weight.
             if *backing_ledger.owner != config.percolator_program {
                 return Err(ProgramError::IllegalOwner);
             }
             let (received, crystallized, spent) = read_portfolio_residual(&backing_ledger.try_borrow_data()?)?;
             let counter = residual_counter(stake.cohort, received, crystallized, spent);
-            let new_pts = counter.saturating_sub(stake.residual_snap);
+            let net_delta = counter.saturating_sub(stake.residual_snap);
+            let tenure = Clock::get()?.slot.saturating_sub(stake.start_slot);
+            let new_pts = floor_log2(tenure).saturating_mul(net_delta);
             let slot = config.cohort_points_mut(stake.cohort);
             *slot = slot.saturating_sub(stake.points).saturating_add(new_pts);
             stake.points = new_pts;

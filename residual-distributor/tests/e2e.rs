@@ -196,14 +196,17 @@ fn lp_trader_claim_pays_the_anti_wash_fee_share_value_cohorts_dont() {
     set_slot(&mut svm, 100);
     let vault_start = token_amount(&svm, &env.vault);
 
-    // sole LP staker (residual cohort -> fee applies).
+    // sole LP staker (residual cohort -> fee applies). Register at slot 100, then let real time elapse
+    // (residual points are time-weighted: floor(log2(tenure)) * netΔ — sole-in-cohort so the weight cancels
+    // in the claim ratio, but it must be > 0).
     let lp = Keypair::new();
     let pf = Pubkey::new_unique();
     set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &lp.pubkey(), 0, 0);
     register(&mut svm, &payer, &env, &lp, &lp.pubkey(), &pf, COHORT_LP).expect("reg lp");
     set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &lp.pubkey(), 9_000, 0);
+    set_slot(&mut svm, 1_000); // tenure = 900 -> floor(log2) = 9 > 0
     crystallize(&mut svm, &payer, &env, &lp, &pf).expect("cry lp");
-    // sole INSURANCE staker (share-value cohort -> NO fee).
+    // sole INSURANCE staker (share-value cohort -> NO fee, NOT time-weighted).
     let ins = Keypair::new();
     let ins_pos = Pubkey::new_unique();
     set_position(&mut svm, &ins_pos, &env.stub_sub, &env.ins_pool, &ins.pubkey(), 500, false);
@@ -789,31 +792,33 @@ fn crystallize_is_idempotent_under_replay_and_tracks_full_delta_not_accumulation
     let pts = |svm: &LiteSVM| -> u128 { u128::from_le_bytes(svm.get_account(&stake).unwrap().data[176..192].try_into().unwrap()) };
     let denom = |svm: &LiteSVM| -> u128 { u128::from_le_bytes(svm.get_account(&env.rd_config).unwrap().data[402..418].try_into().unwrap()) };
 
-    // counter 5_000 -> 12_000 (Δ from register = 7_000). First crystallize records exactly the Δ.
+    // Points are TIME-WEIGHTED: floor(log2(now - start_slot=100)) * netΔ. register at slot 100.
+    // counter 5_000 -> 12_000 (netΔ from register = 7_000). First crystallize at slot 1_000: tenure 900,
+    // floor(log2(900)) = 9, so points = 9 * 7_000 = 63_000.
     set_slot(&mut svm, 1_000);
     set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &lp.pubkey(), 12_000, 0);
     crystallize(&mut svm, &payer, &env, &lp, &pf).expect("crystallize 1");
-    assert_eq!(pts(&svm), 7_000, "points = counter - register snapshot");
-    assert_eq!(denom(&svm), 7_000, "cohort denominator = the single staker's Δ");
+    assert_eq!(pts(&svm), 9 * 7_000, "points = floor(log2(tenure=900)) * (counter - register snapshot)");
+    assert_eq!(denom(&svm), 9 * 7_000, "cohort denominator = the single staker's weighted Δ");
 
-    // REPLAY with the SAME counter — idempotent: no inflation of points or the denominator.
+    // REPLAY at the SAME slot+counter — idempotent: same tenure, same netΔ -> no inflation.
     crystallize(&mut svm, &payer, &env, &lp, &pf).expect("crystallize replay (same counter)");
     crystallize(&mut svm, &payer, &env, &lp, &pf).expect("crystallize replay #2");
-    assert_eq!(pts(&svm), 7_000, "replay did NOT inflate the stake's points");
-    assert_eq!(denom(&svm), 7_000, "replay did NOT inflate the cohort denominator");
+    assert_eq!(pts(&svm), 9 * 7_000, "replay did NOT inflate the stake's points");
+    assert_eq!(denom(&svm), 9 * 7_000, "replay did NOT inflate the cohort denominator");
 
-    // counter advances 12_000 -> 20_000 (Δ from register = 15_000). Re-crystallize tracks the FULL delta
-    // from the register snapshot — NOT 7_000 + 15_000 (that would be the per-window accumulation bug).
+    // counter advances 12_000 -> 20_000 (netΔ from register = 15_000). Re-crystallize at slot 1_800: tenure
+    // 1_700, floor(log2) = 10. Tracks the FULL netΔ from register (10 * 15_000), NOT a sum of per-window Δs.
     set_slot(&mut svm, 1_800);
     set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &lp.pubkey(), 20_000, 0);
     crystallize(&mut svm, &payer, &env, &lp, &pf).expect("crystallize 2");
-    assert_eq!(pts(&svm), 15_000, "points track the cumulative Δ from register, not a sum of window Δs");
-    assert_eq!(denom(&svm), 15_000, "denominator re-derived (subtract-old/add-new), still the true Δ");
+    assert_eq!(pts(&svm), 10 * 15_000, "points = floor(log2(tenure=1700)) * cumulative netΔ from register");
+    assert_eq!(denom(&svm), 10 * 15_000, "denominator re-derived (subtract-old/add-new), still the true weighted Δ");
 
     // Replaying after the advance is still idempotent.
     crystallize(&mut svm, &payer, &env, &lp, &pf).expect("crystallize replay #3");
-    assert_eq!(pts(&svm), 15_000, "still idempotent after the counter advance");
-    assert_eq!(denom(&svm), 15_000, "denominator stable under replay");
+    assert_eq!(pts(&svm), 10 * 15_000, "still idempotent after the counter advance");
+    assert_eq!(denom(&svm), 10 * 15_000, "denominator stable under replay");
 }
 
 // claim is rejected before freeze (denominators not final).
@@ -962,6 +967,7 @@ fn claim_cannot_be_redirected_or_paid_from_a_decoy_vault() {
     set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &lp.pubkey(), 0, 0);
     register(&mut svm, &payer, &env, &lp, &lp.pubkey(), &pf, COHORT_LP).expect("register"); // recipient bound = lp
     set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &lp.pubkey(), 10_000, 0);
+    set_slot(&mut svm, 1_000); // residual points are time-weighted -> need tenure > 0
     crystallize(&mut svm, &payer, &env, &lp, &pf).expect("crystallize");
     set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
     freeze(&mut svm, &payer, &env).expect("freeze");
@@ -1014,6 +1020,7 @@ fn claim_rejects_a_stake_from_a_different_rd_config_no_cross_genesis_claim() {
     set_portfolio(&mut svm, &pf, &env_a.stub_perc, &env_a.market, &lp.pubkey(), 0, 0);
     register(&mut svm, &payer, &env_a, &lp, &lp.pubkey(), &pf, COHORT_LP).expect("register in A");
     set_portfolio(&mut svm, &pf, &env_a.stub_perc, &env_a.market, &lp.pubkey(), 10_000, 0);
+    set_slot(&mut svm, 1_000); // residual points are time-weighted -> need tenure > 0
     crystallize(&mut svm, &payer, &env_a, &lp, &pf).expect("crystallize in A");
 
     // Genesis B: a SEPARATE rd_config (different coin mint + vault), also frozen.
