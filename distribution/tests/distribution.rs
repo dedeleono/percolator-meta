@@ -551,6 +551,43 @@ fn unclaimed_is_burned_after_window() {
     assert_eq!(mint_before - mint_after, 40, "unclaimed 40 burned from supply");
 }
 
+// CONSERVATION (burn destroys unclaimed allocations AND unallocated headroom): the vault is funded with the
+// FULL fixed supply, but a winning proposal may allocate LESS than that (total_amount <= total_supply). After
+// claims, the vault still holds (a) any unclaimed entries PLUS (b) the unallocated headroom (supply -
+// total_amount). burn_unclaimed burns the WHOLE remaining vault (lib.rs:641), so BOTH must be destroyed — else
+// the headroom would sit locked in the vault forever or leak. The existing burn test allocates the full supply
+// (headroom = 0), so the headroom-burn half of conservation was untested. Pins: claimed + burned == supply, and
+// the COIN mint supply drops by exactly (unclaimed + headroom) — real deflation to the COIN holders.
+#[test]
+fn burn_unclaimed_also_burns_unallocated_headroom_full_conservation() {
+    let mut env = Env::new(100, 50); // fixed supply = 100, vault funded with all 100
+    env.set_slot(10);
+    let proposal = env.create_proposal(1, 4);
+    let (alice, alice_ata) = env.new_recipient();
+    let (bob, bob_ata) = env.new_recipient();
+    // Allocate only 70 of the 100 supply: alice 50, bob 20 -> 30 of unallocated HEADROOM left in the vault.
+    env.append(&proposal, &[(alice.pubkey(), 50), (bob.pubkey(), 20)]).expect("append 70 of 100");
+    let auth = clone_kp(&env.authority);
+    env.seal(&proposal, &auth).expect("seal"); // seal_slot = 10, window ends at 60
+
+    // Alice claims her 50; bob never claims his 20. Vault now holds bob's 20 + the 30 headroom = 50.
+    env.claim(&proposal, &alice, &alice_ata, 0).expect("alice claim");
+    assert_eq!(env.token_amount(&alice_ata), 50, "alice got exactly her allocation");
+    assert_eq!(env.token_amount(&env.vault.clone()), 50, "vault = bob's unclaimed 20 + 30 unallocated headroom");
+
+    // Past the window the burn destroys the WHOLE remaining vault: bob's unclaimed 20 AND the 30 headroom.
+    env.set_slot(60);
+    let mint_before = spl_token::state::Mint::unpack(&env.svm.get_account(&env.coin_mint).unwrap().data).unwrap().supply;
+    env.burn_unclaimed().expect("burn unclaimed + headroom");
+    let mint_after = spl_token::state::Mint::unpack(&env.svm.get_account(&env.coin_mint).unwrap().data).unwrap().supply;
+    assert_eq!(env.token_amount(&env.vault.clone()), 0, "vault fully emptied — no headroom stranded");
+    assert_eq!(mint_before - mint_after, 50, "burned exactly bob's unclaimed 20 + the 30 unallocated headroom");
+    // Full conservation: claimed (alice 50) + burned (50) == the fixed supply (100). Nothing leaked or stranded.
+    assert_eq!(env.token_amount(&alice_ata) + (mint_before - mint_after), 100, "claimed + burned == total supply");
+    // Bob's window has closed — his unclaimed entry is gone (burned), not recoverable.
+    assert!(env.claim(&proposal, &bob, &bob_ata, 1).is_err(), "bob cannot claim after the window / burn");
+}
+
 // Anti-griefing: burn_unclaimed must be rejected while the claim window is still
 // open. Otherwise anyone could permissionlessly burn the pool mid-window and
 // destroy claimants' COIN before they get a chance to claim it (a DOS/LOF on every

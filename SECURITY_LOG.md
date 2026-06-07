@@ -6409,3 +6409,18 @@ returns her full principal; and a post-seal re-BACK is rejected (the win is immu
 VERDICT: BLOCKED (no frozen capital; seal immutable). KEEP (pins the anti-freeze liveness bound on the
 vote-lock + the post-seal retract-allowed/back-blocked asymmetry, end-to-end; only a mock touched it before).
 No behavior change. chain 90 green.
+
+### [VERIFIED — burn_unclaimed conservation: unallocated headroom is burned too] sweep tick (C)
+SURFACE (distribution burn_unclaimed, claim/burn accounting). The vault is funded with the FULL fixed supply,
+but a winning proposal may allocate LESS (total_amount <= total_supply). After claims the vault holds (a) any
+unclaimed entries PLUS (b) the unallocated HEADROOM (supply - total_amount). burn_unclaimed burns the WHOLE
+remaining vault (lib.rs:641), so both must be destroyed — else the headroom would sit locked in the vault
+forever or leak. COVERAGE GAP: unclaimed_is_burned_after_window allocates the full supply (60+40=100, headroom
+0), so only the unclaimed-allocation half of conservation was tested; the headroom-burn half was not.
+TEST: added `burn_unclaimed_also_burns_unallocated_headroom_full_conservation` (real distribution .so): allocate
+only 70 of 100 (alice 50, bob 20 -> 30 headroom); alice claims 50, bob never does; the vault holds 50 (bob's 20
++ 30 headroom); past the window burn_unclaimed empties the vault and the COIN mint supply drops by exactly 50
+(20 unclaimed + 30 headroom); claimed(50) + burned(50) == total_supply(100); bob's post-window claim is
+rejected. VERDICT: BLOCKED/CORRECT — full conservation, no stranded/leaked headroom, real deflation to COIN
+holders. KEEP (pins the headroom-burn half of claim/burn conservation, distinct from the full-allocation burn
+test). No behavior change. distribution 25 green.
