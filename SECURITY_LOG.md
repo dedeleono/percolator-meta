@@ -6392,3 +6392,20 @@ rejected; (5) trailing pubkeys beyond the count rejected; (6) boundary count == 
 ACCEPTED. VERDICT: BLOCKED — the init-time allow-list vetting cannot be bypassed to corrupt the curated market
 set. KEEP (pins the init tail-parse + bounds that the runtime allow-list relies on; previously only count=0 and
 a valid list were exercised). No behavior change. rd e2e 18 green.
+
+### [VERIFIED — anti-freeze: a WINNING voter can retract + exit after seal (capital never trapped)] tick (B)
+SURFACE (genesis-vote vote handler post-seal + subledger vote-lock + Feature-A share exit). The vote-lock
+keeps a live ballot backed by capital at risk, but it must never OUTLIVE the voter's right to leave — even
+after their proposal WINS and seals. gv:571-575 deliberately allows RETRACT post-seal (only BACK is blocked at
+576) so a winning voter clears their lock and exits; blocking it would freeze their principal forever (a
+permanent-freeze DoS / griefing surface). This is the LIVENESS complement to last tick's
+e2e_owner_cannot_self_unlock (the lock can't be BYPASSED) — here the lock can't TRAP. Only a genesis-vote MOCK
+test (seal.rs ~822) touched post-seal weight-shift; the real-binary anti-freeze exit was untested.
+TEST: added chain.rs e2e `e2e_winning_voter_can_retract_and_exit_after_seal_no_frozen_capital` (real subledger
++ genesis-vote + distribution): a sole depositor backs + permissionlessly SEALS her own proposal (whole
+electorate -> quorum + 100% majority); the distribution config records her proposal as winner; she is STILL
+vote-locked after the seal; a bare withdraw is blocked; a post-seal [retract, withdraw] clears the lock and
+returns her full principal; and a post-seal re-BACK is rejected (the win is immutable, no un-seal/re-vote).
+VERDICT: BLOCKED (no frozen capital; seal immutable). KEEP (pins the anti-freeze liveness bound on the
+vote-lock + the post-seal retract-allowed/back-blocked asymmetry, end-to-end; only a mock touched it before).
+No behavior change. chain 90 green.

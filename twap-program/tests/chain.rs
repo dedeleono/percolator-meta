@@ -2729,6 +2729,79 @@ fn e2e_owner_cannot_self_unlock_the_vote_lock_to_bypass_retract() {
     assert_eq!(token_amount(&svm, &alice_ata), amount, "alice exits only by retracting through genesis-vote");
 }
 
+// ANTI-FREEZE (winning voter's capital must never be trapped by the vote-lock): the vote-lock keeps a live
+// ballot backed by capital, but it must NOT outlive the voter's right to leave — even after their proposal
+// WINS and seals. genesis-vote:571-575 deliberately allows RETRACT post-seal (only BACK is blocked) precisely
+// so a winning voter can clear their lock and exit; blocking it would freeze their principal forever. This is
+// the liveness complement to e2e_owner_cannot_self_unlock (the lock can't be BYPASSED) — here the lock can't
+// TRAP. Proven end-to-end: a sole depositor seals their own proposal, then retracts + withdraws. Real
+// subledger + genesis-vote + distribution.
+#[test]
+fn e2e_winning_voter_can_retract_and_exit_after_seal_no_frozen_capital() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(sub_id(), so_deploy("subledger_program")).unwrap();
+    svm.add_program_from_file(gv_id_e2e(), so_deploy("genesis_vote_program")).unwrap();
+    svm.add_program_from_file(dist_id_e2e(), so_deploy("distribution_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_genesis(&mut svm, &payer);
+    let recipient = Pubkey::new_unique();
+    let (dist_proposal, gv_p) = register_proposal(&mut svm, &payer, &env, 1, &recipient, 100);
+
+    // alice is the SOLE depositor, then holds so her position has weight -> she alone meets quorum
+    // (principal*2 > outstanding) and majority (100% of cast weight).
+    let alice = Keypair::new(); svm.airdrop(&alice.pubkey(), 1_000_000_000).unwrap();
+    let amount = 1_000_000u64;
+    let alice_ata = Pubkey::new_unique(); set_token(&mut svm, &alice_ata, &env.collateral_mint, &alice.pubkey(), amount);
+    let holding = Pubkey::new_unique(); set_token(&mut svm, &holding, &env.collateral_mint, &env.pool, 0);
+    let position = sub_position_pda(&env.pool, &alice.pubkey());
+    let mut dep = vec![4u8]; dep.extend_from_slice(&amount.to_le_bytes());
+    let deposit = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(position, false), AccountMeta::new(alice_ata, false),
+        AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(system_program::ID, false)], data: dep };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[deposit], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("deposit");
+    let mut c = svm.get_sysvar::<Clock>(); c.slot += 8; svm.set_sysvar::<Clock>(&c);
+
+    let gv_ballot = Pubkey::find_program_address(&[b"gv_ballot", env.gv_config.as_ref(), alice.pubkey().as_ref()], &gv_id_e2e()).0;
+    let vote = |action: u8| Instruction { program_id: gv_id_e2e(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(gv_ballot, false), AccountMeta::new(gv_p, false),
+        AccountMeta::new(position, false), AccountMeta::new_readonly(env.pool, false), AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(sub_id(), false)], data: vec![3u8, action] };
+    let withdraw = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(position, false), AccountMeta::new(alice_ata, false),
+        AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false), AccountMeta::new_readonly(perc_vault_authority(&env.slab, &perc_id()), false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false)],
+        data: { let mut d = vec![5u8]; d.extend_from_slice(&amount.to_le_bytes()); d } };
+    let send = |svm: &mut LiteSVM, ixs: &[Instruction], extra: &[&Keypair]| {
+        svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        let mut signers = vec![&payer]; signers.extend_from_slice(extra);
+        svm.send_transaction(Transaction::new_signed_with_payer(ixs, Some(&payer.pubkey()), &signers, bh)) };
+
+    // alice backs -> locked. Then the permissionless trigger SEALS her proposal (she is the whole electorate).
+    send(&mut svm, &[vote(1)], &[&alice]).expect("back");
+    let trigger = Instruction { program_id: gv_id_e2e(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(gv_p, false),
+        AccountMeta::new_readonly(dist_id_e2e(), false), AccountMeta::new(env.dist_config, false), AccountMeta::new(dist_proposal, false),
+        AccountMeta::new_readonly(env.pool, false)], data: vec![4u8] };
+    send(&mut svm, &[trigger], &[]).expect("sole voter seals her own proposal");
+    assert_eq!(Pubkey::new_from_array(svm.get_account(&env.dist_config).unwrap().data[120..152].try_into().unwrap()), dist_proposal,
+        "alice's proposal is the sealed winner");
+    assert_eq!(svm.get_account(&position).unwrap().data[97], 1, "she is still vote-locked AFTER the seal");
+
+    // Anti-freeze: even as the WINNER, she retracts (post-seal retract is allowed; only re-BACK is blocked),
+    // which clears the lock, and withdraws her full principal. Her capital is never trapped by the win.
+    assert!(send(&mut svm, &[withdraw.clone()], &[&alice]).is_err(), "still locked pre-retract -> withdraw blocked");
+    send(&mut svm, &[vote(2), withdraw], &[&alice]).expect("post-seal retract clears the lock, then withdraw exits");
+    assert_eq!(token_amount(&svm, &alice_ata), amount, "the winning voter recovered her full principal — not frozen");
+    // The seal itself is immutable — a post-seal re-BACK is still rejected (no un-sealing / re-vote).
+    assert!(send(&mut svm, &[vote(1)], &[&alice]).is_err(), "post-seal re-back is rejected; the win is final");
+}
+
 // ATTACK PROBE (low-turnout capture): a minority-capital voter tries to seal their proposal
 // by being the ONLY one to vote — they then hold 100% of the CAST weight (majority trivially
 // passes), but quorum is measured against the LIVE pool outstanding (including non-voters), so
