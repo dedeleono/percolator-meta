@@ -6188,3 +6188,19 @@ accepted (control). No behavior change. e2e 14 green.
 STACK: no new vector. The keystone accept_operator binding was pinned on secret last tick (6bfe594); its master
 port remains BLOCKED on the user's decision re: the inherited distributor-coupled master chain.rs (see prior
 entry b8acc9b). No master push this tick (master == 44a1d5b, untouched).
+
+### [VERIFIED — subledger accept_operator market/perc binding sound; rigorous test deferred] 
+STACK (subledger): the pool-side accept_operator (the genesis grant: pool consents to receive asset-0
+insurance authority+operator) binds to the pool's OWN refs — src line ~1394: `market_slab.key ==
+pool.market_slab && percolator_program.key == pool.percolator_program`, plus a pool-PDA re-derivation
+(1399-1405) so the signing seeds are trusted. Parallel to the twap accept_operator binding pinned last tick
+(6bfe594). VERDICT: sound by code reading.
+WHY NO NEW TEST: insurance_percolator.rs builds the market with marketauth = pool_pda, so asset-0's asset_admin
+is the pool PDA (not an external signer). A foreign-market accept_operator call in that Env fails at the
+percolator UpdateAssetAuthority CPI (the test signer isn't the real asset_admin) REGARDLESS of line 1394 — so a
+negative test there would be TAUTOLOGICAL (passes whether or not the guard exists) and is intentionally NOT
+added (loop guidance: delete marginal/tautological). A rigorous negative requires the chain.rs grand-unified
+harness where the Squads VAULT is asset_admin (so the correct-binding grant actually succeeds and only the
+substituted one fails) — that lives in the diverged chain.rs and is deferred with the master-coupling decision
+(entry b8acc9b). The positive path is already covered by chain.rs e2e_squads_grants_operator_to_subledger_then_
+real_deposit. No code change; master untouched (== 44a1d5b).
