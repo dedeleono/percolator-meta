@@ -6484,3 +6484,19 @@ insurance-pool position declared COHORT_BACKING -> rejected (pool != backing sco
 position declared COHORT_INSURANCE -> rejected (pool != insurance scope); (control) each position registers
 fine under its OWN cohort. VERDICT: BLOCKED. KEEP (pins the cohort<->pool scope bind between the two share-value
 cohorts, distinct from the random-foreign-pool reject). No behavior change. rd e2e 20 green.
+
+### [VERIFIED — voting without capital: an EXITED (principal-0) position has zero weight] sweep tick (B)
+SURFACE (genesis-vote vote weight + Feature-A share exit). Vote weight = floor(log2(age)) * PRINCIPAL, and gv
+rejects a zero-weight vote (genesis-vote:661). e2e_fresh_position_has_no_vote_weight pins the AGE factor
+(flash-deposit). This pins the PRINCIPAL factor: after a voter exits via the one-tx [retract, withdraw] veto
+their position.principal is 0, so a re-vote computes weight 0 and is rejected — a depositor cannot keep or
+re-add ballot weight after pulling their capital out. This is the COMPLEMENT of the vote-lock: the lock stops
+exit-WHILE-voted (must retract first -> weight removed from the tally); the zero-weight gate stops
+vote-WHILE-exited (can't re-add weight without re-depositing). Together, ballot weight always tracks live
+capital-at-risk. The exited-position re-vote was untested (only the low-age flash-deposit case was).
+TEST: added chain.rs e2e `e2e_exited_position_cannot_vote_without_capital_zero_principal_zero_weight` (real
+subledger + genesis-vote): alice backs with capital (total_voted_principal == her principal); exits via
+[retract, withdraw] (principal -> 0, withdrawn flag set, tally back to 0); a re-vote with the now-empty
+position is REJECTED (zero weight) and the quorum tally stays 0 (no capital-less ballot). VERDICT: BLOCKED.
+KEEP (pins the principal=0 -> no-vote half of "voting without capital", distinct from the age=0 flash-deposit
+test; closes the lock/zero-weight pair). No behavior change. chain 92 green.

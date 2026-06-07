@@ -2802,6 +2802,72 @@ fn e2e_winning_voter_can_retract_and_exit_after_seal_no_frozen_capital() {
     assert!(send(&mut svm, &[vote(1)], &[&alice]).is_err(), "post-seal re-back is rejected; the win is final");
 }
 
+// ATTACK PROBE (voting without capital — re-vote with an EXITED position): vote weight = floor(log2(age)) *
+// PRINCIPAL, and gv rejects a zero-weight vote (genesis-vote:661). e2e_fresh_position_has_no_vote_weight pins
+// the AGE factor (flash deposit). This pins the PRINCIPAL factor: after a voter exits via [retract, withdraw]
+// their position.principal is 0, so a re-vote has weight 0 and is rejected — a depositor cannot keep (or
+// re-add) ballot weight after pulling their capital out. This is the complement of the vote-lock: the lock
+// stops exit-WHILE-voted (must retract first, removing weight); the zero-weight gate stops vote-WHILE-exited
+// (can't re-add weight without re-depositing). Together, ballot weight always tracks live capital-at-risk.
+#[test]
+fn e2e_exited_position_cannot_vote_without_capital_zero_principal_zero_weight() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(sub_id(), so_deploy("subledger_program")).unwrap();
+    svm.add_program_from_file(gv_id_e2e(), so_deploy("genesis_vote_program")).unwrap();
+    svm.add_program_from_file(dist_id_e2e(), so_deploy("distribution_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_genesis(&mut svm, &payer);
+    let dest = Pubkey::new_unique();
+    let (_d, gv_p) = register_proposal(&mut svm, &payer, &env, 1, &dest, 100);
+
+    let alice = Keypair::new(); svm.airdrop(&alice.pubkey(), 1_000_000_000).unwrap();
+    let amount = 1_000_000u64;
+    let alice_ata = Pubkey::new_unique(); set_token(&mut svm, &alice_ata, &env.collateral_mint, &alice.pubkey(), amount);
+    let holding = Pubkey::new_unique(); set_token(&mut svm, &holding, &env.collateral_mint, &env.pool, 0);
+    let position = sub_position_pda(&env.pool, &alice.pubkey());
+    let mut dep = vec![4u8]; dep.extend_from_slice(&amount.to_le_bytes());
+    let deposit = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(position, false), AccountMeta::new(alice_ata, false),
+        AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(system_program::ID, false)], data: dep };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[deposit], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("deposit");
+    let mut c = svm.get_sysvar::<Clock>(); c.slot += 8; svm.set_sysvar::<Clock>(&c);
+
+    let gv_ballot = Pubkey::find_program_address(&[b"gv_ballot", env.gv_config.as_ref(), alice.pubkey().as_ref()], &gv_id_e2e()).0;
+    let vote = |action: u8| Instruction { program_id: gv_id_e2e(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(gv_ballot, false), AccountMeta::new(gv_p, false),
+        AccountMeta::new(position, false), AccountMeta::new_readonly(env.pool, false), AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(sub_id(), false)], data: vec![3u8, action] };
+    let withdraw = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(position, false), AccountMeta::new(alice_ata, false),
+        AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false), AccountMeta::new_readonly(perc_vault_authority(&env.slab, &perc_id()), false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false)],
+        data: { let mut d = vec![5u8]; d.extend_from_slice(&amount.to_le_bytes()); d } };
+    let send = |svm: &mut LiteSVM, ixs: &[Instruction], extra: &[&Keypair]| {
+        svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        let mut signers = vec![&payer]; signers.extend_from_slice(extra);
+        svm.send_transaction(Transaction::new_signed_with_payer(ixs, Some(&payer.pubkey()), &signers, bh)) };
+    let tvp = |svm: &LiteSVM| -> u64 { u64::from_le_bytes(svm.get_account(&env.gv_config).unwrap().data[200..208].try_into().unwrap()) };
+
+    // alice backs (has capital + hold-time weight), then EXITS in one tx: [retract, withdraw] -> principal 0.
+    send(&mut svm, &[vote(1)], &[&alice]).expect("back with capital");
+    assert_eq!(tvp(&svm), amount, "her principal is counted while she holds the ballot");
+    send(&mut svm, &[vote(2), withdraw], &[&alice]).expect("veto-exit");
+    assert_eq!(token_amount(&svm, &alice_ata), amount, "alice pulled her full capital out");
+    assert_eq!(svm.get_account(&position).unwrap().data[88], 1, "position withdrawn (principal 0)");
+    assert_eq!(tvp(&svm), 0, "retract removed her weight/principal from the quorum tally");
+
+    // ATTACK: re-vote with the now-empty position. principal 0 -> weight 0 -> rejected (genesis-vote:661).
+    // She cannot re-add ballot weight without re-depositing capital.
+    assert!(send(&mut svm, &[vote(1)], &[&alice]).is_err(), "an exited (principal-0) position has zero weight -> vote rejected");
+    assert_eq!(tvp(&svm), 0, "the capital-less re-vote added nothing to the quorum tally");
+}
+
 // ATTACK PROBE (low-turnout capture): a minority-capital voter tries to seal their proposal
 // by being the ONLY one to vote — they then hold 100% of the CAST weight (majority trivially
 // passes), but quorum is measured against the LIVE pool outstanding (including non-voters), so
