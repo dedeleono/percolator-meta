@@ -6076,3 +6076,19 @@ Complements the reasoning-level "Σ-claims<=supply" audit note with a real-binar
 (Stack iteration this tick: a focused numeric/boundary audit of twap-program + distribution arithmetic — the
 continued-fraction rate comparator, marginal-clearing rounding, eviction-at-MAX_BIDS, distribution claim index
 math — is running; verdict recorded next.)
+
+### [CLEAN] Dual-loop tick — stack numeric/boundary deep-pass (twap-program + distribution): nothing new
+Narrow-and-deep audit of the two arithmetic-heavy stack files, below the GP/GH/GI high-level proofs. CLEAN.
+ - twap `cmp_rate` continued-fraction comparator (lib.rs:854-879) is a consistent total order (Euclidean
+   reciprocal-flip; all (ar==0,br==0) terminal quadrants + the `reversed` toggle verified by hand); its only
+   caller passes c>0,u>0 (the c==0||u==0 skip) and reserve_den>0, so no div-by-zero; reserve_num==0 passes all.
+ - twap marginal clearing (lib.rs:1641-1666): um>0,cm>0 (marginal is eligible); usd_i*cm < 2^128 (u64 legs) so
+   no mul_div_floor overflow; refund = c - coin_i >= 0; budget==0 -> clean roll; COIN conserved (sold+refund ==
+   escrow per bid), USD conserved (total_usd <= Σfills <= budget); as_u64(total_coin/total_usd) can't revert
+   (bounded by real u64 SPL escrow/holding balances). The one reachable edge — a strictly-better fully-filled
+   bid rounding to coin_i==0 (e.g. marginal 1/1000, bid 2/1) — is fund-safe: it takes the else branch, usd_owed
+   reset to 0, full COIN refunded, its USD excluded from total_usd; no USD paid for zero COIN (documented GP).
+ - place_bid eviction at MAX_BIDS rejects a bid merely EQUAL to the weakest (strictly-better only, no churn);
+   distribution append (amount>0, pk!=default, entry_count<capacity, checked_add, total_amount<=total_supply) +
+   claim (index<entry_count, pk==recipient, amount!=0 replay-guard, entry_offset always in-bounds) are sound.
+No code change -> no master push. The pushable stack's numeric surface is saturated.
