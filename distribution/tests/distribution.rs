@@ -444,6 +444,33 @@ fn seal_rejects_naming_the_authority_without_its_signature() {
     env.seal(&proposal, &auth).expect("the real authority seals with its signature");
 }
 
+// DEAD-GENESIS (sealing an EMPTY proposal). seal_winner rejects header.entry_count == 0 (lib.rs). Sealing an
+// empty distribution would finalize the genesis to a list NOBODY can claim — the entire fixed COIN supply
+// becomes burnable and no recipient is ever paid (a total-loss griefing of the genesis outcome). genesis-vote
+// separately blocks REGISTERING an empty proposal for voting (seal.rs), but distribution is a PLUGGABLE seam:
+// its own entry_count==0 guard is the decider-AGNOSTIC backstop that also protects the residual-distributor
+// seal path (and any future decider). That distribution-level guard was untested. A rejected empty seal must
+// also leave the config UNsealed, so a real winner can still seal afterward (the attempt can't brick genesis).
+#[test]
+fn seal_rejects_an_empty_proposal_no_dead_genesis() {
+    let mut env = Env::new(100, 1_000_000);
+    let empty = env.create_proposal(1, 4); // created but never appended -> entry_count == 0
+    let auth = clone_kp(&env.authority);
+
+    // The authority (correct key + signature) tries to seal the empty proposal -> rejected by entry_count==0.
+    assert!(env.seal(&empty, &auth).is_err(), "an empty proposal (entry_count==0) cannot be sealed");
+    let cfg = env.svm.get_account(&env.config).unwrap();
+    assert_eq!(&cfg.data[120..152], &[0u8; 32], "the rejected empty seal left the config UNsealed — genesis not bricked");
+
+    // A real, non-empty proposal still seals afterward and pays its recipient — the empty attempt was inert.
+    let real = env.create_proposal(2, 4);
+    let (alice, alice_ata) = env.new_recipient();
+    env.append(&real, &[(alice.pubkey(), 100)]).expect("append a real entry");
+    env.seal(&real, &auth).expect("a non-empty proposal seals normally");
+    env.claim(&real, &alice, &alice_ata, 0).expect("the recipient claims");
+    assert_eq!(env.token_amount(&alice_ata), 100, "genesis finalized to a LIVE distribution, not a dead one");
+}
+
 // CROSS-CONFIG SEAL (decider-agnostic self-protection). distribution is a pluggable seam — it must NOT
 // assume the calling decider passes one of its OWN proposals. seal_winner binds `header.config ==
 // config_account.key` (lib.rs:511) so config B's authority can never seal config A's proposal (which would

@@ -6456,3 +6456,16 @@ back EXACTLY its escrowed coin (100), NOT coin+fee; the escrow reflects an escro
 the evictor's fee was burned too. VERDICT: BLOCKED — the fee is a sunk cost per placement; eviction is not a
 free re-bid. KEEP (pins the anti-churn economic integrity of the bid fee under eviction; neither existing test
 covered fee+eviction together). No behavior change. chain 91 green.
+
+### [VERIFIED — distribution seal rejects an EMPTY proposal (no dead genesis), decider-agnostic] tick (C)
+SURFACE (distribution seal_winner). seal_winner rejects header.entry_count == 0. Sealing an empty proposal
+would finalize the genesis to a list NOBODY can claim — the entire fixed COIN supply becomes burnable and no
+recipient is ever paid (total-loss griefing of the genesis outcome). genesis-vote separately blocks REGISTERING
+an empty proposal for voting (seal.rs:591), but distribution is a PLUGGABLE seam: its OWN entry_count==0 guard
+is the decider-AGNOSTIC backstop that also protects the residual-distributor seal path (and any future decider).
+That distribution-level guard was untested (only the gv-register variant was).
+TEST: added `seal_rejects_an_empty_proposal_no_dead_genesis` (real distribution .so): the authority (correct
+key + signature) tries to seal a created-but-never-appended proposal -> rejected (entry_count==0); the config is
+left UNsealed (no brick); then a real non-empty proposal seals and its recipient claims the full 100 — genesis
+finalizes to a LIVE distribution. VERDICT: BLOCKED. KEEP (pins the decider-agnostic dead-genesis backstop at the
+distribution layer, distinct from the gv-register empty gate). No behavior change. distribution 26 green.
