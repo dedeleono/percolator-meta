@@ -6358,3 +6358,20 @@ rejected appends left no phantom entries and the prior committed entries survive
 (cross-call accumulation enforced; Solana tx-rollback discards the in-loop writes of a rejected chunk). KEEP
 (pins the cumulative supply cap + exactly-equal boundary + rejected-append-preserves-prior — distinct from the
 single-append test). No behavior change. distribution 24 green.
+
+### [VERIFIED — DAO shutdown cannot confiscate winners' parked settlement_usd] sweep tick (A)
+SURFACE (twap-program shutdown, tag 11 — the DAO's timelock'd sweep of accumulated auction USD). shutdown
+sweeps the passed `holding` to a DAO address but guards `holding.owner == twap_authority` PDA
+(process_shutdown). After an auction settles, winners' owed-but-unclaimed USD sits in `settlement_usd`, which
+is owned by the BOOK_ESCROW PDA (a DIFFERENT PDA than twap_authority). The attack: a FULLY legitimate,
+fully-timelock'd DAO shutdown that simply names settlement_usd as the swept account — if the source weren't
+owner-bound, the DAO could CONFISCATE winners' payouts before they claim. The owner check makes settlement_usd
+structurally unreachable by shutdown. Prior coverage (e2e_shutdown_sweeps_holding_only_via_squads) only swept
+the real holding + rejected a non-DAO caller; the settlement_usd confiscation path was UNTESTED.
+TEST: added `e2e_dao_shutdown_cannot_confiscate_winners_parked_settlement_usd` (real twap + percolator +
+Squads): one bidder wins, execute settles -> 300k parked in settlement_usd (unclaimed); a timelock'd DAO
+shutdown naming settlement_usd as `holding` -> the Squads execute ERRORS (handler rejects: book_escrow-owned,
+not twap_authority); settlement_usd untouched (300k), dest 0; the winner then claims their full 300k. VERDICT:
+BLOCKED. KEEP (pins that even a legitimate DAO governance action cannot reach winners' parked payouts — a
+fund-custody boundary distinct from the non-DAO-rejection + holding-sweep already covered). No behavior change.
+chain 89 green.

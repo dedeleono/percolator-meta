@@ -4141,6 +4141,55 @@ fn e2e_shutdown_sweeps_holding_only_via_squads() {
     assert_eq!(token_amount(&svm, &dest), 400_000, "swept to the DAO-supplied address");
 }
 
+// ATTACK PROBE (DAO shutdown confiscates winners' parked USD): shutdown (tag 11) sweeps the passed `holding`
+// to a DAO address, but guards `holding.owner == twap_authority` PDA (src:process_shutdown). After an auction
+// settles, winners' owed-but-unclaimed USD sits in `settlement_usd`, which is owned by the BOOK_ESCROW PDA —
+// a DIFFERENT owner. If shutdown didn't bind the swept source to a twap_authority-owned account, a fully
+// timelock'd, fully legitimate DAO shutdown could pass settlement_usd and CONFISCATE the winners' payouts
+// before they claim. The owner check blocks it: settlement_usd is structurally unreachable by shutdown. The
+// existing shutdown test only sweeps the real holding; the settlement_usd confiscation was untested.
+#[test]
+fn e2e_dao_shutdown_cannot_confiscate_winners_parked_settlement_usd() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0); // squads tx index 5 (init_book)
+
+    // One bidder: 600k COIN for 300k USD (rate 2). Budget = 400k (80% of 500k surplus) -> fully filled,
+    // so settlement_usd parks the winner's 300k owed USD (unclaimed), 600k COIN burned.
+    let (winner, w_src, w_usd) = new_bidder(&mut svm, &payer, &env, 600_000);
+    send(&mut svm, &[&winner], place_bid_ix(&winner.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &w_src, &w_usd, &env.coin_mint, &env.collateral_mint, 600_000, 300_000, None)).expect("winner bid");
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute settles");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 300_000, "winner's owed USD parked in settlement_usd, unclaimed");
+
+    // ATTACK: a fully-legitimate, timelock'd DAO shutdown that names settlement_usd as the swept "holding".
+    // settlement_usd is owned by the book_escrow PDA (not twap_authority) -> the shutdown handler rejects it,
+    // so the inner CPI fails and the whole Squads execute errors. The DAO cannot confiscate the winner's USD.
+    let dest = Pubkey::new_unique(); set_token(&mut svm, &dest, &env.collateral_mint, &payer.pubkey(), 0);
+    let msg = build_shutdown_message(&env.squads_vault, &env.twap_cfg, &env.twap_authority, &bk.settlement_usd, &dest);
+    let rem = vec![
+        AccountMeta::new_readonly(env.squads_vault, false), AccountMeta::new(bk.settlement_usd, false), AccountMeta::new(dest, false),
+        AccountMeta::new_readonly(env.twap_cfg, false), AccountMeta::new_readonly(env.twap_authority, false),
+        AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(twap_id(), false),
+    ];
+    assert!(squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 6, &msg, &rem).is_err(),
+        "even a timelock'd DAO shutdown cannot sweep the book_escrow-owned settlement_usd");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), 300_000, "winner's parked USD untouched by the shutdown attempt");
+    assert_eq!(token_amount(&svm, &dest), 0, "nothing confiscated");
+
+    // The winner still claims their full 300k — their payout was never the DAO's to take.
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &w_usd, &w_src, 0)).expect("winner claims");
+    assert_eq!(token_amount(&svm, &w_usd), 300_000, "winner recovers their full owed USD");
+}
+
 // FULL grand-unified E2E: subledger insurance deposits + genesis vote + COIN distribution
 // + claim, then the DAO->Squads handoff of the insurance operator to the twap, then a real
 // surplus pull. All six real binaries.
