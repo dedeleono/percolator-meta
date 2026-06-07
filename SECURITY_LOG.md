@@ -6854,3 +6854,13 @@ TEST: added trader_cohort_claim_also_pays_the_anti_wash_fee (real rd .so): a sol
 loss 9_000) with a 20% fee claims 320_000 = 80% of its 400_000 cohort; the 80_000 fee is retained in the vault.
 VERDICT: BLOCKED (no fee-free trader farm). KEEP (closes the trader half of the anti-wash-fee coverage). No
 behavior change. rd e2e 25 green.
+
+### [VERIFIED — DoS: anti-wash fee > 100% rejected at init (no claim-underflow fund-freeze)] sweep tick (D)
+SURFACE (rd init fee guard + claim). claim pays payout = amount - fee, fee = amount * fee_support_bps / 10000.
+If fee_support_bps could exceed 10000, fee > amount -> the u64 subtraction underflows -> EVERY LP/trader claim
+reverts forever (permanent fund-FREEZE on the PnL-flow cohorts). init guards residual_fee_bps > BPS_DENOMINATOR
+-> reject (lib.rs:532), but it was UNTESTED.
+TEST: added init_rejects_an_anti_wash_fee_above_100pct_no_claim_underflow_dos (real rd .so): fee bps 10_001 and
+u16::MAX rejected at init; exactly 10_000 (100%, all skimmed, payout 0, no underflow) and 0 accepted. VERDICT:
+BLOCKED. KEEP (pins the fee-bps bound that prevents the claim-underflow DoS on the new anti-wash fee). No
+behavior change. rd e2e 26 green.

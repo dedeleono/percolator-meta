@@ -262,6 +262,45 @@ fn trader_cohort_claim_also_pays_the_anti_wash_fee() {
     assert_eq!(token_amount(&svm, &env.vault), supply - 320_000, "the 80_000 trader fee is retained in the vault");
 }
 
+// DoS PROBE (claim-underflow via an out-of-range anti-wash fee, sweep): claim pays `payout = amount - fee`
+// with `fee = amount * fee_support_bps / 10000`. If fee_support_bps could exceed 10000, fee > amount and the
+// u64 subtraction underflows -> every LP/trader claim reverts forever (a permanent fund-FREEZE on those
+// cohorts). init guards `residual_fee_bps > BPS_DENOMINATOR -> reject` (lib.rs:532). This pins it: a fee bps
+// over 100% is rejected at init; exactly 100% is the inclusive boundary (all skimmed, payout 0, no underflow).
+#[test]
+fn init_rejects_an_anti_wash_fee_above_100pct_no_claim_underflow_dos() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    // Build an rd init with a CUSTOM trailing fee_bps. Fresh coin_mint each call -> distinct rd_config.
+    let try_fee = |svm: &mut LiteSVM, fee_bps: u16| -> Result<(), String> {
+        let coin_mint = Pubkey::new_unique();
+        let rd_config = Pubkey::find_program_address(&[b"rd_config", coin_mint.as_ref()], &rd_id()).0;
+        let dist_config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref(), rd_config.as_ref()], &dist_id()).0;
+        let mut d = vec![0u8];
+        d.extend_from_slice(&1_000_000u64.to_le_bytes()); // supply
+        d.extend_from_slice(&2_000u64.to_le_bytes());     // emission_end
+        d.extend_from_slice(&1_000u16.to_le_bytes()); d.extend_from_slice(&1_000u16.to_le_bytes()); d.extend_from_slice(&4_000u16.to_le_bytes());
+        d.extend_from_slice(&500u64.to_le_bytes());       // finalize_window
+        d.extend_from_slice(Pubkey::new_unique().as_ref()); d.extend_from_slice(Pubkey::new_unique().as_ref()); d.extend_from_slice(Pubkey::new_unique().as_ref());
+        d.extend_from_slice(&[0u8]);                       // extra market count
+        d.extend_from_slice(&fee_bps.to_le_bytes());       // trailing anti-wash fee_bps
+        send(svm, &payer, &[Instruction { program_id: rd_id(), accounts: vec![
+            AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(coin_mint, false),
+            AccountMeta::new_readonly(dist_id(), false), AccountMeta::new_readonly(dist_config, false),
+            AccountMeta::new_readonly(Pubkey::new_unique(), false), AccountMeta::new_readonly(Pubkey::new_unique(), false),
+            AccountMeta::new(rd_config, false), AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        ], data: d }], &[])
+    };
+    // fee > 100% -> rejected (else `payout = amount - fee` underflows -> permanent claim revert = fund freeze).
+    assert!(try_fee(&mut svm, 10_001).is_err(), "anti-wash fee > 100% must be rejected (claim-underflow DoS)");
+    assert!(try_fee(&mut svm, u16::MAX).is_err(), "a max-u16 fee is rejected");
+    // fee == 100% -> accepted boundary (everything skimmed, payout 0, no underflow); fee 0 -> accepted.
+    try_fee(&mut svm, 10_000).expect("exactly 100% is the inclusive boundary");
+    try_fee(&mut svm, 0).expect("0% (no fee) accepted");
+}
+
 fn stake_pda(env: &Env, owner: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"rd_stake", env.rd_config.as_ref(), owner.as_ref()], &rd_id()).0
 }
