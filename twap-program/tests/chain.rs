@@ -3064,6 +3064,81 @@ fn e2e_voter_cannot_vote_with_another_voters_position() {
     svm.send_transaction(Transaction::new_signed_with_payer(&[vote(&alice, &alice_pos)], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("vote with own position works");
 }
 
+// ATTACK PROBE (vote with a position from a FOREIGN subledger pool). The gv config binds ONE subledger pool
+// (config.subledger_pool = the genesis insurance pool); vote requires the passed sub_pool to equal it
+// (genesis-vote:585). The subledger hosts MANY pools (the genesis insurance pool + reusable own-vault pools
+// for assets 1..N), all under the same `subledger_pool`/`subledger_position` seeds. Without 585, a voter could
+// pass a position they hold in a DIFFERENT pool (capital NOT at risk in the genesis market) to vote — buying
+// governance with the wrong capital. NON-TAUTOLOGICAL: the voter's own-vault pool-B position IS the canonical
+// PDA for (pool_B, voter), so the gv PDA check (588) passes and ONLY the 585 pool-bind rejects it. This is the
+// vote-time complement of trigger_rejects_a_substituted_pool (seal.rs) and the gv analog of the subledger
+// cross-pool drain guard. Real subledger + genesis-vote.
+#[test]
+fn e2e_vote_rejects_a_position_from_a_foreign_subledger_pool() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(sub_id(), so_deploy("subledger_program")).unwrap();
+    svm.add_program_from_file(gv_id_e2e(), so_deploy("genesis_vote_program")).unwrap();
+    svm.add_program_from_file(dist_id_e2e(), so_deploy("distribution_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_genesis(&mut svm, &payer);
+    let (_d, gv_p) = register_proposal(&mut svm, &payer, &env, 1, &Pubkey::new_unique(), 100);
+
+    let alice = Keypair::new(); svm.airdrop(&alice.pubkey(), 1_000_000_000).unwrap();
+    let amount = 1_000_000u64;
+
+    // (A) alice deposits into the GENESIS insurance pool (env.pool = config.subledger_pool) — her bound position.
+    let a_ata = Pubkey::new_unique(); set_token(&mut svm, &a_ata, &env.collateral_mint, &alice.pubkey(), amount);
+    let holding = Pubkey::new_unique(); set_token(&mut svm, &holding, &env.collateral_mint, &env.pool, 0);
+    let pos_a = sub_position_pda(&env.pool, &alice.pubkey());
+    let mut d = vec![4u8]; d.extend_from_slice(&amount.to_le_bytes());
+    let dep_a = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(pos_a, false), AccountMeta::new(a_ata, false),
+        AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(system_program::ID, false)], data: d };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[dep_a], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("deposit into the genesis pool");
+
+    // (B) A SECOND, OWN-VAULT subledger pool (asset 1, no market: slab=perc=default) — NOT the gv's bound pool.
+    let pool_b = sub_pool_pda(&env.collateral_mint, 1, &Pubkey::default(), &Pubkey::default());
+    let vault_b = Pubkey::new_unique(); set_token(&mut svm, &vault_b, &env.collateral_mint, &pool_b, 0);
+    let mut ip = vec![0u8]; ip.extend_from_slice(&1u64.to_le_bytes()); ip.push(0u8); ip.push(0u8); // init_pool asset 1, policy 0, domain 0
+    let init_b = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(env.collateral_mint, false), AccountMeta::new(pool_b, false),
+        AccountMeta::new_readonly(vault_b, false), AccountMeta::new_readonly(system_program::ID, false)], data: ip };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[init_b], Some(&payer.pubkey()), &[&payer], bh)).expect("init the foreign own-vault pool");
+    // alice deposits into pool_b -> her canonical position there (own-vault deposit, tag 1).
+    let b_ata = Pubkey::new_unique(); set_token(&mut svm, &b_ata, &env.collateral_mint, &alice.pubkey(), amount);
+    let pos_b = sub_position_pda(&pool_b, &alice.pubkey());
+    let mut dd = vec![1u8]; dd.extend_from_slice(&amount.to_le_bytes());
+    let dep_b = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(pool_b, false), AccountMeta::new(pos_b, false), AccountMeta::new(b_ata, false),
+        AccountMeta::new(vault_b, false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(system_program::ID, false)], data: dd };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[dep_b], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("deposit into the foreign pool");
+
+    let mut c = svm.get_sysvar::<Clock>(); c.slot += 8; svm.set_sysvar::<Clock>(&c);
+    let gv_ballot = Pubkey::find_program_address(&[b"gv_ballot", env.gv_config.as_ref(), alice.pubkey().as_ref()], &gv_id_e2e()).0;
+    let vote = |pool: &Pubkey, pos: &Pubkey| Instruction { program_id: gv_id_e2e(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(gv_ballot, false), AccountMeta::new(gv_p, false),
+        AccountMeta::new(*pos, false), AccountMeta::new_readonly(*pool, false), AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(sub_id(), false)], data: vec![3u8, 1u8] };
+    let send = |svm: &mut LiteSVM, ix: Instruction| { svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, &alice], bh)) };
+
+    // ATTACK: vote with the FOREIGN (own-vault pool_b) position + pool_b -> rejected by the 585 pool bind.
+    assert!(send(&mut svm, vote(&pool_b, &pos_b)).is_err(),
+        "a position in a pool other than the gv's bound subledger_pool cannot vote (genesis-vote:585)");
+    // CONTROL: the SAME voter votes with her BOUND (genesis insurance pool) position -> succeeds. So 585 is the
+    // sole rejector above, not the owner/PDA/weight checks.
+    send(&mut svm, vote(&env.pool, &pos_a)).expect("voting with a position in the gv's bound pool succeeds");
+    assert_eq!(svm.get_account(&pos_a).unwrap().data[97], 1, "the legitimate vote locked her genesis-pool position");
+}
+
 // ATTACK PROBE (winner-take-all at the claim layer): once proposal A is sealed as the winner,
 // a LOSING proposal's recipient must get nothing. The distribution claim pins
 // config.sealed_proposal (only the winner pays) AND entry.pubkey == signer (pull model). So a

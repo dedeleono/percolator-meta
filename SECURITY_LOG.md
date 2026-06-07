@@ -6693,3 +6693,19 @@ are (a) DEFENSE-IN-DEPTH over structural guards needing heavy harnesses (vote-ti
 second real pool + crafted position), or (b) the non-bug ECONOMIC question (a per-participant wash-farming cap
 is a product lever, not a bypassable flaw). No code change. Recommend pausing the loop and pivoting to the
 wash-farming-cap decision or the #6 proposal tool.
+
+### [VERIFIED — vote rejects a position from a FOREIGN subledger pool (585), end-to-end non-tautological] tick (B)
+SURFACE (genesis-vote vote, pool bind 585). The gv config binds ONE subledger pool (config.subledger_pool = the
+genesis insurance pool); vote requires the passed sub_pool to equal it. The subledger hosts MANY pools (the
+genesis insurance pool + reusable own-vault pools for assets 1..N), all under the same subledger_pool/
+subledger_position seeds. Without 585, a voter could pass a position they hold in a DIFFERENT pool (capital NOT
+at risk in the genesis market) to vote — buying governance with the wrong capital. PRIOR (clean tick B) deferred
+this as needing a crafted account; SOLVED here NON-TAUTOLOGICALLY using a second OWN-VAULT pool: the voter's
+pool-B position IS the canonical PDA for (pool_B, voter), so the gv PDA check (588) passes and ONLY the 585
+pool-bind rejects. (The trigger-time analog is pinned at seal.rs:456; this is the vote-time complement.)
+TEST: added chain.rs e2e `e2e_vote_rejects_a_position_from_a_foreign_subledger_pool` (real subledger +
+genesis-vote): alice deposits into BOTH the genesis insurance pool (bound) AND a second own-vault pool (asset 1,
+slab=perc=default); voting with the foreign pool_b position+pool_b is REJECTED (585); the SAME voter voting with
+her bound genesis-pool position SUCCEEDS and locks it — proving 585 is the sole rejector (owner/PDA/weight all
+pass). VERDICT: BLOCKED. KEEP (pins the vote-time pool bind end-to-end; closes the one gap flagged as deferred
+last B tick). No behavior change. chain 95 green.
