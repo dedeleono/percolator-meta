@@ -230,6 +230,38 @@ fn lp_trader_claim_pays_the_anti_wash_fee_share_value_cohorts_dont() {
     assert_eq!(token_amount(&svm, &env.vault), supply - 320_000 - 100_000, "the 80_000 fee + unclaimed cohorts stay locked in the vault");
 }
 
+// FREE-FARM PROBE (finding NZ, sweep): the TRADER cohort is the PRIMARY delta-neutral wash surface, so the
+// anti-wash fee MUST apply to it too (the LP test above only covers COHORT_LP). claim taxes both PnL-flow
+// cohorts (matches!(cohort, COHORT_LP | COHORT_TRADER)); if the trader branch dodged the fee, a wash-farmer
+// would route through the trader cohort fee-free. A sole trader staker with a 20% fee claims 80% of its
+// cohort; the 20% is retained in the vault.
+#[test]
+fn trader_cohort_claim_also_pays_the_anti_wash_fee() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let supply = 1_000_000u64; // trader = remainder 40% = 400_000
+    let env = setup_with_fee(&mut svm, &payer, supply, 2_000); // 20% anti-wash fee
+    set_slot(&mut svm, 100);
+
+    let t = Keypair::new();
+    let pf = Pubkey::new_unique();
+    set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &t.pubkey(), 0, 0);
+    register(&mut svm, &payer, &env, &t, &t.pubkey(), &pf, COHORT_TRADER).expect("reg trader");
+    // crystallized loss = 9_000 (received/spent 0 -> trader counter = crystallized - spent = 9_000).
+    set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &t.pubkey(), 0, 9_000);
+    set_slot(&mut svm, 1_000); // tenure > 0 for the time-weight
+    crystallize(&mut svm, &payer, &env, &t, &pf).expect("cry trader");
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    freeze(&mut svm, &payer, &env).expect("freeze");
+
+    let ata = create_token_account(&mut svm, &payer, &env.coin_mint, &t.pubkey());
+    claim(&mut svm, &payer, &env, &t, &ata, None).expect("trader claim");
+    assert_eq!(token_amount(&svm, &ata), 320_000, "trader claims 80% of its 400_000 cohort — the 20% anti-wash fee IS skimmed (no fee-free trader farm)");
+    assert_eq!(token_amount(&svm, &env.vault), supply - 320_000, "the 80_000 trader fee is retained in the vault");
+}
+
 fn stake_pda(env: &Env, owner: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"rd_stake", env.rd_config.as_ref(), owner.as_ref()], &rd_id()).0
 }

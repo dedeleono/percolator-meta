@@ -6845,3 +6845,12 @@ cap is unenforceable under anonymity); the 20% insurance share funds the backsto
 This completes the anti-wash-farming work (net-by-spent + anti-wash fee + log2(tenure) time-weight + 3bps trade
 fee + 20% yield-to-insurance), all validated against real percolator (sim churn-vs-hold + 9-vs-1 + the farm).
 chain 97 green.
+
+### [VERIFIED — free-farm: the TRADER cohort (primary wash surface) also pays the anti-wash fee] sweep tick (D)
+SURFACE (rd claim anti-wash fee). claim taxes both PnL-flow cohorts: matches!(cohort, COHORT_LP | COHORT_TRADER).
+The LP fee test only covered COHORT_LP; the TRADER cohort is the PRIMARY delta-neutral wash surface (the long
+leg's crystallized loss), so a fee-free trader branch would let a wash-farmer route through it untaxed.
+TEST: added trader_cohort_claim_also_pays_the_anti_wash_fee (real rd .so): a sole trader staker (crystallized
+loss 9_000) with a 20% fee claims 320_000 = 80% of its 400_000 cohort; the 80_000 fee is retained in the vault.
+VERDICT: BLOCKED (no fee-free trader farm). KEEP (closes the trader half of the anti-wash-fee coverage). No
+behavior change. rd e2e 25 green.
