@@ -618,6 +618,43 @@ fn append_cannot_exceed_total_supply() {
     );
 }
 
+// ATTACK PROBE (split-allocation supply-cap bypass across appends): append accumulates total_amount into the
+// PERSISTED proposal header and re-checks `total_amount <= total_supply` on every entry (lib.rs:append_entries,
+// checked_add). The single-append test (append_cannot_exceed_total_supply) only proves one oversized chunk is
+// rejected; it does NOT prove the cap is CUMULATIVE across calls. If the running total reset per call, a creator
+// could split an over-allocation into many small appends — each individually under-supply — and the sealed list
+// would promise more COIN than the vault holds, so the LAST claimers get nothing (a vault over-draw / claim
+// insolvency). This pins the cross-call accumulation, the exactly-equal boundary, and that a rejected overflow
+// append leaves the prior committed entries intact + claimable. Real distribution .so.
+#[test]
+fn append_supply_cap_is_cumulative_across_calls_and_a_rejected_overflow_preserves_prior_entries() {
+    let mut env = Env::new(100, 1_000_000); // fixed supply = 100
+    let proposal = env.create_proposal(1, 8);
+    let (alice, alice_ata) = env.new_recipient();
+    let (bob, bob_ata) = env.new_recipient();
+    let (carol, carol_ata) = env.new_recipient();
+
+    // Append A commits alice=60 (persisted total = 60).
+    env.append(&proposal, &[(alice.pubkey(), 60)]).expect("append A: 60 <= 100");
+    // Append B (50) is rejected by the CUMULATIVE cap: persisted 60 + 50 = 110 > 100. A per-call reset would
+    // have wrongly accepted it.
+    assert!(env.append(&proposal, &[(bob.pubkey(), 50)]).is_err(), "split-allocation past supply is rejected cumulatively");
+    // Append C (40) fills EXACTLY to the supply: 60 + 40 = 100 (cap is `> supply`, so == supply is allowed).
+    env.append(&proposal, &[(bob.pubkey(), 40)]).expect("append C: 60 + 40 == 100 is the boundary, allowed");
+    // Append D (even 1) now overflows: 100 + 1 > 100 -> rejected. The vault can never be promised more than it holds.
+    assert!(env.append(&proposal, &[(carol.pubkey(), 1)]).is_err(), "once total == supply, any further entry rejects");
+
+    // The rejected appends left NO phantom entries: sealing and claiming distributes exactly 100, no more.
+    let auth = clone_kp(&env.authority);
+    env.seal(&proposal, &auth).expect("seal");
+    env.claim(&proposal, &alice, &alice_ata, 0).expect("alice claims her committed 60");
+    env.claim(&proposal, &bob, &bob_ata, 1).expect("bob claims his committed 40");
+    assert_eq!(env.token_amount(&alice_ata), 60, "alice's prior entry survived the rejected appends");
+    assert_eq!(env.token_amount(&bob_ata), 40, "bob's entry is the exactly-to-supply boundary entry");
+    assert_eq!(env.token_amount(&carol_ata), 0, "carol's overflow entry was never committed");
+    assert_eq!(env.token_amount(&env.vault.clone()), 0, "exactly the supply distributed — no over-draw, no stranded headroom");
+}
+
 // MALFORMED ENTRIES (zero amount / zero-address recipient): append rejects amount == 0 || pk ==
 // Pubkey::default() (lib.rs:append_entries). A zero-amount entry is permanently unclaimable and just
 // soaks a slot; a default-pubkey (zero address) entry allocates a chunk of the fixed supply to a key NOBODY

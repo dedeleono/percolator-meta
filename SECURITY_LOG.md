@@ -6342,3 +6342,19 @@ genesis-vote): after a real gv vote sets the lock, (1) owner-as-authority direct
 bare withdraw still fails; the ONLY unlock is the gv retract (signs as gv_config), after which withdraw
 succeeds. VERDICT: BLOCKED. KEEP (pins the dual-signer authority gate that makes the vote-lock un-bypassable
 by the owner — the keystone of the capital-backs-the-ballot invariant). No behavior change. chain 88 green.
+
+### [VERIFIED — distribution append supply-cap is cumulative across calls (no split-allocation bypass)] tick (C)
+SURFACE (distribution append_entries, top-10k list integrity). append accumulates total_amount into the
+PERSISTED proposal header and re-checks `total_amount <= total_supply` per entry (checked_add). The existing
+append_cannot_exceed_total_supply pins only a SINGLE oversized chunk; it does NOT prove the cap is CUMULATIVE
+across append calls. The attack if the running total reset per call: a creator splits an over-allocation into
+many small appends — each individually under-supply — so the sealed list promises MORE COIN than the vault
+holds and the last claimers get nothing (vault over-draw / claim insolvency).
+TEST: added `append_supply_cap_is_cumulative_across_calls_and_a_rejected_overflow_preserves_prior_entries`
+(real distribution .so): append alice=60 (ok); append bob=50 → rejected (persisted 60+50=110>100, cumulative);
+append bob=40 → ok (60+40==100, the exactly-equal boundary, since the cap is strict `>`); append carol=1 →
+rejected (100+1>100). Then seal + claim distributes EXACTLY 100 (alice 60, bob 40), carol got 0, vault 0 — the
+rejected appends left no phantom entries and the prior committed entries survived intact. VERDICT: BLOCKED
+(cross-call accumulation enforced; Solana tx-rollback discards the in-loop writes of a rejected chunk). KEEP
+(pins the cumulative supply cap + exactly-equal boundary + rejected-append-preserves-prior — distinct from the
+single-append test). No behavior change. distribution 24 green.
