@@ -6617,3 +6617,22 @@ stays 0; claiming with the CORRECT (now-empty) bound position pays 0 (soft-veto 
 still claims its full 100/400 = 25_000. VERDICT: BLOCKED. KEEP (pins the position bind that makes the soft veto
 un-bypassable; distinct from the live-cap min tests which use the bound position). No behavior change. rd e2e
 22 green.
+
+### [CLEAN — distribution surface verified saturated; cross-config claim subsumed] sweep tick (C)
+Re-read the full distribution program (init_config / create_proposal / append / seal / claim / burn) this tick
+for an unpinned SECURITY boundary; found none. Two candidates investigated and DISMISSED as redundant:
+  - CROSS-CONFIG CLAIM (a proposal sealed in genesis A claiming genesis B's vault): SUBSUMED by the
+    `config.sealed_proposal == proposal_account.key` check (claim:554), which is ALREADY pinned by
+    a_losing_proposal_cannot_claim (a foreign/other-config proposal fails identically to a losing one). Unlike
+    the rd cross-genesis (which binds a separate stake.config field, hence its own test), distribution's single
+    sealed_proposal binding covers both losing AND foreign-config proposals. No distinct test warranted.
+  - init_config VAULT-BINDING / decoy-vault init-squat: FULLY pinned — vault must be config-owned
+    (init_config_authority_bound_blocks_funded_vault_hijack, vault.owner != expected_config at lib.rs:346),
+    hold the full supply (init_config_rejects_an_underfunded_vault + ..._below_a_fully_minted_supply, :354),
+    be SPL-owned (..._non_spl_owned_token_shaped_vault, :342), correct mint, with a non-mintable/non-freezable
+    coin (..._mintable_coin / ..._freezable_coin) and non-zero window — 8 init tests total.
+Saturation map (all pinned): create_proposal recreate (prior tick); append cumulative cap + zero/default +
+foreign-creator + after-seal; seal authority key+sig + empty (no-dead-genesis) + cross-config (foreign config)
++ reinit; claim recipient-binding + double-claim + losing/cross-config (sealed_proposal) + window; burn
+seal-gate + window-gate + conservation incl. unallocated headroom. No code change, no redundant test added
+(loop guidance). distribution suite 27 green, sbf clean.
