@@ -6147,3 +6147,15 @@ vector (lifecycle/access/conservation fully pinned).
 FULL-SUITE HEALTH CHECK (no drift after 10+ ticks): all five .so build clean; tests all green —
 subledger 62, genesis-vote 21, distribution 26, residual-distributor 19, twap-program 88 (= 216 total).
 No code change, no master push. Saturation stands; recommend throttling/repointing the loop.
+
+### [COVERAGE — keystone handoff binding] Dual-loop tick — accept_operator market/percolator binding pinned
+STACK (twap-program; the most security-critical authority transfer): accept_operator rotates asset-0's
+insurance operator to the twap_authority. The handler binds it to the config's OWN market + percolator program
+(src ~line 663: market_slab.key == config.market_slab && percolator_program.key == config.percolator_program),
+so even a fully-approved, timelock'd Squads execute cannot rotate the operator on a FOREIGN market or via a
+fake percolator program. Master had only the happy-path handoff test + the non-vault-signer gate; this binding
+was UNTESTED. Added `handoff_rejects_a_substituted_market_or_percolator_program` (real squads+twap+percolator):
+(1) substituted percolator program rejected; (2) substituted market rejected; (3) correct accounts rotate the
+operator (control). No code change (guard already exists). Lands on master (the guard is master code). secret
+chain 85 green.
+DISTRIBUTOR: no new vector this tick (lifecycle/access/conservation fully pinned).

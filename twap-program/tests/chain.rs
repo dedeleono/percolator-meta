@@ -1061,6 +1061,98 @@ fn handoff_rotates_operator_to_twap_only_after_timelock() {
     send(&mut svm, &[exec], &[&dao]).expect("handoff executes after timelock (operator -> twap)");
 }
 
+// accept_operator BINDING (the keystone authority transfer): even a fully-approved, timelock'd Squads
+// execute must rotate the operator ONLY on the config's OWN market via the config's OWN percolator program
+// (twap src line ~663: market_slab.key == config.market_slab && percolator_program.key ==
+// config.percolator_program). A substituted market or percolator program is rejected — so the DAO can never
+// be tricked into rotating asset-0's insurance operator on a FOREIGN market or via a fake percolator. The
+// happy path still executes. All real binaries (squads + twap + percolator).
+#[test]
+fn handoff_rejects_a_substituted_market_or_percolator_program() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(twap_id(), format!("{}/../target/deploy/twap_program.so", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let squads = squads_id();
+    let treasury = install_squads(&mut svm, &squads, &payer.pubkey());
+    let dao = Keypair::new();
+    svm.airdrop(&dao.pubkey(), 1_000_000_000_000).unwrap();
+    let create_key = Keypair::new();
+    let multisig = multisig_pda(&squads, &create_key.pubkey());
+    let create_ix = multisig_create_v2_ix(
+        &squads, &treasury, &multisig, &create_key.pubkey(), &payer.pubkey(),
+        Some(&dao.pubkey()), 1, &[(dao.pubkey(), PERM_ALL)], TIMELOCK_1_WEEK_SECS,
+    );
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[create_ix], Some(&payer.pubkey()), &[&payer, &create_key], bh)).expect("create multisig");
+    let squads_vault = vault_pda(&squads, &multisig, 0);
+
+    let dummy_mint = Pubkey::new_unique();
+    let slab = Pubkey::new_unique();
+    let init_slot = 100u64;
+    let slab_data = make_live_market(&slab, &dummy_mint, &squads_vault, init_slot);
+    svm.set_account(slab, Account { lamports: 1_000_000_000, data: slab_data, owner: perc_id(), executable: false, rent_epoch: 0 }).unwrap();
+    svm.set_sysvar(&Clock { slot: init_slot, unix_timestamp: 100, ..Clock::default() });
+    let init = init_config_ix(&payer.pubkey(), &dummy_mint, &slab, &multisig, &dao.pubkey(), &perc_id());
+    let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[init], Some(&payer.pubkey()), &[&payer], bh)).expect("twap init");
+    let cfg = twap_config_pda(&slab, &multisig, &dummy_mint, &perc_id());
+    let twap_authority = Pubkey::find_program_address(&[b"market-0-twap", cfg.as_ref()], &twap_id()).0;
+
+    // create + approve + (warp past timelock) + execute a proposal carrying `message`/`remaining` at `idx`.
+    let run = |svm: &mut LiteSVM, idx: u64, message: &[u8], remaining: &[AccountMeta]| -> Result<(), String> {
+        let transaction = transaction_pda(&squads, &multisig, idx);
+        let proposal = proposal_pda(&squads, &multisig, idx);
+        let mut send = |svm: &mut LiteSVM, ixs: &[Instruction], extra: &[&Keypair]| -> Result<(), String> {
+            svm.expire_blockhash();
+            let bh = svm.latest_blockhash();
+            let mut signers: Vec<&Keypair> = vec![&payer];
+            signers.extend_from_slice(extra);
+            svm.send_transaction(Transaction::new_signed_with_payer(ixs, Some(&payer.pubkey()), &signers, bh)).map(|_| ()).map_err(|e| format!("{:?}", e))
+        };
+        send(svm, &[vault_transaction_create_ix(&squads, &multisig, &transaction, &dao.pubkey(), message)], &[&dao])?;
+        send(svm, &[proposal_create_ix(&squads, &multisig, &proposal, &dao.pubkey(), idx)], &[&dao])?;
+        send(svm, &[proposal_approve_ix(&squads, &multisig, &proposal, &dao.pubkey())], &[&dao])?;
+        let mut clock = svm.get_sysvar::<Clock>();
+        clock.unix_timestamp += i64::from(TIMELOCK_1_WEEK_SECS) + 1;
+        svm.set_sysvar::<Clock>(&clock);
+        send(svm, &[vault_transaction_execute_ix(&squads, &multisig, &proposal, &transaction, &dao.pubkey(), remaining)], &[&dao])
+    };
+
+    // (1) substituted PERCOLATOR PROGRAM -> rejected (perc.key != config.percolator_program), even past timelock.
+    let foreign_perc = Pubkey::new_unique();
+    let msg = build_accept_operator_message(&squads_vault, &slab, &cfg, &twap_authority, &foreign_perc, &twap_id());
+    let remaining = vec![
+        AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(slab, false),
+        AccountMeta::new_readonly(cfg, false), AccountMeta::new_readonly(twap_authority, false),
+        AccountMeta::new_readonly(foreign_perc, false), AccountMeta::new_readonly(twap_id(), false),
+    ];
+    assert!(run(&mut svm, 1, &msg, &remaining).is_err(), "a substituted percolator program must be rejected");
+
+    // (2) substituted MARKET -> rejected (market.key != config.market_slab).
+    let foreign_market = Pubkey::new_unique();
+    let msg = build_accept_operator_message(&squads_vault, &foreign_market, &cfg, &twap_authority, &perc_id(), &twap_id());
+    let remaining = vec![
+        AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(foreign_market, false),
+        AccountMeta::new_readonly(cfg, false), AccountMeta::new_readonly(twap_authority, false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(twap_id(), false),
+    ];
+    assert!(run(&mut svm, 2, &msg, &remaining).is_err(), "a substituted market must be rejected");
+
+    // (3) the correct market + percolator program -> the handoff executes (control).
+    let msg = build_accept_operator_message(&squads_vault, &slab, &cfg, &twap_authority, &perc_id(), &twap_id());
+    let remaining = vec![
+        AccountMeta::new_readonly(squads_vault, false), AccountMeta::new(slab, false),
+        AccountMeta::new_readonly(cfg, false), AccountMeta::new_readonly(twap_authority, false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(twap_id(), false),
+    ];
+    run(&mut svm, 3, &msg, &remaining).expect("the correct market + percolator program rotates the operator");
+}
+
 
 // ===========================================================================
 // Grand-unified E2E: subledger insurance + genesis votes + COIN distribution +
