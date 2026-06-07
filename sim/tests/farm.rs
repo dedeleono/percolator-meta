@@ -255,6 +255,30 @@ fn rational_miner_farms_the_deterministic_distributor_across_uncontrolled_market
     println!("  a hard per-participant cap is the stronger lever if a guaranteed bound is wanted. The LP cohort");
     println!("  (Δ received, {}%) is farmable the same way and taxed the same way.", LP_BPS / 100);
     println!("=======================================================================\n");
+
+    // ---- 9 NORMAL traders vs 1 FARMER (dilution under anonymity) ----
+    // The 80% above is the SYBIL case: ONE entity owning all the trader stakes. But each trader stake is a
+    // distinct owner, so a LONE farmer among N independent participants captures only its OWN stake = ~1/N of
+    // the cohort. Here N = the number of trader stakes; a single farmer's take is one of them. The rd CANNOT
+    // tell a delta-neutral farmer's wash-loss from a normal directional trader's REAL loss (both are just
+    // crystallized loss), so 9 normal traders' real backing dilutes the 1 farmer to 1/10 — and to beat the
+    // dilution the farmer must Sybil into more accounts, each needing its OWN locked capital + per-trade fee.
+    let trader_stakes: Vec<u64> = stakes.iter().filter(|(_, c, _, _)| *c == 3).map(|(_, _, _, a)| token_amount(&svm, a)).collect();
+    let n = trader_stakes.len();
+    let lone_farmer = trader_stakes.first().copied().unwrap_or(0);
+    println!("================ 9 NORMAL TRADERS vs 1 FARMER ================");
+    println!("independent trader participants          : {n}  (each a distinct anon owner)");
+    println!("a LONE farmer's individual capture       : {lone_farmer}  = {:.1}% of the trader cohort ({trader_supply})", lone_farmer as f64 * 100.0 / trader_supply as f64);
+    println!("  -> 9 normal traders' REAL losses dilute the 1 farmer to ~1/{n} of the cohort. The farmer's only");
+    println!("     way to beat the dilution is to Sybil into more accounts — but no per-participant cap can");
+    println!("     stop that under anonymity; each Sybil account pays its OWN locked-capital + per-trade fee, so");
+    println!("     the cost scales with the farm. That Sybil-flat cost (not a cap) is the bound.");
+    println!("normal trader vs farmer, same {:.0}% COIN  : the 9 NORMAL traders LOST real capital for it (directional", lone_farmer as f64 * 100.0 / trader_supply as f64);
+    println!("     risk); the farmer's net capital is ~0 (delta-neutral) but it is taxed by the fee + must lock");
+    println!("     margin for the time-weighted tenure to earn at all.");
+    println!("=============================================================\n");
+    // A lone farmer is diluted to at most 1/N of the cohort (the per-stake share), NOT the Sybil aggregate.
+    assert!(lone_farmer as u128 <= trader_supply / n as u128 + 1, "a lone farmer among {n} is diluted to <= 1/{n} of the cohort");
     let _ = lp_trader_supply;
 
     // Σ spent is 0: the delta-neutral wash is a REAL backstop drain, not a counterparty recovery, so the

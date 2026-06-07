@@ -6821,3 +6821,13 @@ new margin that SPENDS its own crystallized budget -> spent 250 == crystallized 
 proof of the time-weight + net-by-spent design: "close and open -> you spend your own budget and get nothing,"
 forcing the farmer to keep capital LOCKED and OPEN for the full tenure to earn (the Sybil cost). Confirms the
 self-referential spend mechanic against the live program. sim 2 tests green.
+
+### [VALIDATED — 9 normal traders vs 1 farmer: a lone farmer is diluted to 1/N] sim
+The farm sim now also reports the per-participant (non-Sybil) view: each trader stake is a distinct anon
+owner, so a LONE farmer among N independent participants captures only its OWN stake = ~1/N of the cohort
+(8% = 1/10 * (1 - 20% fee) with 10 stakes). The rd cannot distinguish a delta-neutral farmer's wash-loss from
+a normal directional trader's REAL loss (both are just crystallized loss), so 9 normal traders' real backing
+DILUTES the 1 farmer to 1/10. To beat the dilution the farmer must Sybil into more accounts — and since no
+per-participant cap is enforceable under anonymity (no identity), each Sybil account pays its OWN locked
+capital + per-trade fee, so the cost scales with the farm size. That Sybil-FLAT cost (fee + capital + the
+time-weighted hold), NOT a cap, is the bound. The 80% aggregate is the worst-case Sybil owning all N. sim green.
