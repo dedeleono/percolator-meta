@@ -6204,3 +6204,23 @@ harness where the Squads VAULT is asset_admin (so the correct-binding grant actu
 substituted one fails) — that lives in the diverged chain.rs and is deferred with the master-coupling decision
 (entry b8acc9b). The positive path is already covered by chain.rs e2e_squads_grants_operator_to_subledger_then_
 real_deposit. No code change; master untouched (== 44a1d5b).
+
+### [VERIFIED — Feature A share inflation/donation skim bounded + self-defeating] sweep tick (B)
+SURFACE (subledger, POLICY_WITH_SURPLUS — the new share-based genesis pool from Feature A). The classic
+ERC4626 first-depositor inflation/donation skim: attacker seeds the empty pool with 1 atom, "donates" a
+large amount to inflate the live balance, then a victim's deposit rounds toward zero shares so the attacker
+redeems the victim's principal. The share math (mint_shares/redeem_shares, lib.rs:322-336) uses the
+VIRTUAL_SHARES=1_000_000 offset (balance+1, total_shares+VIRTUAL) but had NO test pinning the inflation
+boundary — only tenure-fairness (shares_are_tenure_fair) and pro-rata yield were covered.
+VERDICT: BLOCKED, two independent ways:
+  (1) END-TO-END the donation route does not exist. The only way to raise asset-0 insurance balance WITHOUT
+      minting shares is market PnL (uncontrollable by the attacker, tenure-shared) — there is NO permissionless
+      TopUp; percolator insurance is authority-gated (only the pool PDA signs). So the attacker cannot even
+      stage the donation during genesis.
+  (2) Granting the donation as a worst-case hypothetical, the math holds: with attacker 1 atom + 1e9 donation
+      and a 1e6 victim deposit, the victim mints 1999 shares and redeems 999_500 of 1_000_000 (skim = 500 atoms
+      = 0.05%), while the attacker redeems 500_000_250 of their 1_000_000_001 in — a ~500M LOSS to skim 500
+      atoms. The donation is split with the unredeemable virtual shares, so the attack is strictly self-defeating.
+TEST: added subledger unit `first_depositor_inflation_skim_is_bounded_and_self_defeating` (pure mint/redeem math
+— the sharp level; an e2e cannot exercise a donation that has no route). KEEP (pins a real, previously-untested
+boundary on new Feature A code). No behavior change. subledger lib 9 green.

@@ -1583,4 +1583,42 @@ mod tests {
         assert!((99..=100).contains(&bob_out), "bob gets ~principal, ~0 pre-existing surplus: {bob_out}");
         assert!(bob_out < alice_out, "the late depositor cannot capture the early backer's surplus");
     }
+
+    // Inflation/donation skim — the classic ERC4626 first-depositor attack — is bounded AND
+    // self-defeating by the VIRTUAL_SHARES offset (findings HT/HU). An attacker seeds the empty pool
+    // with 1 atom, then a large "donation" inflates the live balance, trying to make a later victim's
+    // shares round toward zero so the attacker redeems the victim's principal. Two facts kill it:
+    //   (1) END-TO-END the donation route doesn't even exist in genesis — the ONLY way to raise the
+    //       asset-0 insurance balance without minting shares is market PnL (tenure-shared, uncontrollable
+    //       by the attacker); there is no permissionless TopUp (percolator insurance is authority-gated).
+    //       So the donation below is already a worst-case hypothetical the attacker cannot stage.
+    //   (2) Even granting the donation, the math holds: the victim still mints non-zero shares and
+    //       recovers ~all principal (skim is dust ≤ ~victim/VIRTUAL_SHARES), while the attacker loses
+    //       ~half the donation to the unredeemable virtual shares — a guaranteed loss to skim dust.
+    #[test]
+    fn first_depositor_inflation_skim_is_bounded_and_self_defeating() {
+        let attacker_deposit = 1u64;
+        let donation = 1_000_000_000u64; // attacker inflates the balance (worst-case hypothetical)
+        let victim_deposit = 1_000_000u64;
+
+        let a_shares = mint_shares(attacker_deposit, 0, 0).unwrap();
+        let balance_after_donation = attacker_deposit + donation; // no shares minted for the donation
+        let v_shares = mint_shares(victim_deposit, a_shares, balance_after_donation).unwrap();
+        assert!(v_shares > 0, "victim still mints non-zero shares — no round-to-zero griefing");
+
+        let total = a_shares + v_shares;
+        let pool_balance = balance_after_donation + victim_deposit;
+
+        // Attacker redeems first (best case for the attack), then the victim redeems the remainder.
+        let a_out = redeem_shares(a_shares, pool_balance, total).unwrap();
+        let v_out = redeem_shares(v_shares, pool_balance - a_out, total - a_shares).unwrap();
+
+        // (a) The attack is strictly self-defeating: the attacker gets back less than deposit+donation.
+        let a_in = attacker_deposit + donation;
+        assert!(a_out < a_in, "inflation attack is self-defeating: attacker out {a_out} < in {a_in}");
+        // (b) The victim recovers essentially all principal — the skim is dust (« 0.1%).
+        let max_skim = victim_deposit / 1000 + 2;
+        assert!(v_out + max_skim >= victim_deposit,
+            "victim recovers ~all principal: out {v_out} of {victim_deposit} (skim {})", victim_deposit - v_out);
+    }
 }
