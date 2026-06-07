@@ -4444,6 +4444,59 @@ fn e2e_claim_cannot_be_replayed_to_drain_other_winners() {
     let _ = (&alice, &bob, &mid);
 }
 
+// LOF PROBE (claim payout redirect, sweep tick A): claim is PERMISSIONLESS — any cranker may settle a bidder's
+// slot (the replay test above cranks alice's claim for her). The bidder's payout destinations (usd_dest /
+// coin_ata) come from the caller, so the ONLY thing stopping a cranker from redirecting a winner's parked USD
+// (and escrowed COIN refund) into the cranker's OWN account is the recorded-key bind at lib.rs:1793
+// (usd_dest.key == SL_USD_DEST && coin_ata.key == SL_COIN_ATA). The existing claim tests only ever pass the
+// CORRECT accounts, so that bind was unexercised. This pins it: a redirect to an attacker account is rejected,
+// and it is rejected unconditionally (the guard runs before the >0 transfer branches, so it holds even when the
+// COIN refund is 0). Parity with the distribution claim-theft guard.
+#[test]
+fn e2e_claim_payout_cannot_be_redirected_to_a_cranker_account() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+
+    // One winner, alice: 400k COIN / 200k USD (rate 2). Budget >= 200k so she fully fills, owed 200k USD.
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 200_000, None)).expect("alice bid");
+    // mallory: the attacker; she only needs token accounts of the right mints to receive a redirected payout.
+    let (_mallory, m_src, m_usd) = new_bidder(&mut svm, &payer, &env, 1);
+
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute");
+    let parked = token_amount(&svm, &bk.settlement_usd);
+    assert!(parked > 0, "alice's USD is parked for claim");
+    let m_usd_before = token_amount(&svm, &m_usd);
+
+    // ATTACK 1: crank alice's slot 0 but route the USD to mallory's account -> rejected (usd_dest bind).
+    assert!(
+        send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &m_usd, &a_src, 0)).is_err(),
+        "a claim that redirects the USD to a non-recorded dest must be rejected"
+    );
+    // ATTACK 2: correct usd_dest but route the COIN refund to mallory's account -> rejected (coin_ata bind),
+    // unconditionally (alice fully filled so the refund is 0, yet the key bind still fails the claim).
+    assert!(
+        send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &a_usd, &m_src, 0)).is_err(),
+        "a claim with a non-recorded coin_ata must be rejected even when the refund is 0"
+    );
+    assert_eq!(token_amount(&svm, &m_usd), m_usd_before, "the attacker received no redirected USD");
+    assert_eq!(token_amount(&svm, &bk.settlement_usd), parked, "alice's parked USD is byte-for-byte intact");
+
+    // Alice's legitimate claim (recorded accounts) still pays her in full and drains the slot.
+    send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &a_usd, &a_src, 0)).expect("legit claim to the recorded dest");
+    assert_eq!(token_amount(&svm, &a_usd), 200_000, "alice collected her full, un-redirected share");
+}
+
 // ANTI-SPOOF: a placed bid cannot be cancelled. There is no withdraw instruction; the only way a
 // bid leaves the book early is eviction by a STRICTLY better bid (which refunds the evictee), and
 // a not-better bid against a full book is rejected.

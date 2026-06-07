@@ -6940,3 +6940,16 @@ PRIMARY market still counts. init_rejects_a_malformed_or_overlong_extra_market_a
 rejected before any key is read (no over-read), and a default extra key rejected (lib.rs:518/524).
 VERDICT: BLOCKED (no off-list market can mint LP/trader points; the allow-list tail is bounded + sanitized).
 KEEP (pins the multi-market path, distinct from the single-market test). No behavior change. rd e2e 29 green.
+
+### [VERIFIED — LOF: auction claim payout cannot be redirected to a cranker account] sweep tick (A)
+SURFACE (twap-program process_claim, permissionless). claim settles a bidder's slot and any cranker may call it
+(the replay test cranks alice's claim for her). The payout destinations usd_dest/coin_ata come from the CALLER,
+so the only thing stopping a cranker from redirecting a winner's parked USD (+ escrowed COIN refund) into its OWN
+account is the recorded-key bind at lib.rs:1793 (usd_dest.key==SL_USD_DEST && coin_ata.key==SL_COIN_ATA). The
+existing claim tests only ever pass the CORRECT accounts, so that bind was unexercised.
+TEST: e2e_claim_payout_cannot_be_redirected_to_a_cranker_account (real twap+perc+squads .so): after execute parks
+alice's 200k USD, a cranker claiming alice's slot 0 with usd_dest=mallory is rejected, and with coin_ata=mallory
+is rejected too — UNCONDITIONALLY (alice fully filled so refund=0, yet the key bind still fails the claim, since
+the guard runs before the >0 transfer branches). Attacker gets 0; alice's parked USD intact; her legit claim to
+the recorded dest still pays 200k. VERDICT: BLOCKED (parity with the distribution claim-theft guard). KEEP. No
+behavior change. twap-program chain 98 green.
