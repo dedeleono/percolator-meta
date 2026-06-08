@@ -10977,3 +10977,23 @@ real .so -> init_config_rejects_a_mintable_coin FAILED (a still-mintable COIN wa
 distribution green, src clean. SHARP. (The freeze-authority half is pinned by init_config_rejects_a_freezable_coin.)
 No code change. VERDICT: the fixed-supply / no-mint-to-drain invariant is mutation-proven -- the COIN supply
 cannot be inflated to dilute recipients, closing the COIN-mint free-farm at its root.
+
+## Tick — gv vote zero-weight reject (JIT-quorum-pump / unfunded / withdrawn vote) MUTATION-VERIFIED (surface B)
+
+The gv vote computes weight = floor(log2(now - start_slot)) * principal (0 if start_slot==0 or age < 2), then
+REJECTS a zero-weight vote (`if weight == 0 -> reject`, lib.rs:661). This is the user's "voting without capital
+/ stale weight" guard, doing triple duty: (1) anti-JIT-quorum-pump — a TOO-RECENT position (deposited age < 2
+slots before the trigger) has weight 0; a vote ADDS the position's principal to total_voted_principal (the
+quorum numerator), so without the reject a JIT depositor could pump quorum with age-0 capital that carries no
+real hold-time commitment; (2) anti-unfunded — start_slot==0 (no real deposit) -> weight 0 -> can't vote; (3)
+anti-withdrawn — a withdrawn position carries no live weight and is barred.
+
+MUTATION-VERIFIED (triply): neutered the zero-weight reject (`if false && weight == 0`), rebuilt the real .so ->
+THREE tests caught it:
+  - a_too_recent_position_cannot_vote_or_pump_the_quorum
+  - vote_weight_first_becomes_nonzero_at_exactly_age_2
+  - cannot_vote_with_a_withdrawn_position
+Reverted -> 58/58 subledger green, src clean. SHARP. No code change. VERDICT: the zero-weight reject closes
+JIT-quorum-pumping and unfunded/withdrawn voting (the hold-time-commitment prerequisite), mutation-proven --
+completing the gv vote/trigger verification (zero-weight + quorum key-bind + live-outstanding + majority +
+one-vote-one-proposal + double-retract + anti-double-vote + capital-less-ballot vote-lock).
