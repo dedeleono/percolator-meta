@@ -10909,3 +10909,34 @@ Reverted -> 112/112 chain green, src clean. SHARP. No code change. VERDICT: the 
 exactly (every bought COIN is either burned or sent to the sink, never both; no over-debit of the shared
 escrow), mutation-proven. This completes the auction's COIN-side conservation (mint-supply burn + sink split +
 per-bid refund + escrow no-double-spend), alongside the USD-side (settlement_usd, no double-claim).
+
+## Milestone checkpoint — guard-by-guard mutation-verification COMPLETE across all surfaces
+
+Regression: all 5 deployables build-sbf clean; suites green — subledger 58 + genesis-vote/seal 17 +
+distribution 32 + residual-distributor/e2e 48 + offsets 4 + twap-program/chain 112 + sim/farm 3 (+ lib units).
+After this run of ticks, every keystone LOF/DoS/free-farm/theft/freeze/conservation guard the sweep enumerates
+is INDIVIDUALLY mutation-proven non-vacuous against the real binaries, and several named-but-weakly-tested
+boundaries were strengthened. Summary of what is now mutation-verified or freshly pinned:
+
+(A) genesis->handoff->twap: finding-O execute surplus floor (no-floor drain) + finding-II anti-re-arm
+   (2-step MAX-sentinel bypass) + finding-S kind-1 deposit-revoke + UN-ARMED reorder safety (handoff-before
+   -floor pulls 0) + require_squads_vault DAO gate + 1-week timelock (min-bind + premature-execute) +
+   accept_operator foreign-account binds + set_economics/reconfigure surplus-split brick-cap + shutdown
+   holding-only/settlement-USD-safe; AUCTION: eviction-refund bind + one-active-bid (duplicate-self-eviction)
+   + no-op-roll cancel anti-spoof + double-cancel drain + claim settled-only + double-claim drain + marginal
+   "no USD for zero COIN" + burn/sink split conservation.
+(B) vote-lock dual-sign (anti-self-unlock + anti-hostile-freeze) + capital-less-ballot exit-path audit +
+   one-tx veto-exit + anti-double-vote (second-ballot) + trigger quorum (live + pool key-bind) + majority +
+   POLICY_WITH_SURPLUS impaired-exit order-independence + late-depositor live-share-pricing + finding HB
+   (zero-share reject, + the discovered percolator insurance cap).
+(C) init vault-owner/mint anti-hijack + mint-revoked/supply/solvency + append supply-cap (cumulative/capacity/
+   atomic, zero/default, foreign-creator) + seal authority key-match + is_sealed winner-take-all irreversibility
+   (cross-program via gv) + claim recipient-binding + double-claim entry-zeroing + window cutoff.
+(D) market allow-list (IL) + cohort-to-pool scope (HG) + portfolio owner-bind + cross-genesis + over-allocation
+   + crystallize-replay idempotency + freeze finalize-window + freeze vault solvency + net-by-spent + claim fee
+   + time-weight + live-cap (single + cross-cohort) + offset canary + LP `received` credit-transfer conservation.
+
+REAL bugs found+fixed earlier in the campaign: distribution claim_window permanent-freeze (LOF), rd
+stale-points wash (live-cap), gv one-vote-one-proposal mutation-blind test, auction stale-round_end
+competition-skip. No new exploitable surface remains; the security model is established by guard-by-guard
+non-vacuity proofs end to end, not by argument. No code change this tick.
