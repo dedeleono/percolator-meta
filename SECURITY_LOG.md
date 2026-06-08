@@ -7696,3 +7696,20 @@ accrues to the pool), and the round-trip can't beat pro-rata (cannot_over_withdr
 splitting_an_impaired_exit_cannot_beat_the_pro_rata, a_deposit_that_rounds_to_zero_shares_is_rejected). VERDICT:
 safe. The three core arithmetic spots are now all audited: rd points_to_amount (saturating, bounded), twap cmp_bid
 (u64-bounded legs), subledger shares (checked + virtual-shares-bounded). No change.
+
+### [AUDIT — systematic raw-arithmetic sweep across all 5 programs: no unchecked overflow/underflow] tick (A-D)
+Beyond the 3 money-math spots, swept EVERY raw +/-/* operator in all five programs' src for unchecked
+overflow/underflow on attacker-influenceable values. RESULT — all safe:
+- SUBTRACTION (underflow): the only raw `-` on live values are `required - current` in each create_pda (GUARDED by
+  `if current < required` — runs only in the top-up case) and floor_log2's `63 - n.leading_zeros()` (GUARDED by
+  `if n < 2 { 0 }` so n>=2 -> leading_zeros<=62<63). All other `-` are test code. No underflow reachable.
+- MULTIPLICATION (overflow): raw `*` on live values = the rd extra-market offset `467 + i*32` (i bounded by
+  extra_market_count, tiny) and twap cmp_bid `coin_a*usdc_b` (u64-bounded legs, audited last tick). The rest are
+  test code / compile-time constants (entry_offset 9_999*40). No overflow reachable.
+- ADDITION (overflow): the only raw `+` on live values is rd's `insurance_bps+backing_bps+lp_bps` as u32 (three
+  u16 <= 10_000 -> max 30_000, can't overflow u32) inside a saturating_sub. Every real accumulator (gv
+  total_cast_weight/total_voted_principal/support_*, subledger total_shares/outstanding, rd cohort points,
+  twap reserved_floor/surplus split) uses checked_add or saturating_add. The rest are test code.
+VERDICT: no unchecked overflow/underflow anywhere in program code — guarded subtractions, bounded
+multiplies/additions, checked/saturating accumulators, and the 3 money-math spots audited separately. No change.
+This closes the arithmetic-safety thread comprehensively (all operators, not just the money-math).
