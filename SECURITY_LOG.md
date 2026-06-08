@@ -7713,3 +7713,19 @@ overflow/underflow on attacker-influenceable values. RESULT — all safe:
 VERDICT: no unchecked overflow/underflow anywhere in program code — guarded subtractions, bounded
 multiplies/additions, checked/saturating accumulators, and the 3 money-math spots audited separately. No change.
 This closes the arithmetic-safety thread comprehensively (all operators, not just the money-math).
+
+### [VERIFIED — rd share-value cohort's subledger read is canary-COMPLETE; stub tests == real layout] tick (D)
+Investigated whether the rd's insurance/backing (share-value) cohort has a stub-vs-real gap: the rd e2e stubs the
+subledger (set_position writes the layout directly, stub_sub = a fake program id), so the share-value claim's read of
+the real subledger Position is never exercised against the real subledger BINARY. Resolved: NO gap — the read is
+layout-pinned end-to-end. The rd reads four Position fields (SUB_POS_POOL@8, SUB_POS_OWNER@40, SUB_POS_WITHDRAWN@88,
+SUB_POS_SHARES@104), and the canary subledger_position_offsets_match_the_real_subledger_layout (offsets.rs) asserts
+ALL FOUR == the subledger's EXPORTED POS_*_OFF consts — including POS_SHARES_OFF (the actual share-value field, not
+just the binding fields). Those subledger exports are themselves offset_of!-pinned against the real Position struct
+by the subledger's own test (exported_position_and_pool_offset_consts_match_the_real_serialized_layout). So the chain
+is: real Position struct -> subledger offset_of! exports -> rd consts (== exports, canary) -> read_subledger_shares.
+A subledger reorder of shares/withdrawn FAILS the canary. The synthetic set_position writes at the same (pinned)
+offsets, so the stub tests are LAYOUT-EQUIVALENT to the real subledger; a real-subledger insurance-cohort E2E would
+be purely confirmatory (the rd's robust share_value_points(shares, withdrawn) handles both withdrawn=true and
+shares=0 forfeit representations). The TRADER cohort IS already tested against the real percolator
+(e2e_organic_pnl_loss_real_trade_feeds_trader_cohort). VERDICT: no gap — the share-value read is canary-complete. No change.
