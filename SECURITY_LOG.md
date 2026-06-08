@@ -10158,3 +10158,24 @@ the real .so -> reconfigure_must_hold_the_auction_plus_savings_invariant FAILED 
 buy_burn+savings > 100%, the un-executable state). Reverted -> 110/110 chain green. SHARP. No code change,
 no new test (both caps pinned: 861 + 932). VERDICT: the surplus-split is brick-proof from BOTH setters; the
 cross-instruction DoS is closed.
+
+## Tick — LP `received` cohort is NOT farmed by the delta-neutral wash (surface D; sim correction, evidence-pinned)
+
+Ran the real-percolator wash-farm sim (sim/tests/farm.rs rational_miner...) with LP-vs-trader capture
+instrumentation to test the prior conclusion's claim that "the LP cohort (Δ received, 40%) is farmable the
+same way and taxed the same way" as the trader cohort. The REAL binaries say otherwise:
+  market_cryst=2500  market_recv=0  market_spent=0  lp_coin=0  trader_coin=320000  miner_coin=320000
+The delta-neutral mark-move wash (long crystallizes a loss -> TRADER; short takes the offsetting gain)
+manufactures TRADER points (crystallized) but ZERO LP points: the short's directional GAIN lives in
+percolator `pnl`, NOT in the `received` counter. `received` rises ONLY from ABSORBED bankruptcy residual
+(a socialized uncollectible loss the matcher routes to an LP) — a different, costlier event than a self-dealt
+oracle/mark move. So the entire 320_000 = (1-fee)*trader_supply capture is the TRADER cohort alone; the LP
+cohort captured 0.
+
+Significance: the no-spent-netting LP cohort (which the rd src comment flags as relying on the fee alone,
+without the trader's crystallized-spent netting) is actually HARDER to wash via this vector than previously
+documented, not "farmable the same way." An actual bankruptcy-residual self-deal to manufacture `received`
+is a SEPARATE, un-exercised vector — and it too is allow-list-scoped + fee-taxed, with the bankrupt leg's
+lost margin as its real cost. CORRECTED the misleading sim conclusion comment and PINNED the finding with
+three real-binary assertions: market_recv == 0, lp_coin == 0, trader_coin == miner_coin. No production code
+change (a test/doc correction). sim 3/3 green. The "farmable the same way" overclaim is retracted with evidence.

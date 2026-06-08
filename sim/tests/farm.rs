@@ -232,14 +232,17 @@ fn rational_miner_farms_the_deterministic_distributor_across_uncontrolled_market
         AccountMeta::new(payer.pubkey(), true), AccountMeta::new(rd_config, false), AccountMeta::new_readonly(coin_mint, false), AccountMeta::new(rd_vault, false),
     ], data: vec![4u8] }], &[]).expect("freeze");
     let mut miner_coin = 0u64;
-    for (o, _cohort, pf, ata) in &stakes {
+    let mut lp_coin = 0u64; let mut trader_coin = 0u64;
+    for (o, cohort, pf, ata) in &stakes {
         let stake = Pubkey::find_program_address(&[b"rd_stake", rd_config.as_ref(), o.pubkey().as_ref()], &rd_id()).0;
         send(&mut svm, &[Instruction { program_id: rd_id(), accounts: vec![
             AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(rd_config, false), AccountMeta::new(stake, false),
             AccountMeta::new(rd_vault, false), AccountMeta::new(*ata, false), AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(*pf, false), // LP/trader live-cap portfolio (stake.backing_ledger)
         ], data: vec![5u8] }], &[]).expect("claim");
-        miner_coin += token_amount(&svm, ata);
+        let got = token_amount(&svm, ata);
+        miner_coin += got;
+        if *cohort == 2 { lp_coin += got; } else if *cohort == 3 { trader_coin += got; }
     }
 
     let trader_bps = 10_000 - INS_BPS - BACK_BPS - LP_BPS;
@@ -262,8 +265,14 @@ fn rational_miner_farms_the_deterministic_distributor_across_uncontrolled_market
     println!("VERDICT: the wash is NOT structurally closeable by counters (spent stays 0). The fee TAXES it:");
     println!("  net miner take = cohort * (1 - fee) - trading_fees - locked-margin opportunity cost. The fee +");
     println!("  the capital the miner must lock in the delta-neutral pairs (the Sybil cost) are the real bound;");
-    println!("  a hard per-participant cap is the stronger lever if a guaranteed bound is wanted. The LP cohort");
-    println!("  (Δ received, {}%) is farmable the same way and taxed the same way.", LP_BPS / 100);
+    println!("  a hard per-participant cap is the stronger lever if a guaranteed bound is wanted.");
+    println!("  LP COHORT (Δ received, {}%): this delta-neutral mark-move wash does NOT farm it — Σ received = {market_recv}", LP_BPS / 100);
+    println!("  and the LP claim captured {lp_coin} COIN. A directional short GAIN lives in `pnl`, NOT in `received`;");
+    println!("  the percolator `received` counter rises ONLY from ABSORBED bankruptcy residual (a socialized");
+    println!("  uncollectible loss the matcher routes to the LP) — a different, costlier event than a self-dealt");
+    println!("  mark move. So the no-spent-netting LP cohort is HARDER to wash here than the trader cohort, not");
+    println!("  'farmable the same way'. (An actual bankruptcy-residual self-deal is a separate, un-exercised vector;");
+    println!("  it too is allow-list-scoped + fee-taxed, and the bankrupt leg's lost margin is its real cost.)");
     println!("=======================================================================\n");
 
     // ---- 9 NORMAL traders vs 1 FARMER (dilution under anonymity) ----
@@ -298,6 +307,15 @@ fn rational_miner_farms_the_deterministic_distributor_across_uncontrolled_market
     let expected = trader_supply * (10_000 - FEE_BPS) as u128 / 10_000;
     assert!(miner_coin as u128 >= expected * 98 / 100 && (miner_coin as u128) <= expected,
         "post-fee capture should be ~{expected} ((1-{}%) of {trader_supply}); got {miner_coin}", FEE_BPS / 100);
+    // EMPIRICAL CORRECTION (this tick): the delta-neutral mark-move wash farms ONLY the trader (crystallized)
+    // cohort, NOT the LP (received) cohort. The short leg's directional GAIN is `pnl`, never `received` — the
+    // percolator `received` counter rises only from ABSORBED bankruptcy residual (a socialized uncollectible
+    // loss), not a self-dealt mark move. So `received` stays 0 here and the LP claim captures 0, proving the
+    // no-spent-netting LP cohort is HARDER to wash via this vector than the prior conclusion implied ("farmable
+    // the same way"). The whole 320_000 = (1-fee)*trader_supply capture is the TRADER cohort alone.
+    assert_eq!(market_recv, 0, "a delta-neutral mark-move wash does NOT manufacture LP `received` (needs absorbed bankruptcy residual)");
+    assert_eq!(lp_coin, 0, "the LP cohort captured 0 COIN from the mark-move wash — received stayed 0");
+    assert_eq!(trader_coin, miner_coin, "the entire post-fee capture is the TRADER cohort; the LP cohort was not farmed by this wash");
 }
 
 // CHURN vs HOLD (validates the time-weight's spent-netting churn-penalty against the REAL percolator). Two
