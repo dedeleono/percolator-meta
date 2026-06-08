@@ -10960,3 +10960,20 @@ Reverted -> 58/58 subledger green, src clean. SHARP. No code change. VERDICT: th
 haircut (order-independent, no first-come drain) is mutation-proven — completing the subledger insurance-pool
 LOF/economics verification (haircut + live-insurance share-pricing + vote-lock dual-sign + finding HB +
 co-depositor bound + veto-exit).
+
+## Tick — distribution fixed-supply invariant: COIN mint-authority-revoked (COIN-mint dilution free-farm) MUTATION-VERIFIED (surface C)
+
+The foundational anti-dilution invariant (the user's "minting COIN" free-farm): distribution init_config refuses
+to bind a COIN mint that still has a live mint authority OR freeze authority -- `mint.mint_authority.is_some()
+|| mint.freeze_authority.is_some() -> reject` (lib.rs:336), alongside mint.supply == total_supply (335) and
+vault.amount >= total_supply (354). The mint-authority clause is the no-inflation guard: the COIN IS the MetaDAO,
+so if the mint authority survived, its holder could mint UNLIMITED COIN outside the fixed pool and dilute every
+recipient's governance + value to zero (a pure free-farm / supply theft). The freeze-authority clause blocks a
+vault/recipient freeze DoS. Together with supply == total_supply and the full-supply-in-vault solvency, this
+proves every COIN that exists is in the distribution vault and can never be inflated.
+
+MUTATION-VERIFIED: removed the `mint.mint_authority.is_some() ||` clause (kept freeze-authority), rebuilt the
+real .so -> init_config_rejects_a_mintable_coin FAILED (a still-mintable COIN was accepted). Reverted -> 32/32
+distribution green, src clean. SHARP. (The freeze-authority half is pinned by init_config_rejects_a_freezable_coin.)
+No code change. VERDICT: the fixed-supply / no-mint-to-drain invariant is mutation-proven -- the COIN supply
+cannot be inflated to dilute recipients, closing the COIN-mint free-farm at its root.
