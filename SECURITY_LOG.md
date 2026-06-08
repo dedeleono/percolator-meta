@@ -5,7 +5,22 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (D, harden last tick's free-farm fix — pin the live-cap is ONE-SIDED): the new live-cap scales points
+LATEST TICK (B, mutation-blind test FIXED — the one-vote-one-proposal binding was UNVERIFIED): mutation-checked the
+gv binding (vote lib.rs:635, `ballot.has_live_ballot() && ballot.voted_proposal != proposal -> reject`), the
+keystone of "one voter -> one proposal" + correct retract (it stops backing/retracting a DIFFERENT proposal than
+the one the ballot is on — which would strand phantom weight on the original + corrupt the target's tally). The
+mutation did NOT break e2e_voter_cannot_back_two_proposals_without_retracting despite the test's comment CLAIMING
+mutation-sharpness. ROOT CAUSE: a stale-offset bug from the GG fix. The GG fix widened support_weight u64->u128,
+shifting support_principal from offset 80 to 88. The test injected B's "support" at 72..80 + 80..88 — i.e. BOTH
+halves of the u128 support_weight — leaving support_principal@88 == 0. So alice's back-of-B underflowed on the
+support_PRINCIPAL checked_sub (line 643), masking the binding (the back-out's underflow rejected it, NOT guard
+635). FIX: inject support_weight (u128)@72..88 AND support_principal (u64)@88..96, so neither subtract underflows
+and the binding is the SOLE decider. MUTATION-VERIFIED: with the corrected injection, dropping guard 635 makes the
+test FAIL (alice backs B AND keeps phantom weight on A); reverted, git clean, chain 110 green. No program code
+changed — the binding guard was always correct; the TEST had drifted blind. (Lesson: offset-shift after a width
+change can silently un-sharpen a value-injection test; the offset-canary discipline should extend to test fixtures.)
+
+PRIOR TICK (D, harden last tick's free-farm fix — pin the live-cap is ONE-SIDED): the new live-cap scales points
 by min(1, live_net/frozen_net). Last tick pinned the DOWN side (recovery -> cap down). This pins the symmetric
 danger: it must NOT pay UP when live_net > frozen_net. If a trader takes MORE loss after crystallizing and skips
 the re-crystallize, that extra loss is in NEITHER stake.points NOR the frozen denominator; scaling the payout up

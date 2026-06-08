@@ -2689,8 +2689,12 @@ fn e2e_voter_cannot_back_two_proposals_without_retracting() {
     // regressed, alice would back B AND leave phantom weight stranded on A (tally corruption / capture).
     {
         let mut b = svm.get_account(&gv_b).unwrap();
-        b.data[72..80].copy_from_slice(&1_000_000_000u64.to_le_bytes()); // support_weight >> alice's
-        b.data[80..88].copy_from_slice(&1_000_000_000u64.to_le_bytes()); // support_principal >> alice's
+        // GG-FIX OFFSET CORRECTION: support_weight is u128 @72..88 (was u64@72 pre-GG) and support_principal is
+        // u64 @88..96 (was @80). The old injection wrote 72..80 + 80..88 — i.e. BOTH halves of support_weight —
+        // leaving support_principal@88 == 0, so alice's back-of-B underflowed on the support_PRINCIPAL subtract
+        // (masking guard 635, not exercising it). Fund BOTH so the ONLY thing that can reject is the binding.
+        b.data[72..88].copy_from_slice(&1_000_000_000u128.to_le_bytes()); // support_weight (u128) >> alice's
+        b.data[88..96].copy_from_slice(&1_000_000_000u64.to_le_bytes());  // support_principal (u64) >> alice's
         svm.set_account(gv_b, b).unwrap();
     }
     // Backing B while the ballot is live on A is rejected — by guard 612, now that no underflow can mask it.
