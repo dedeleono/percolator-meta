@@ -10737,3 +10737,26 @@ tick) + claim fee + log2 time-weight + live-cap (single + cross-cohort) + offset
 account-binding defense in the residual-distributor is now individually verified non-vacuous against the real
 binaries; combined with the A/B/C keystone proofs, the stack's full LOF/DoS/free-farm guard set is
 mutation-proven.
+
+## Tick — crystallize-replay idempotency / denominator-inflation free-farm MUTATION-VERIFIED (surface D)
+
+The last distinct surface-D free-farm vector the sweep names ("crystallize replay" + "freeze/denominator
+inflation"). An LP/trader stake's points are the Δ of a MONOTONIC percolator counter since the register-time
+snap, and the cohort denominator is updated subtract-old/add-new: `*slot = slot - stake.points + new_pts`
+(lib.rs:863). residual_snap is NOT advanced by crystallize, so the operation MUST be idempotent — replaying it
+with an unchanged counter re-derives the same Δ and nets ZERO change to the denominator, and a later
+crystallize after the counter moved tracks the FULL delta from register (never an accumulation of per-call
+deltas). Without the subtract-old, each crystallize call would ADD new_pts again, so a farmer replays
+crystallize N times to multiply their own points (and their slice of the LP/trader cohort) WITHOUT any new
+loss = a pure denominator-inflation free-farm.
+
+MUTATION-VERIFIED: removed the `saturating_sub(stake.points)` from the residual crystallize (denominator now
+accumulates), rebuilt the real .so ->
+crystallize_is_idempotent_under_replay_and_tracks_full_delta_not_accumulation FAILED (a replay multiplied the
+stake's points). Reverted -> 48/48 rd green, src clean. SHARP. No code change.
+
+CAMPAIGN STATUS: with crystallize-replay idempotency proven, EVERY surface-D vector the sweep enumerates is
+mutation-verified — allow-list, cohort gating + cross-cohort/cross-genesis/substituted-ledger binds,
+crystallize replay (this tick), freeze/claim ordering, net-by-spent, claim fee, time-weight, live-cap (single +
+cross-cohort), offset canary, over-allocation, retained-fee-not-drainable, and the LP `received` conservation.
+The residual-distributor anti-wash design is exhaustively proven non-vacuous against the real binaries.
