@@ -10236,3 +10236,25 @@ atom), bob is NOT stranded by alice's prior exit, and alice+bob <= 1M (the share
 the impaired insurance; rounding favors the protocol). So the share path matches POLICY_PRINCIPAL's
 order-independence + conservation. KEEP (pins a real, previously-untested LOF boundary). subledger 54->55
 green. No code change (behavior correct).
+
+## Tick — auction anti-spoof: a no-op execute roll must NOT enable an early cancel (surface A, issue #28; test-gap closed + MUTATION-VERIFIED)
+
+The auction commitment property (a placed bid can leave the book early ONLY by eviction-by-a-strictly-better
+bid, never a voluntary yank) is what stops a spoofer posting a fake bid to shape the book / deter rivals and
+pulling it right before settlement. process_cancel_bid enforces it with a cooldown that gates on AGING ALONE
+(`now >= place_slot + 2*round_length`, lib.rs:1928), DELIBERATELY not on a round_end delta — because
+process_execute advances book.round_end on EVERY run, INCLUDING a no-op roll (surplus 0 -> total_coin 0) that
+leaves a committed bid OCCUPIED + unsettled. A round_end shortcut would let a spoofer post -> crank a
+permissionless no-op roll -> yank the bid well inside the cooldown.
+
+The existing cooldown test (e2e_bid_cancellable_after_cooldown_keeps_fee) warps 2*round_length WITHOUT ever
+running an execute, so it CANNOT catch a regression to round_end-gating — the issue-#28 core (a no-op roll in
+between) was unpinned.
+
+Added e2e_no_op_roll_does_not_enable_early_cancel_issue_28: alice commits a bid (place_slot 100, aging window
+ends 120); drop slab insurance below the floor so the round is a no-op roll; warp to 111 (past round_end 110,
+before aging 120); crank the no-op roll (advances round_end ~121, bid stays committed); at slot 112 alice's
+cancel MUST be rejected; control — after slot 121 (full 2*round_length aging) the cancel succeeds and refunds
+the escrow. MUTATION-SHARP: introducing the round_end shortcut (`|| book.round_end > place_slot + round_length`)
+lets the post-roll early cancel succeed -> test FAILS (verified, reverted). KEEP. chain 110->111 green. No code
+change (guard correct). VERDICT: the no-op-roll cancel-manipulation (issue #28) is closed and now regression-pinned.

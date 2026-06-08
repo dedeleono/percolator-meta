@@ -5545,6 +5545,60 @@ fn e2e_bid_cancellable_after_cooldown_keeps_fee() {
     let _ = (alice, a_usd, mallory);
 }
 
+// ISSUE #28 — a NO-OP EXECUTE ROLL must NOT enable an early cancel (anti-spoof commitment). process_execute
+// advances book.round_end on EVERY run, INCLUDING a no-op roll (surplus 0 -> total_coin 0) that leaves a
+// committed bid OCCUPIED + unsettled. The cancel cooldown deliberately gates on AGING ALONE
+// (now >= place_slot + 2*round_length), NOT on a round_end delta — otherwise a spoofer could post a bid to
+// shape the book, crank a permissionless no-op roll to advance round_end, and YANK the bid well inside the
+// cooldown, re-opening the last-second manipulation the commitment exists to stop. The existing cooldown test
+// (e2e_bid_cancellable_after_cooldown_keeps_fee) warps WITHOUT an execute, so it cannot catch a regression to
+// round_end-gating; this inserts the no-op roll and pins that the bid is STILL non-cancellable before aging.
+#[test]
+fn e2e_no_op_roll_does_not_enable_early_cancel_issue_28() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let round_length = 10u64;
+    let bk = setup_auction(&mut svm, &payer, &env, round_length, 0, None, 0);
+
+    // alice commits a bid at slot 100 -> place_slot=100, aging window ends at 100 + 2*10 = 120.
+    let (alice, a_src, a_usd) = new_bidder(&mut svm, &payer, &env, 400_000);
+    send(&mut svm, &[&alice], place_bid_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, &a_usd, &env.coin_mint, &env.collateral_mint, 400_000, 400_000, None)).expect("alice bid");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 400_000, "coin committed to escrow");
+
+    // Make the round a NO-OP ROLL: drop live insurance (slab 749) below the 1M floor so surplus = 0; execute
+    // only READS the slab when surplus is 0 (no CPI), so hand-editing this one field is safe.
+    let mut slab = svm.get_account(&env.slab).unwrap();
+    slab.data[749..765].copy_from_slice(&800_000u128.to_le_bytes());
+    svm.set_account(env.slab, slab).unwrap();
+
+    // Warp PAST round_end (110) but BEFORE the aging window (120), then crank a permissionless no-op roll: it
+    // advances round_end (~121) and leaves alice's bid OCCUPIED + unsettled.
+    warp_to(&mut svm, 111);
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("no-op roll");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 400_000, "the no-op roll left the bid committed (unsettled), escrow intact");
+
+    // THE ATTACK: at slot 112 (inside the 120 aging window) alice tries to yank the bid right after the roll.
+    // The cooldown gates on AGING, not the roll-advanced round_end, so it MUST be rejected.
+    warp_to(&mut svm, 112);
+    assert!(send(&mut svm, &[&alice], cancel_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, 0)).is_err(),
+        "a no-op roll must NOT let the bidder cancel inside the aging window (issue #28 anti-spoof)");
+    assert_eq!(token_amount(&svm, &bk.coin_escrow), 400_000, "bid still committed after the rejected early cancel");
+
+    // Control: once the FULL 2*round_length aging elapses (slot > 120), the owner may finally cancel.
+    warp_to(&mut svm, 121);
+    send(&mut svm, &[&alice], cancel_ix(&alice.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.coin_escrow, &a_src, 0)).expect("cancel succeeds after the full aging window");
+    assert_eq!(token_amount(&svm, &a_src), 400_000, "escrowed COIN returned after the genuine cooldown");
+    let _ = a_usd;
+}
+
 // DOUBLE-CANCEL DRAIN (shared-escrow theft): cancel_bid refunds a bid's escrowed `coin_atoms` from the
 // SHARED coin_escrow (which pools EVERY bidder's COIN), then ZEROES the slot so it cannot be cancelled
 // again. The slot-zeroing is the SOLE guard — there is no separate "cancelled" flag. Without it, an aged
