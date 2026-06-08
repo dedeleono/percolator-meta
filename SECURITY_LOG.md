@@ -10575,3 +10575,24 @@ pools). Reverted -> 111/111 chain green, src clean. SHARP. No code change. VERDI
 one-shot per slot (no double-claim drain), the payout is bound to the recorded destinations, and the
 slot-zeroing anti-drain guard is mutation-proven. (Complements the cancel-side double-cancel drain guard, also
 slot-zeroing, pinned earlier.)
+
+## Tick — auction marginal-clearing "no USD for zero COIN" conservation guard MUTATION-VERIFIED (surface A)
+
+Probed the uniform-price marginal-clearing loop in process_execute (twap lib.rs:1604-1714), the most
+branch-heavy code. Conservation confirmed: each filled bid clears at the marginal rate P* = cm/um, and since
+every filled bid's own rate >= P* (the walk takes best-rate-first and the reserve filter drops sub-reserve
+bids), coin_i = floor(usd_i * cm/um) <= the bid's escrowed c, so refund = c - coin_i >= 0 (checked_sub) and
+P* can't be dragged below the DAO reserve. No over-draw.
+
+The subtle conservation leak: the MARGINAL bid can get a residual budget so tiny that coin_i = floor(usd_i *
+cm/um) == 0 (the fill buys less than one whole COIN atom). execute treats any coin_i == 0 fill as UNFILLED
+(usd_owed -> 0, full COIN refund, excluded from total_usd) via the `usd_i > 0 && coin_i > 0` guard (lib.rs:1683)
+-- otherwise the bidder would be charged usd_i (their fill moves to settlement_usd) for ZERO COIN = a direct
+LOF, and the budget walk already debited `remaining` for that fill. Tested in BOTH the roll case
+(e2e_roll_with_a_marginal_zero_coin_fill_leaves_no_phantom_claim 6978) and the settle case
+(e2e_settle_with_a_zero_coin_marginal_pays_no_usd_for_zero_coin 7038).
+
+MUTATION-VERIFIED: dropped the `&& coin_i > 0` clause (treat a 0-COIN fill as filled), rebuilt the real .so ->
+e2e_settle_with_a_zero_coin_marginal_pays_no_usd_for_zero_coin FAILED (bob was paid USD for his zero-COIN
+marginal fill). Reverted -> 111/111 chain green, src clean. SHARP. No code change. VERDICT: the marginal-clearing
+math conserves (coin_i <= escrow, reserve-bounded P*) and the "no USD for zero COIN" guard is mutation-proven.
