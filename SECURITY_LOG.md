@@ -9291,3 +9291,21 @@ backstop. My earlier raw-arithmetic + share-math + insurance-accounting analyses
 (Test comment at insurance_percolator:1234 calling the per-position cap "the ONLY thing that can reject it" is
 imprecise — overflow-checks also rejects it — but the test is valid; the over-withdraw IS blocked.)
 No code change (mutation reverted).
+
+### [MUTATION-VERIFIED — gv trigger anti-bait-and-switch (sealed distribution == what voters approved); 18 sole-defense guards] tick (B)
+Mutation-tested the gv trigger anti-bait-and-switch snapshot check (lib.rs:748-755): the distribution proposal's live
+(entry_count, total_amount) must equal the (snapshot_entry_count, snapshot_total_amount) captured when voters BACKED
+it, so a creator cannot append self-allocations into the unallocated headroom AFTER the vote and seal a different
+distribution than voters approved. Temporarily dropped the snapshot equality check (kept only the len guard),
+rebuilt, ran:
+- proposal_changed_after_registration_cannot_be_sealed (insurance_percolator:1594): FAILED at 1666 — a post-vote
+  append now seals a CHANGED distribution = the creator redirects COIN voters never approved (governance bait-and-
+  switch). Caught. This is a SOLE-defense, non-arithmetic, non-SPL guard -> genuinely test-pinned (no overflow/SPL
+  backstop). REVERTED + rebuilt + test PASSES; git clean.
+MUTATION CAMPAIGN — 18 sole-defense guards proven non-vacuous + 2 defense-in-depth layers (borrow-position triple;
+overflow-checks=true universal arithmetic backstop), all 4 surfaces:
+  (A) finding-O execute floor + re-arm monotonicity + auction eviction-refund + require_squads_vault;
+  (B) vote-lock + trigger majority + trigger quorum + anti-bait-and-switch;
+  (C) entry-zeroing + append supply-cap + vault-funding solvency;
+  (D) allow-list + net-by-spent + anti-wash fee + time-weight + recipient-binding + freeze fixed-supply + claimed-flag.
+NO uncaught mutation found across the campaign -> every load-bearing path is either test-pinned or backstopped. No code change.
