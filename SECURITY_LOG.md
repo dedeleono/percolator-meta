@@ -8187,3 +8187,23 @@ swept the remaining structural lenses; no new substantive gap:
 VERDICT: no new substantive vector — the residual lenses are covered or marginal-by-design. The standalone sweep is
 exhaustively complete across behavioral, adversarial-correctness, structural, threat-model, build, and free-farm axes.
 No change.
+
+### [VERIFIED — auction partial-marginal-fill conservation + rd over-draw freeze-gate; no LOF/free-farm] tick (A/D)
+Re-derived two clearing/conservation surfaces end-to-end; both sound, the boundaries already pinned (a redundant
+duplicate test I drafted was DELETED per the dedup rule):
+- AUCTION partial-marginal fill (surface A, process_execute:1650-1694): the budget-boundary edge where the budget
+  runs out MID-marginal-bid. `fill = min(remaining, u)` caps each fill at the residual budget -> Σ usd_owed <= budget
+  (NEVER over-pulls the holding = no LOF). Per-bid COIN conservation: every filled bid is ranked at-or-above the
+  marginal (r_i = c_i/u_i >= P* = cm/um), so coin_i = floor(usd_i*cm/um) <= c_i -> refund = c_i - coin_i >= 0, and the
+  `checked_sub` (1684) is the structural backstop (errors, never underflows/mints) even if ranking were wrong. The
+  marginal bidder pays only the residual budget and is refunded the unsold COIN at the SAME uniform P*. ALREADY PINNED
+  by `e2e_uniform_price_partial_marginal_fill` (6605, marginal partially filled at P*) + the headline
+  `e2e_buy_burn_uniform_price_dutch_auction` (holding/escrow drain to 0). My duplicate was redundant -> deleted.
+- RD over-draw via post-freeze point injection (surface D): both register_start (695) and crystallize (791) gate on
+  `freeze_slot != 0`, so no stake's points can be created/raised after the denominator is snapshotted -> Σ claimed pts
+  <= frozen_denom always (claim share = supply*pts/frozen_denom, floored) -> the vault can never be over-drawn. The
+  share-value cohort's claim-time min-cap (min(stake.points, live_pts)) only ever LOWERS a payout, never raises it, so
+  conservation holds in the safe (under-draw/deflationary) direction. ALREADY PINNED
+  (rd_config_cannot_be_reinitialized..., the soft-veto direction tests).
+VERDICT: no LOF, no free-farm — the budget cap, the rank-implied per-bid refund, and the frozen-denominator over-draw
+guard are all sound and covered. No code change; one redundant draft test removed; suite 107 green.
