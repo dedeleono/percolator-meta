@@ -11112,3 +11112,22 @@ trigger}; distribution {claim, burn_unclaimed (this tick)}; subledger {deposit, 
 remaining unverified guards are all on DAO-gated (Squads-vault, timelock'd) setters/init -- setup-integrity /
 DAO-footgun, not attacker-reachable. The attacker-facing LOF/DoS/free-farm/theft/freeze surface is exhaustively
 mutation-verified against the real binaries. No code change.
+
+## Tick — init_book empty-escrow check (pre-funded escrow leaks to bidders LOF) MUTATION-VERIFIED (surface A)
+
+init_book (Squads-vault-gated) BINDS the auction's shared coin_escrow + settlement_usd and persists them in the
+book; it requires both to be EMPTY at bind: coin_escrow ce.amount != 0 -> reject (lib.rs:1028), settlement_usd
+su.amount != 0 -> reject (1032), alongside owner == book_escrow PDA + correct mint + SPL-Token ownership. The
+amount==0 clause is the no-stranded-balance / no-leak guard: settle/claim distribute the WHOLE escrow balance to
+winning bidders (coin_refund from coin_escrow, usd_owed from settlement_usd), so a pre-funded escrow's balance
+would be paid out to bidders who never deposited it -- a LOF that leaks the pre-funded COIN/USD. (DAO-gated, so
+this is setup-integrity hardening against a DAO mistake, not an attacker front-run -- but the leak would be real
+COIN.)
+
+MUTATION-VERIFIED: neutered the coin_escrow amount==0 check, rebuilt the real .so ->
+e2e_init_book_rejects_a_prefunded_escrow_no_stranded_balance FAILED (a pre-funded escrow was bound). Reverted ->
+112/112 chain green, src clean. SHARP. No code change. VERDICT: the auction escrow accounts start empty (every
+COIN/USD that leaves them was deposited by a bidder), mutation-proven -- rounding out init_book (empty-escrow +
+escrow/holding/coin_sink owner+mint binds + reserve den != 0 + require_squads_vault gate). With this the DAO-
+gated init/setter setup-integrity guards join the (already-complete) attacker-facing surface in the mutation-
+proven set.
