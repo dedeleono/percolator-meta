@@ -7532,3 +7532,16 @@ doc block to points_to_amount explaining the overflow-defense + the "do NOT repl
 warning. TEST: points_to_amount_is_overflow_safe_never_panics_and_never_over_allocates (offsets.rs) pins no-panic +
 result <= total_supply at u64::MAX/u128::MAX/saturation magnitudes, the zero-denominator -> 0 guard, and an exact
 ordinary split. VERDICT: BLOCKED/correct (defensively safe). KEEP. rd offsets (4) + e2e (38) green.
+
+### [VERIFIED — gv double-retract is rejected; no double-release / tally underflow] tick (B)
+SURFACE (gv vote tally consistency). vote() maintains FOUR interlocked counters — proposal support_weight/
+support_principal + global total_cast_weight/total_voted_principal — all backed-out together (lib.rs:641-645,
+checked_sub) before any re-add (665-668, checked_add). The prompt-named DOUBLE-RETRACT vector: after a voter
+retracts, the ballot is no longer live (voted_proposal=default), so the back-out block (gated on has_live_ballot,
+641) is SKIPPED and the explicit guard (646) returns "nothing to retract". So a second retract cannot decrement
+any tally a second time (no double-release, no underflow-corruption of the quorum denominator). The tally-consistency
+neighbors were already pinned (cannot_back_a_second_proposal_without_retracting_the_first,
+switching_a_vote_between_competing_proposals_migrates_the_global_tallies, a_revote_after_reducing_capital_uses_the_
+live_principal); double-retract specifically was not. TEST: double_retract_is_rejected_and_does_not_double_release_
+the_tally (real subledger+gv+percolator) — back -> retract (tally 0) -> 2nd retract REJECTED, all four counters stay
+0, then re-back restores exactly one vote (ballot not corrupted). VERDICT: BLOCKED/correct. KEEP. subledger green.

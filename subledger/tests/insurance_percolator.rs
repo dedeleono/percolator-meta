@@ -1927,6 +1927,48 @@ fn cannot_back_a_second_proposal_without_retracting_the_first() {
     assert_eq!(read_cast(&env), 20 * amount, "global cast still exactly two votes — never inflated");
 }
 
+// DOUBLE-RETRACT (tally corruption / underflow): after a voter retracts, the ballot is no longer live, so a SECOND
+// retract must be a no-op rejection ("nothing to retract") — it must NOT decrement the proposal/global tallies a
+// second time. Without the has_live_ballot gate (lib.rs:641) + the explicit nothing-to-retract guard (646), a
+// re-retract would checked_sub the already-released contribution again: a clean underflow-revert at best, a
+// corrupted quorum denominator at worst. This pins that the second retract errors and EVERY tally is left exactly
+// where the first retract put it, and that the ballot is still usable (the voter can back again).
+#[test]
+fn double_retract_is_rejected_and_does_not_double_release_the_tally() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let a_hold = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &a_hold, amount).expect("alice deposit");
+    let (_da, gv_a) = create_and_register_proposal(&mut env, &ve, 1, &Pubkey::new_unique());
+    env.warp_slot(1124); // weight = 10*principal
+    let read_cast = |env: &Env| -> u64 {
+        u128::from_le_bytes(env.svm.get_account(&ve.gv_config).unwrap().data[208..224].try_into().unwrap()) as u64
+    };
+
+    gv_vote(&mut env, &ve, &alice, &gv_a, 1).expect("alice backs A");
+    assert_eq!(gv_proposal_support(&env, &gv_a), (10 * amount, amount), "A has alice's vote");
+    assert_eq!(read_cast(&env), 10 * amount, "global cast = alice's one vote");
+
+    // First retract: fully releases the tally.
+    gv_vote(&mut env, &ve, &alice, &gv_a, 2).expect("alice retracts A");
+    assert_eq!(gv_proposal_support(&env, &gv_a), (0, 0), "A released after the first retract");
+    assert_eq!(read_cast(&env), 0, "global cast back to zero");
+
+    // ATTACK: a SECOND retract must be rejected (nothing to retract) and must NOT touch any tally.
+    assert!(gv_vote(&mut env, &ve, &alice, &gv_a, 2).is_err(), "a double-retract must be rejected — no live ballot");
+    assert_eq!(gv_proposal_support(&env, &gv_a), (0, 0), "A's tally untouched by the rejected double-retract (no double-release / underflow)");
+    assert_eq!(read_cast(&env), 0, "global cast still zero — no second decrement");
+
+    // The ballot is intact: alice can back again, and the tally returns to exactly one vote.
+    gv_vote(&mut env, &ve, &alice, &gv_a, 1).expect("alice re-backs A after the rejected double-retract");
+    assert_eq!(gv_proposal_support(&env, &gv_a), (10 * amount, amount), "re-back restores exactly one vote — ballot not corrupted");
+    assert_eq!(read_cast(&env), 10 * amount, "global cast = one vote again");
+}
+
 // DEPOSIT != VOTE (top-up while a ballot is LIVE must not inflate the tally nor unlock the pledge):
 // insurance_deposit checks p.withdrawn but NOT vote_locked, and it never touches the gv tallies (those are
 // gv-owned state). So a voter may add capital while voted, but doing so must (a) NOT silently raise their
