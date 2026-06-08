@@ -8421,3 +8421,24 @@ drain/brick:
   order (861/932). Replay (vs reorder) pinned separately (e2e_completed_squads_execute_cannot_be_replayed 3585).
 VERDICT: no reorder of approved Squads txs yields a drain, brick, or principal breach — every ix validates live
 state and the floor is safe-by-default (MAX) until the DAO arms it. No code change; suites green.
+
+### [VERIFIED — gv trigger (permissionless winner-take-all seal): single-winner, live quorum, no-mint, anti-bait] tick (B)
+First-time direct trace of the genesis-vote trigger (lib.rs:713) — the permissionless instruction that seals the
+winning COIN distribution; a double-trigger / forged-winner / post-hoc-append here = a direct COIN free-farm.
+SOUND + comprehensively pinned (seal.rs, 17 tests green):
+- NO MINT: the trigger never mints — the fixed COIN supply is pre-funded into the distribution vault at init; the
+  trigger only CPIs distribution.seal_winner to DESIGNATE the winner. So there is no supply inflation vector here.
+- SINGLE WINNER (doubly enforced): (1) the majority gate support_weight*2 > total_cast_weight (771) — at most ONE
+  proposal can hold a strict >50% of cast weight at any instant; (2) the distribution seal_winner is_sealed() check
+  is the TRUE irreversible gate — once A seals, a rival B (even if post-execution retracts shift weight to make B
+  look winning) reverts at the seal CPI. pv.executed is set BEFORE the CPI but the whole tx reverts atomically on a
+  failed seal, so the flag never desyncs from the seal. Pinned: a_second_proposal_cannot_reseal_after_a_winner_is_
+  sealed (seal.rs) + trigger_requires_a_strict_majority_and_quorum_not_a_tie.
+- LIVE QUORUM: total_voted_principal*2 > LIVE pool outstanding, re-read from the config-bound subledger_pool at seal
+  time (761-769) — not the stale cache — so honest deposits that grow the pool after an early minority vote defeat a
+  stale-low quorum. Pinned (e2e_trigger_rejects_a_foreign_low_outstanding_pool 3286 + the foreign-pool bind).
+- ANTI BAIT-AND-SWITCH: the distribution proposal's (entry_count, total_amount) must match the snapshot voters
+  backed (747-755) -> a creator can't append self-allocations after the vote. Distribution program/config/proposal
+  all bound to config + pv (737-741); trigger_cannot_redirect_to_a_sibling_distribution_proposal pins the bind.
+VERDICT: no free COIN — no mint, exactly one irreversible winner, quorum/majority measured against live capital,
+and the sealed list is byte-identical to what voters approved. No code change; suites green.
