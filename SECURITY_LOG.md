@@ -10692,3 +10692,21 @@ registered as backing / vice versa). Reverted -> 48/48 rd green, src clean. SHAR
 cohort gating + cross-cohort + cross-genesis pool binding (finding HG) is doubly mutation-proven; combined with
 the residual portfolio owner-bind, the cross-genesis config bind, and the substituted-ledger binds (all earlier
 ticks), every rd account-binding the sweep enumerates is verified non-vacuous.
+
+## Tick — finding-II reserved_floor anti-re-arm clause (2-step monotonicity bypass / principal drain) MUTATION-VERIFIED (surface A)
+
+set_reserved_floor enforces principal protection: once a REAL floor is set (!= the u128::MAX unset sentinel)
+it can only RISE, so a captured/timelock'd-but-malicious DAO can never lower the floor to drain the now-locked
+(post-handoff, finding S) depositor principal as "surplus" via execute -> buy-burn (lib.rs:630). The SUBTLE
+part is finding II: u128::MAX is BOTH the unset sentinel AND a valid maximal value, so the guard has TWO
+clauses — `new_floor < current` (no lowering) AND `new_floor == u128::MAX` (no RAISING a real floor back to the
+sentinel). Without the second clause a 2-step bypass exists: raise principal -> MAX (allowed, MAX<principal is
+false) to RE-ARM the sentinel, then MAX -> 0 (the `!= MAX` guard skips the now-sentinel floor) = the locked
+principal is fully re-exposed as surplus and execute drains it.
+
+MUTATION-VERIFIED the anti-re-arm clause is INDEPENDENTLY load-bearing (not subsumed by the obvious < monotonicity):
+removed ONLY `|| new_floor == u128::MAX` (kept `new_floor < current`), rebuilt the real .so -> the full chain
+suite caught it: dao_cannot_re_arm_the_max_sentinel_to_bypass_the_floor_monotonicity FAILED (the DAO raised a
+real floor to MAX, re-arming the sentinel for a later unbounded lower). Reverted -> 111/111 chain green, src
+clean. SHARP. No code change. VERDICT: BOTH finding-O/II floor-monotonicity clauses (no-lower + no-re-arm) are
+mutation-proven, closing the principal-drain-as-surplus LOF in both its direct and 2-step forms.
