@@ -11131,3 +11131,21 @@ COIN/USD that leaves them was deposited by a bidder), mutation-proven -- roundin
 escrow/holding/coin_sink owner+mint binds + reserve den != 0 + require_squads_vault gate). With this the DAO-
 gated init/setter setup-integrity guards join the (already-complete) attacker-facing surface in the mutation-
 proven set.
+
+## Tick — own-vault pool (tag 2) process_withdraw owner-bind (cross-owner theft) MUTATION-VERIFIED; second subledger pool type covered (surface B)
+
+Surfaced a previously-uncovered (in this campaign) test file: subledger/tests/subledger.rs (11 tests, green)
+exercises the OWN-VAULT subledger pool (init_pool tag 0 / deposit tag 1 / withdraw tag 2) — a DISTINCT code
+path from the insurance pool (tags 3/4/5) verified in insurance_percolator.rs. It mirrors the insurance-pool
+economics for the own-vault path: principal-policy healthy (keeps surplus), with-surplus pro-rata yield,
+late-depositor-can't-capture-surplus, first-depositor inflation reject, zero-share reject, impaired pro-rata
+order-independence, init non-SPL/wrong-owner vault rejects, and cross-owner withdraw.
+
+MUTATION-VERIFIED the own-vault anti-theft guard: process_withdraw (tag 2) binds position.owner == owner.key
+(lib.rs:701). It is the SOLE guard against cross-owner theft — owner.is_signer (668) alone is insufficient (an
+attacker signs as THEMSELVES while passing a VICTIM's position; without the owner-field bind the victim's
+principal redeems to the attacker's ATA). Neutered the owner clause (kept the pool clause) -> rebuilt the real
+.so -> non_owner_cannot_withdraw_another_position FAILED (the attacker drained another depositor's position).
+Reverted -> subledger.rs 11/11 + insurance_percolator 58/58 green, src clean. SHARP. No code change. VERDICT:
+the own-vault pool is the second subledger pool type and its withdraw is owner-bound (no cross-owner theft),
+mutation-proven; both subledger pool paths (own-vault + insurance) are now verified.
