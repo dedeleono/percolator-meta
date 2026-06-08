@@ -7718,6 +7718,48 @@ fn dao_cannot_lower_the_surplus_floor_to_drain_principal() {
     assert_eq!(read_reserved_floor(&svm, &env.twap_cfg), floor0 + 500_000, "floor raised");
 }
 
+// FINDING-O MONOTONICITY BYPASS (raise-to-MAX-then-lower re-arms the unset sentinel): the floor "can only RISE
+// once a real value is set" — but u128::MAX is BOTH the unset sentinel AND a valid maximal value. The guard only
+// rejects `new_floor < reserved_floor` WHEN `reserved_floor != MAX`. So a captured DAO can RAISE the floor to MAX
+// (allowed — MAX < principal is false), which re-arms the sentinel, then LOWER it to anything (the `!= MAX` guard
+// is now bypassed) — re-exposing the now-locked depositor principal as "surplus" -> execute drains it. Post-handoff
+// depositor exits are CLOSED (finding S), so this monotonic floor is the SOLE on-chain protection — the bypass is
+// a direct LOF. This pins the fix: raising a REAL floor back to the MAX sentinel is rejected (so it can never be
+// re-armed), while raising to a high REAL value (legitimate pause) is allowed and the subsequent lower stays barred.
+#[test]
+fn dao_cannot_re_arm_the_max_sentinel_to_bypass_the_floor_monotonicity() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer); // floor set to env.principal at squads tx idx 4
+    let floor0 = read_reserved_floor(&svm, &env.twap_cfg);
+    assert_eq!(floor0, env.principal as u128, "handoff set the floor to the depositor principal");
+    let fr = || vec![AccountMeta::new_readonly(env.squads_vault, false), AccountMeta::new(env.twap_cfg, false), AccountMeta::new_readonly(twap_id(), false)];
+
+    // ATTACK step 1: raise the REAL floor back to the u128::MAX unset sentinel. Must be REJECTED — re-arming the
+    // sentinel is what re-enables the unbounded lower below.
+    let m1 = build_set_reserved_floor_message(&env.squads_vault, &env.twap_cfg, u128::MAX);
+    assert!(squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 5, &m1, &fr()).is_err(),
+        "raising a real floor back to the u128::MAX sentinel must be rejected (no re-arm of the monotonicity bypass)");
+    assert_eq!(read_reserved_floor(&svm, &env.twap_cfg), floor0, "floor unchanged after the rejected raise-to-MAX");
+
+    // CONTROL: the DAO CAN still raise to a high REAL value (pause pulls: surplus saturates to 0) — just not MAX.
+    let m2 = build_set_reserved_floor_message(&env.squads_vault, &env.twap_cfg, u128::MAX - 1);
+    squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 6, &m2, &fr()).expect("raising to a high REAL value (not the sentinel) is allowed");
+    assert_eq!(read_reserved_floor(&svm, &env.twap_cfg), u128::MAX - 1, "floor raised to the high real value");
+
+    // ATTACK step 2: now try to LOWER from that high real value to 1 (the drain). Monotonic holds -> rejected.
+    let m3 = build_set_reserved_floor_message(&env.squads_vault, &env.twap_cfg, 1u128);
+    assert!(squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 7, &m3, &fr()).is_err(),
+        "lowering from a real floor is rejected — the sentinel could not be re-armed, so no bypass");
+    assert_eq!(read_reserved_floor(&svm, &env.twap_cfg), u128::MAX - 1, "floor unchanged — depositor principal stays protected");
+}
+
 // ORGANIC PnL-LOSS -> trader cohort, against a LIVE percolator market (no hand-set counters).
 // A real trader opens a position, the (admin-controlled) oracle moves against it, a permissionless crank
 // settles the negative PnL from principal -> percolator bumps residual_crystallized_loss_atoms_total, and

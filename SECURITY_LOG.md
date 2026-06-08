@@ -7772,3 +7772,20 @@ authority must be the legit pool-bound one; (3) no permanent trap — the voter 
 via the config PDA), then exit (vote_locked_principal_cannot_exit_until_retracted + the veto-exit retract->withdraw).
 So the pledge is symmetric: capital is locked exactly while a ballot is live, only the rightful authority toggles it,
 and the voter holds the exit (retract). VERDICT: all BLOCKED/pinned. No change.
+
+### [REAL BUG FIXED — finding-O monotonicity BYPASS via raise-to-MAX-then-lower (depositor-principal drain)] tick (A)
+SURFACE (twap set_reserved_floor, finding O — the SOLE post-handoff principal protection). The floor is meant to be
+monotonic-up once a real value is set ("the protected principal only ever grows"), enforced by
+`if reserved_floor != u128::MAX && new_floor < reserved_floor { reject }`. BUG: u128::MAX is BOTH the unset sentinel
+AND a valid maximal value, and the guard only fires when reserved_floor != MAX. So a captured/malicious DAO (post-
+handoff) could, via two timelock'd Squads executes: (1) RAISE the floor principal -> u128::MAX — ALLOWED because
+`MAX < principal` is false (it reads as a legitimate increase) — which RE-ARMS the sentinel; then (2) set the floor
+MAX -> 0 — ALLOWED because the `!= MAX` guard now skips the monotonic check. Floor = 0 -> execute's surplus =
+insurance - 0 = the FULL insurance incl. the depositor principal -> buy/burn DRAINS it. CRITICAL because post-handoff
+depositor exits are CLOSED (finding S), so this monotonic floor is the ONLY on-chain protection — the existing test
+dao_cannot_lower_the_surplus_floor_to_drain_principal only covered the 1-step direct lower and gave false confidence.
+REPRO: dao_cannot_re_arm_the_max_sentinel_to_bypass_the_floor_monotonicity (real twap+perc .so) — FAILED on the old
+.so (raise-to-MAX succeeded). FIX (our authorship): reject raising a REAL floor back to the MAX sentinel —
+`if reserved_floor != MAX && (new_floor < reserved_floor || new_floor == MAX) { reject }`. A legitimate "pause all
+pulls" is still any high REAL value (surplus saturates to 0); MAX is reserved for the pre-handoff unset state alone.
+Rebuilt twap_program.so. VERDICT: REAL LOF — fixed + pinned. twap chain 103 green (no regressions).

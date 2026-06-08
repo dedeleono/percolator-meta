@@ -620,7 +620,16 @@ fn process_set_reserved_floor(program_id: &Pubkey, accounts: &[AccountInfo], dat
     // The single allowed decrease is the initial MAX -> principal set at handoff. To RETURN principal,
     // the DAO re-grants the subledger operator and depositors exit (the documented recovery), never by
     // lowering the floor into principal.
-    if config.reserved_floor != u128::MAX && new_floor < config.reserved_floor {
+    //
+    // CRITICAL: u128::MAX is BOTH the unset sentinel AND a valid maximal value, so a real floor must NEVER be
+    // raised back to MAX — doing so would re-arm the sentinel and re-enable an unbounded lower (raise principal
+    // -> MAX, which `MAX < principal == false` permits, then MAX -> 0, which the `!= MAX` guard skips): a 2-step
+    // bypass of the monotonicity that re-exposes the locked depositor principal as surplus -> execute drains it.
+    // A legitimate "pause all pulls" is still expressible as any high REAL value (surplus saturates to 0); the
+    // sentinel itself is reserved for the pre-handoff unset state only.
+    if config.reserved_floor != u128::MAX
+        && (new_floor < config.reserved_floor || new_floor == u128::MAX)
+    {
         return Err(ProgramError::InvalidArgument);
     }
     config.reserved_floor = new_floor;
