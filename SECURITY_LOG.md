@@ -11434,3 +11434,23 @@ share_value_claim_partial_post_freeze_withdraw_pays_the_reduced_live_shares. Rev
 clean. SHARP. No code change. VERDICT: the share-value soft-veto (exit/partial-exit forfeits the COIN
 proportionally) is mutation-proven -- correcting the slight over-claim in the saturation note; BOTH rd claim
 live-caps (residual net + share-value shares) are now explicitly mutation-verified.
+
+## Tick — REAL-BUG FIX regression-protection: distribution claim_window saturating_add MUTATION-VERIFIED (surface C)
+
+Meta-audit thread: confirm the FIXES for the 4 real bugs found early this campaign are themselves
+mutation-protected against silent regression (a fix that isn't pinned can be reverted by a refactor, re-opening
+the bug). This tick: the distribution claim_window permanent-freeze LOF (the first real bug). The fix made
+window_end = seal_slot.SATURATING_ADD(claim_window_slots) (lib.rs:565 claim + 637 burn) -- a checked_add (or
+plain + under overflow-checks=true) would PANIC/revert on an absurd claim_window_slots (near u64::MAX), and
+since BOTH claim and burn_unclaimed compute window_end the same way, every claim AND every burn would revert =
+the whole COIN vault PERMANENTLY FROZEN (no claim, no burn, ever).
+
+MUTATION-VERIFIED the fix: replaced both saturating_add with plain + -> an_absurd_claim_window_saturates_and_
+never_bricks_claims FAILED with "attempt to add with overflow" panic at lib.rs:565 (the exact freeze the fix
+prevents). Reverted -> 32/32 distribution green, src clean. SHARP. No code change.
+
+REAL-BUG-FIX REGRESSION-PROTECTION STATUS (all 4 now confirmed mutation-pinned): (1) distribution claim_window
+freeze -> saturating_add [this tick]; (2) rd stale-points wash -> claim live-cap [residual + cross-cohort,
+prior ticks]; (3) gv one-vote-one-proposal mutation-blind test -> the GG-offset fix made the binding test sharp
+[prior]; (4) auction stale-round_end competition-skip -> the claim/cancel round_end re-anchor [prior].
+Every fix for every real bug is pinned, so none can silently regress.
