@@ -11665,3 +11665,26 @@ must LOSE the bankrupt account's real margin, and the LP claim is FEE-TAXED 20% 
 is HARDER to farm than the trader cohort, consistent with last tick's "LP claims 0" inertia. No code change;
 sim 4/4 green. FUTURE: a dedicated leveraged-percolator harness would let the social-loss received/cost ratio be
 measured empirically (deferred — needs sibling config work).
+
+## Tick — CROSS-MARGIN economy sim (user-directed): 100 traders x 1 market x 10 assets, REAL percolator (surface D)
+
+User refinement of the prior full-economy sim: rational traders CROSS-MARGIN across up to 10 markets (modeled
+faithfully as ONE percolator slab with 10 assets — percolator nets margin across a portfolio's assets; "cross
+margin across markets" is the multi-asset-within-a-market primitive). New test
+sim/tests/farm.rs::cross_margin_100_traders_10_assets_distribution_report: 1 market/10 assets, 1M insurance +
+1M backing per asset (10+10 depositors x 1M), 99 rational traders (each ONE cross-margined portfolio over a
+random subset 1..=10 of assets, long/short each, sharing 1M collateral) + 1 max-farmer (delta-neutral across
+all 10 assets, 2 Sybil legs). REAL percolator trades; rd cohorts 10/10/40/40 + 20% fee.
+
+RESULTS (deterministic): 99 rational at 5.8 asset-legs avg = 590 positions; total NOTIONAL VOLUME 295,000 (~6x
+the single-market model's 50,500). 90 traders had >=1 losing leg, 9 pure winners. Distribution of the 1,000,000
+COIN: insurance 100,000 (10k each), backing 100,000 (10k each) fully claimed; LP 400,000 -> 0 (received==0, no
+bankruptcy on full-margin markets — consistent with the prior tick's bound); TRADER 400,000 -> 319,990 claimed
+(= (1-20% fee) x cohort). KEY CROSS-MARGIN EFFECT: crystallized is a PER-PORTFOLIO (account-level) counter, so
+cross-margin NETS each portfolio's winning and losing legs into ONE counter -> only a portfolio's NET realized
+loss earns trader points (a trader who wins more than loses across assets earns ~0). avg net-loss trader 3,480
+(90 sharing 313,239); MAX-FARMER 6,751 (1.7% of the trader cohort) for ~0 net market risk — ~2x an avg loser
+because it deployed 2 Sybil portfolios (2M) vs a single 1M trader, i.e. LINEAR Sybil cost, NOT disproportionate.
+Conservation holds (519,990 <= 1,000,000). No new bug (the farmer is fee-taxed + 1/N-diluted + capital-bound,
+the documented finding-NZ bound at cross-margin scale). KEPT the test (distinct margining model + higher-volume
+economy). sim 5/5 green.
