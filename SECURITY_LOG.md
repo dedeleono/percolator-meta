@@ -11414,3 +11414,23 @@ A NEW tick is only warranted by a real CHANGE: a code edit, a percolator/Squads 
 offset canaries + sim/chain behavioral tests), a new instruction/cohort, or a genuinely novel attack class not
 in the A-D enumeration. Absent that, the security model is established by guard-by-guard non-vacuity proofs +
 the end-to-end composition, with no remaining exploitable or unexamined surface. No code change.
+
+## Tick — share-value claim live-cap (insurance/backing SOFT-VETO) MUTATION-VERIFIED (surface D; coverage meta-check correction)
+
+Confirmed no external change since the saturation note (no new commits, no uncommitted edits, percolator/squads
+revs unchanged). Did a meta-check of the "every sole-defense guard verified" claim and found one genuinely
+DISTINCT guard I had characterized as covered but never EXPLICITLY mutation-verified: the SHARE-VALUE claim
+live-cap (lib.rs:1016, `pts = min(stake.points, live_pts)` where live_pts = share_value_points(live shares,
+withdrawn)). It is separate from the residual (LP/trader) live-cap verified earlier -- different cohort,
+different field (live SHARES vs live net). It is the soft-veto enforcement for the insurance/backing cohorts: a
+depositor who EXITS (or partially withdraws) after crystallize -> fewer/zero live shares -> claims
+proportionally less / zero COIN, ATOMICALLY (read live shares + cap + pay in one tx, no finalize gap, finding
+HE/JC). Without it, an exited depositor would claim their stale FROZEN points = COIN for capital no longer at
+risk (a free-farm / double-dip: exit the principal AND keep the COIN).
+
+MUTATION-VERIFIED: neutered the min-cap (`pts = stake.points`), rebuilt the real .so -> THREE tests FAILED:
+share_value_is_pro_rata_and_exit_forfeits, share_value_claim_rejects_a_substituted_position_no_soft_veto_bypass,
+share_value_claim_partial_post_freeze_withdraw_pays_the_reduced_live_shares. Reverted -> 48/48 rd green, src
+clean. SHARP. No code change. VERDICT: the share-value soft-veto (exit/partial-exit forfeits the COIN
+proportionally) is mutation-proven -- correcting the slight over-claim in the saturation note; BOTH rd claim
+live-caps (residual net + share-value shares) are now explicitly mutation-verified.
