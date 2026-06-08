@@ -10633,3 +10633,21 @@ FAILED (the late depositor minted enough cheap shares to capture pre-existing su
 principal-only recovery the test asserts). Reverted -> 57/57 subledger green, src clean. SHARP. No code change.
 VERDICT: the tenure-fair live-balance share pricing (no late-comer surplus capture) is the load-bearing guard
 and is mutation-proven. (Complements finding HB, the zero-share-deposit reject, verified earlier.)
+
+## Tick — rd anti-wash claim fee (the sole bound on the fee-free wash) MUTATION-VERIFIED (surface D)
+
+The delta-neutral wash leaves spent=0 (sim 92: the spent-netting cannot structurally close it — the offsetting
+short gain lives in percolator `pnl`, not in any residual counter), so the claim FEE is the load-bearing
+economic bound on the PnL-flow (LP/trader) cohorts: process_claim skims fee = amount * fee_support_bps / 10000
+from every LP/trader payout and RETAINS it in the vault (locked, deflationary), so a manufactured residual
+always nets the farmer only (1 - fee) of what it earns (lib.rs:1035-1039). The share-value (insurance/backing)
+cohorts pay NO fee (capital-at-risk, not PnL-flow).
+
+MUTATION-VERIFIED the fee is non-vacuous: forced fee = 0 for the LP/trader branch, rebuilt the real .so ->
+lp_trader_claim_pays_the_anti_wash_fee_share_value_cohorts_dont FAILED (the LP claimed its FULL 400_000 cohort
+instead of the post-fee 320_000 = 80%; the 20% tax vanished, so the wash capture would be unbounded by the
+fee). Reverted -> 48/48 rd green, src clean. SHARP. No code change. (The parallel trader-cohort fee is pinned
+by trader_cohort_claim_also_pays_the_anti_wash_fee:452, and the retained-fee-not-drainable property by the
+no-sweep-instruction audit earlier.) VERDICT: with the spent-netting unable to catch a delta-neutral wash, the
+claim fee is the proven economic bound (manufactured residual costs a fee fraction of what it earns), and it is
+mutation-proven applied + retained.
