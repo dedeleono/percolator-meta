@@ -11172,3 +11172,26 @@ non-freezable AT PRODUCTION (mint authority revoked in the same init tx, full su
 mutation-proven -- closing the COIN-supply integrity chain end to end: setup PRODUCES the revoked-authority
 fixed-supply COIN, distribution VERIFIES it (init_config mint-authority check), and rd/distribution distribute
 it conservation-bounded. All 11 integration test files across the workspace are now examined + verified.
+
+## Tick — twap library is unused (no attack surface) + the live cmp_rate comparator MUTATION-VERIFIED (surface A)
+
+Resolved the twap LIBRARY crate's status: it is NOT a dependency of ANY deployed program (subledger,
+genesis-vote, distribution, residual-distributor, twap-program, setup all have no twap-lib dep) and twap-program
+does not import it. It is the original pay-as-bid auction library (withdraw_bid/close_bid_escrow — both wrong
+for the anti-spoof requirements) that the twap-PROGRAM superseded by REIMPLEMENTING only the ranking primitive
+(~40-line continued-fraction comparator). So the library is reference/legacy code with no deployed attack
+surface; its 24 comparator unit tests pass but nothing live runs them. (Removable, like the earlier-removed
+program/ + governance/ crates — left in place; not removing a crate without instruction.)
+
+The SECURITY-relevant code is the twap-program's own cmp_rate (lib.rs) — the overflow-safe, float-free
+continued-fraction rate comparator that orders bids by COIN-per-USD; it drives the eligible-bid SORT, the
+full-book EVICTION (strictly-better only), the RESERVE filter, and the MARGINAL clearing price. A wrong
+ordering would misrank bids -> exclude better bids / pick the wrong P* -> the protocol clears at a worse price
+(value leak) or the anti-spoof eviction breaks.
+
+MUTATION-VERIFIED (comprehensively): flipped the integer-quotient comparison (`aq.cmp(&bq)` -> `bq.cmp(&aq)`)
+-> the lib unit test cmp_rate_orders_by_coin_per_usd FAILED AND many chain tests FAILED (eviction, claim-redirect,
+shutdown-confiscation, init-brick — the whole auction relies on the ordering). Reverted -> twap-program lib 4/4
++ chain 112/112 green, src clean. SHARP. No code change. VERDICT: the live auction comparator is correct
+(COIN-per-USD descending), mutation-proven; the twap library is confirmed unused dead-reference code with no
+deployed attack surface.
