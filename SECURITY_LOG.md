@@ -5,7 +5,22 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 295 standalone tests GREEN (subledger 73, genesis-vote 22, distribution 36, residual-distributor 49,
 twap-program 112, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (B, stale vote weight via PARTIAL withdraw — BLOCKED, pinned): vote weight floor(log2(hold))*principal
+LATEST TICK (A/C/B sweep + mutation-verify, NO code change): swept four named vectors, all already covered:
+(A) auction EMPTY-BOOK execute is graceful (marginal=None branch, lib.rs:1668; tested at chain.rs:4552/4778/4830
+"empty book just rolls + ratchets"); auction MARGINAL partial-fill math is sound — coin_i=floor(usd_i*cm/um)
+floors DOWN (protocol loses <=1 atom dust/bid, un-amplifiable at one-bid-per-bidder), total_usd<=budget (no
+overspend), refund=checked_sub (no underflow), reserve bounds the marginal rate (no over-pay drain). (C)
+distribution proposal RE-CREATE (reset creator/entries) already BLOCKED+pinned by create_proposal_cannot_recreate_
+a_live_proposal_to_reset_it (data_len!=0 -> AccountAlreadyInitialized, lib.rs:410); a proposal-id front-run is a
+non-brick (orchestrator picks another id; genesis init is atomic anyway). (B) trigger reads LIVE pool outstanding
+(re-read at lib.rs:764, NOT the stale config cache) + binds sub_pool to config.subledger_pool (761) -> foreign/
+stale-low minority-capture BLOCKED. NEW VERIFICATION: mutation-checked the trigger live-outstanding re-read
+(lib.rs:764) — swapping it for the stale config.outstanding_principal makes trigger_uses_live_pool_outstanding_
+not_stale_cache (seal.rs:816) FAIL; reverted, git clean, gv seal 17 green. Cumulative mutation campaign: guard-
+removal[26], off-by-one[3], equivalent[1], constant-magnitude[1], offset-constant[1], live-cap[1] + 2 defense-in-
+depth; NO uncaught mutation across all 4 surfaces.
+
+PRIOR TICK (B, stale vote weight via PARTIAL withdraw — BLOCKED, pinned): vote weight floor(log2(hold))*principal
 is tallied at back-time from the position principal. The veto-exit test only exercised a FULL withdraw while
 vote-locked; the sharper free-weight attack is a PARTIAL exit — back with principal P (weight tallied at P) then
 withdraw a fraction (0.4P) WITHOUT retracting, keeping a P-weighted ballot live behind only 0.6P of at-risk
