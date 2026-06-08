@@ -5,7 +5,21 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 300 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 50,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (B, late-depositor surplus capture — BLOCKED, pinned): POLICY_WITH_SURPLUS makes the surplus WINNABLE,
+LATEST TICK (A/C, gv trigger->seal binding sweep + mutation-verify, NO code change): swept the genesis-vote
+trigger->distribution-seal cross-program seam (the whole-COIN-supply capture surface) and found it exhaustively
+covered: the trigger binds distribution_program/config/PROPOSAL to config + pv.distribution_proposal (lib.rs:737-
+742) and snapshots (entry_count,total_amount) against bait-and-switch (750-751); tested by trigger_cannot_redirect_
+to_a_sibling_distribution_proposal (697), trigger_refuses_a_distribution_inflated_after_registration (624),
+register_rejects_a_proposal_from_a_foreign_distribution_config (732), a_second_proposal_cannot_reseal_after_a_
+winner (852), trigger_uses_live_pool_outstanding (816). NEW VERIFICATION: mutation-checked the COIN-SUPPLY-REDIRECT
+binding (lib.rs:739, distribution_proposal == pv.distribution_proposal) — the sole guard stopping a winning
+triggerer from sealing their OWN sibling distribution proposal (same config, attacker allocation) and capturing
+the full mint. Dropping the clause makes trigger_cannot_redirect_to_a_sibling_distribution_proposal FAIL; reverted,
+git clean, gv seal 17 green. Cumulative mutation campaign: guard-removal[30], off-by-one[3], equivalent[1],
+constant-magnitude[1], offset-constant[1], live-cap[1], snap-baseline[1], last-write-clock[1], share-pricing-
+source[1] + 2 defense-in-depth; NO uncaught mutation across all 4 surfaces.
+
+PRIOR TICK (B, late-depositor surplus capture — BLOCKED, pinned): POLICY_WITH_SURPLUS makes the surplus WINNABLE,
 so the obvious free-farm is to skip the work: wait for a surplus to accrue, then deposit + immediately exit to
 skim a pro-rata slice you never earned. BLOCKED: insurance_deposit prices the minted shares against the LIVE
 insurance balance BEFORE the top-up (lib.rs:985-986, mint_shares(amount, total_shares, insurance_before)), so a
