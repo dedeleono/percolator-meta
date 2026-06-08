@@ -10258,3 +10258,27 @@ cancel MUST be rejected; control — after slot 121 (full 2*round_length aging) 
 the escrow. MUTATION-SHARP: introducing the round_end shortcut (`|| book.round_end > place_slot + round_length`)
 lets the post-roll early cancel succeed -> test FAILS (verified, reverted). KEEP. chain 110->111 green. No code
 change (guard correct). VERDICT: the no-op-roll cancel-manipulation (issue #28) is closed and now regression-pinned.
+
+## Tick — share-inflation first-depositor theft: finding HB pinned + percolator insurance-cap discovered (surface B; MUTATION-SHARP)
+
+Surface-B "share inflation" (the classic ERC4626 first-depositor donation attack: a dust depositor inflates
+the share price so a later depositor's shares round to 0, then redeems the stranded principal) had NO
+dedicated test. The subledger defends with TWO layers: VIRTUAL_SHARES=1e6 (bounds the skew) AND a zero-share
+deposit REJECT (insurance_deposit lib.rs:994, finding HB — "never accept principal for zero shares").
+
+EMPIRICAL FINDING (building the test): the REAL percolator CAPS the insurance fund — TopUpInsurance reverts
+with custom error 0xe long before insurance can be inflated to the ~2e12 needed to round a 1-USDC victim to 0
+shares (confirmed by diagnosing the CPI under a neutered HB: error 0xe even with the SPL vault funded to
+match). So for any MEANINGFUL victim the dangerous regime is blocked at the percolator layer, AHEAD of HB —
+a defense-in-depth result (percolator insurance cap -> VIRTUAL_SHARES -> HB). HB is the subledger backstop for
+the SUB-CAP regime.
+
+Pinned that backstop mutation-SHARP with realistic small values:
+share_inflation_first_depositor_donation_cannot_strand_a_later_depositor_finding_hb — a dust attacker (2 atoms
+-> 2e6 shares) + a modest 3e6 surplus rounds a 1-atom victim to exactly 0 shares; the victim's deposit is
+REJECTED (HB) and the victim keeps its principal, no shares minted. The 3e6 insurance is within percolator's
+cap so the victim's TopUpInsurance CPI is VALID under the mutation — making HB the SOLE rejecter (an earlier
+2e18 version was mutation-BLIND: the CPI's own 0xe masked HB; caught + fixed). MUTATION-SHARP: neutering
+lib.rs:994 (`if false && shares_minted == 0`) lets the 0-share deposit through (got Ok(())) -> test FAILS;
+reverted -> 56/56 green. KEEP. No code change. VERDICT: the inflation theft is closed by percolator's
+insurance cap for meaningful victims and by HB for the residual sub-cap regime; both now evidenced.

@@ -311,6 +311,10 @@ impl Env {
         let acc = self.svm.get_account(&self.pool).unwrap();
         u64::from_le_bytes(acc.data[80..88].try_into().unwrap())
     }
+    fn pool_total_shares(&self) -> u128 {
+        let acc = self.svm.get_account(&self.pool).unwrap();
+        u128::from_le_bytes(acc.data[192..208].try_into().unwrap())
+    }
 }
 
 // "THOSE WHO STAY DECIDE" (intended design; reviewed re: external issue #20, kept by design).
@@ -1236,6 +1240,53 @@ fn policy_with_surplus_impaired_exit_is_order_independent_and_conserves() {
     // rounding favors the protocol (a tiny virtual-offset dust may remain), never over-draws.
     assert!(alice_got as u128 + bob_got as u128 <= amount as u128, "total paid <= impaired insurance — no over-draw");
     assert_eq!(env.pool_outstanding(), 0, "all principal retired");
+}
+
+// SHARE-INFLATION FIRST-DEPOSITOR THEFT (finding HB, surface B). The classic ERC4626 attack: a dust first
+// depositor DONATES into the fund to inflate the live share PRICE (balance >> total_shares) so a later
+// depositor's shares round toward ZERO; that principal then lands in the fund for 0 shares and the attacker's
+// pre-existing shares redeem it (theft). The subledger defends with TWO layers: VIRTUAL_SHARES=1e6 bounds the
+// price skew, AND insurance_deposit REJECTS any deposit that would mint 0 shares (lib.rs:994, finding HB).
+//
+// EMPIRICAL NOTE (this tick): the REAL percolator caps the insurance fund — TopUpInsurance reverts (custom
+// error 0xe) long before insurance can be inflated to the ~2e12 needed to round a 1-USDC victim to 0 shares.
+// So the dangerous regime for a MEANINGFUL victim is blocked at the percolator layer, ahead of HB. HB is the
+// subledger backstop for the SUB-CAP regime, which this pins with realistic small values: a dust attacker
+// (2 atoms -> 2e6 shares) + a modest 3e6 surplus rounds a 1-atom victim to exactly 0 shares. The victim's
+// TopUpInsurance CPI SUCCEEDS at this realistic insurance (mutation-SHARP: neutering HB lets the 0-share
+// deposit through — verified), so HB is the SOLE rejecter, not a slab-shape CPI error. Previously untested.
+#[test]
+fn share_inflation_first_depositor_donation_cannot_strand_a_later_depositor_finding_hb() {
+    let mut env = Env::new();
+    env.init_insurance_pool_policy(1); // POLICY_WITH_SURPLUS (share-priced)
+
+    // Attacker is the FIRST (dust) depositor: 2 atoms -> 2*VIRTUAL_SHARES = 2e6 shares, insurance = 2.
+    let (attacker, attacker_ata) = new_depositor(&mut env, 2);
+    let pool = env.pool;
+    let att_hold = create_holding(&mut env, &pool);
+    env.insurance_deposit(&attacker, &attacker_ata, &att_hold, 2).expect("attacker dust deposit");
+    let shares_before = env.pool_total_shares();
+    assert_eq!(shares_before, 2_000_000, "first dust deposit mints amount*VIRTUAL_SHARES");
+
+    // ATTACK: donate to inflate the live share price. A modest 3e6 surplus is well within percolator's cap, so
+    // the CPI path stays valid. impair_market raises the slab insurance to 3e6; mirror the REAL SPL vault to
+    // the same balance so the victim's TopUpInsurance CPI SUCCEEDS — HB is then the only thing that can reject.
+    let donation = 3_000_000u128;
+    impair_market(&mut env, donation);
+    env.svm.set_account(env.perc_vault, Account {
+        lamports: 1_000_000, data: token_account_data(&env.mint, &env.vault_authority, donation as u64),
+        owner: spl_token::ID, executable: false, rent_epoch: 0,
+    }).unwrap();
+
+    // VICTIM deposits 1 atom. shares = V*(total_shares+VS)/(insurance+1) = 1*(2e6+1e6)/(3e6+1) = 0.
+    // finding HB: a zero-share deposit is REJECTED — the victim never hands principal to the attacker's shares.
+    let (victim, victim_ata) = new_depositor(&mut env, 1);
+    let vic_hold = create_holding(&mut env, &pool);
+    let r = env.insurance_deposit(&victim, &victim_ata, &vic_hold, 1);
+    assert!(r.is_err(), "a zero-share (inflation-rounded) deposit must be REJECTED (finding HB), got {r:?}");
+    // The victim KEEPS their principal — the rejected deposit moved nothing.
+    assert_eq!(env.token_amount(&victim_ata), 1, "victim retains their principal; not stranded for 0 shares");
+    assert_eq!(env.pool_total_shares(), shares_before, "no shares minted for the victim; the attacker cannot redeem the victim's principal");
 }
 
 // CO-DEPOSITOR DRAIN (no-drain property, DEFENSE-IN-DEPTH): insurance_withdraw caps `amount` by BOTH
