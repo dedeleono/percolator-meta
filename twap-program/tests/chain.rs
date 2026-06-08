@@ -2776,6 +2776,79 @@ fn e2e_voter_veto_exits_one_tx_retract_then_withdraw_else_atomic_fail() {
     assert_eq!(pos.data[88], 1, "position marked withdrawn — no capital-less ballot left behind");
 }
 
+// ATTACK PROBE (stale vote weight via PARTIAL withdraw — capital-less inflated ballot): the vote weight
+// `floor(log2(hold)) * principal` is tallied at back-time from the position's principal. The veto-exit test
+// above only exercises a FULL withdraw while vote-locked. The sharper free-weight attack is a PARTIAL exit:
+// back a proposal with principal=P (weight tallied at P), then withdraw only a fraction (say 0.4*P) WITHOUT
+// retracting — if allowed, the live ballot keeps inflating quorum/weight at P while only 0.6*P stays at risk,
+// i.e. governance power for a fraction of the pledged capital. The guard is that subledger::process_withdraw
+// rejects ANY withdraw on a vote_locked position UNCONDITIONALLY (lib.rs:1189), BEFORE the amount/partial
+// check (1194) — so partial draws are blocked exactly like full exits; the only way out is retract (which
+// clears the lock AND removes the weight from the tally). Pin the partial case, with a control proving the
+// SAME partial amount succeeds once the lock is cleared (so it is the lock, not the amount, that blocks).
+#[test]
+fn e2e_vote_locked_position_cannot_partially_withdraw_to_keep_an_inflated_ballot() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(sub_id(), so_deploy("subledger_program")).unwrap();
+    svm.add_program_from_file(gv_id_e2e(), so_deploy("genesis_vote_program")).unwrap();
+    svm.add_program_from_file(dist_id_e2e(), so_deploy("distribution_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_genesis(&mut svm, &payer);
+    let dest = Pubkey::new_unique();
+    let (_d, gv_p) = register_proposal(&mut svm, &payer, &env, 1, &dest, 100);
+
+    let alice = Keypair::new(); svm.airdrop(&alice.pubkey(), 1_000_000_000).unwrap();
+    let amount = 1_000_000u64;
+    let alice_ata = Pubkey::new_unique(); set_token(&mut svm, &alice_ata, &env.collateral_mint, &alice.pubkey(), amount);
+    let holding = Pubkey::new_unique(); set_token(&mut svm, &holding, &env.collateral_mint, &env.pool, 0);
+    let position = sub_position_pda(&env.pool, &alice.pubkey());
+    let mut dep = vec![4u8]; dep.extend_from_slice(&amount.to_le_bytes());
+    let deposit = Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(position, false), AccountMeta::new(alice_ata, false),
+        AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(system_program::ID, false)], data: dep };
+    svm.expire_blockhash(); let bh = svm.latest_blockhash();
+    svm.send_transaction(Transaction::new_signed_with_payer(&[deposit], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("deposit");
+    let mut c = svm.get_sysvar::<Clock>(); c.slot += 8; svm.set_sysvar::<Clock>(&c);
+
+    let gv_ballot = Pubkey::find_program_address(&[b"gv_ballot", env.gv_config.as_ref(), alice.pubkey().as_ref()], &gv_id_e2e()).0;
+    let vote = |action: u8| Instruction { program_id: gv_id_e2e(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.gv_config, false), AccountMeta::new(gv_ballot, false), AccountMeta::new(gv_p, false),
+        AccountMeta::new(position, false), AccountMeta::new_readonly(env.pool, false), AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(sub_id(), false)], data: vec![3u8, action] };
+    // Withdraw builder parameterized by amount (the partial draw is the attack; the full builder above is fixed).
+    let withdraw_amt = |amt: u64| Instruction { program_id: sub_id(), accounts: vec![
+        AccountMeta::new(alice.pubkey(), true), AccountMeta::new(env.pool, false), AccountMeta::new(position, false), AccountMeta::new(alice_ata, false),
+        AccountMeta::new(holding, false), AccountMeta::new(env.slab, false), AccountMeta::new(env.perc_vault, false), AccountMeta::new_readonly(perc_vault_authority(&env.slab, &perc_id()), false),
+        AccountMeta::new_readonly(perc_id(), false), AccountMeta::new_readonly(spl_token::ID, false)],
+        data: { let mut d = vec![5u8]; d.extend_from_slice(&amt.to_le_bytes()); d } };
+    let send = |svm: &mut LiteSVM, ixs: &[Instruction]| { svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        svm.send_transaction(Transaction::new_signed_with_payer(ixs, Some(&payer.pubkey()), &[&payer, &alice], bh)) };
+
+    // alice backs the proposal with her full 1_000_000 principal -> weight tallied at 1_000_000, position locked.
+    send(&mut svm, &[vote(1)]).expect("back");
+
+    // THE ATTACK: pull 40% of the capital (400_000) while keeping the 1_000_000-weighted ballot live. The lock
+    // rejects it before the amount is even examined -> no capital-less inflated ballot. Nothing moves.
+    let partial = 400_000u64;
+    assert!(send(&mut svm, &[withdraw_amt(partial)]).is_err(),
+        "a PARTIAL withdraw on a vote-locked position must also be rejected (no stale inflated ballot at fractional cost)");
+    assert_eq!(token_amount(&svm, &alice_ata), 0, "the rejected partial draw moved nothing — full principal still at risk behind the ballot");
+
+    // CONTROL: retract first (clears the lock AND removes the weight from the tally), THEN the SAME 400_000
+    // partial draw succeeds and the position stays OPEN (not withdrawn) with the residual principal — proving
+    // it was the lock, not the amount, that blocked the attack. After retract there is no ballot to inflate.
+    send(&mut svm, &[vote(2), withdraw_amt(partial)]).expect("retract clears the lock; the same partial draw is then valid");
+    assert_eq!(token_amount(&svm, &alice_ata), partial, "alice received exactly her 400_000 partial redemption (1:1, unimpaired)");
+    let pos = svm.get_account(&position).unwrap();
+    assert_eq!(pos.data[88], 0, "position is still OPEN after a partial exit (only a full draw marks it withdrawn)");
+    assert_eq!(pos.data[97], 0, "vote-lock cleared by the retract — no live ballot remains");
+}
+
 // ATTACK PROBE (quorum integrity via tally underflow): retract decrements the GLOBAL
 // total_voted_principal (u64, config@200) / total_cast_weight (u128, config@208). If a retract-without-back
 // or a DOUBLE-retract subtracted again from an already-zeroed tally, the u64 would WRAP to ~2^64 and the

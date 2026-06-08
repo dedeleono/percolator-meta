@@ -3,9 +3,23 @@
 Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdict.
 
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
-STATE: 294 standalone tests GREEN (subledger 73, genesis-vote 22, distribution 36, residual-distributor 49,
-twap-program 111, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (D/B sweep + mutation-verify, NO code change): swept for an uncovered free-farm/LOF and found
+STATE: 295 standalone tests GREEN (subledger 73, genesis-vote 22, distribution 36, residual-distributor 49,
+twap-program 112, sim 3); all 5 deployables build-sbf clean; deployment-ready.
+LATEST TICK (B, stale vote weight via PARTIAL withdraw — BLOCKED, pinned): vote weight floor(log2(hold))*principal
+is tallied at back-time from the position principal. The veto-exit test only exercised a FULL withdraw while
+vote-locked; the sharper free-weight attack is a PARTIAL exit — back with principal P (weight tallied at P) then
+withdraw a fraction (0.4P) WITHOUT retracting, keeping a P-weighted ballot live behind only 0.6P of at-risk
+capital = governance power for a fraction of the pledged cost. BLOCKED: subledger::process_withdraw rejects ANY
+withdraw on a vote_locked position UNCONDITIONALLY (lib.rs:1189) BEFORE the amount/partial check (1194); the only
+exit is retract (which clears the lock AND removes the weight from the tally). New e2e test
+e2e_vote_locked_position_cannot_partially_withdraw_to_keep_an_inflated_ballot pins the partial rejection + a
+control proving the SAME 0.4P draw succeeds post-retract with the position still OPEN (so it's the lock, not the
+amount). MUTATION-VERIFIED: weakening 1189 to `vote_locked && amount>=principal` (block full exits only) makes the
+test FAIL; reverted, git clean. chain 108 green. Distinct from the full-exit veto-exit test, which never varies
+the withdraw amount. Cumulative mutation campaign: guard-removal[25], off-by-one[3], equivalent[1], constant-
+magnitude[1], offset-constant[1], live-cap[1] + 2 defense-in-depth; NO uncaught mutation across all 4 surfaces.
+
+PRIOR TICK (D/B sweep + mutation-verify, NO code change): swept for an uncovered free-farm/LOF and found
 the surface saturated — re-confirmed each prompt-named vector is covered: (a) retained anti-wash fee has NO
 extraction path (only 5 rd ix; the sole token CPI is claim's transfer paying a bound recipient
 points_to_amount-fee; the fee/dust stays locked = deflationary; conservation already pinned by lp_trader_claim_
