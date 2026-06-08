@@ -9429,3 +9429,18 @@ This sharpens the campaign: the majority gate is now verified at BOTH levels —
 AND off-by-one (tie-win caught). The winner-take-all "strict majority" boundary is exact.
 MUTATION CAMPAIGN STATUS: 22 sole-defense guard-removals + 1 off-by-one boundary + 2 defense-in-depth, all 4
 surfaces, NO uncaught mutation. The test suite catches guard removal AND subtle boundary flips. No code change.
+
+### [MUTATION-VERIFIED (off-by-one) — gv quorum gate EXACT boundary (<= rejects exactly-half); BOTH winner-take-all gates boundary-exact] tick (B)
+Off-by-one mutation on the gv trigger QUORUM gate: flipped `total_voted_principal*2 <= live_outstanding` to `<`
+(lib.rs:766). With `<`, an EXACTLY-half turnout (2*voted == outstanding) no longer rejects -> a 50% principal turnout
+could seal the winner-take-all + mint the supply.
+- e2e_exactly_half_capital_does_not_meet_quorum (chain:3710): FAILED — exactly-half now meets quorum. Caught.
+- trigger_requires_a_strict_majority_and_quorum_not_a_tie (seal:509): FAILED — also catches it.
+REVERTED + rebuilt + test PASSES; git clean.
+BOTH gv winner-take-all gates are now verified at the EXACT `<=` boundary (not just guard-presence):
+- MAJORITY: support_weight*2 <= total_cast_weight rejects a tie (50% cast weight). Off-by-one verified (prior tick).
+- QUORUM: total_voted_principal*2 <= live_outstanding rejects exactly-half (50% principal). Off-by-one verified (this).
+The "strict majority AND strict quorum" requirement to mint 100% of the COIN supply is boundary-exact -> no 50%
+governance capture via a tie/exactly-half edge.
+MUTATION CAMPAIGN: 22 sole-defense guard-removals + 2 off-by-one boundaries + 2 defense-in-depth, all 4 surfaces,
+no uncaught mutation. No code change.
