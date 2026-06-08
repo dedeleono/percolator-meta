@@ -5,7 +5,20 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (C, mutation-verify the distribution seal authority — both halves SHARP, supply-capture guard):
+LATEST TICK (D, mutation-verify the crystallize denominator subtract-old — SHARP, not mutation-blind): probed
+whether the rd crystallize denominator update (lib.rs:843 residual branch, `*slot = slot - stake.points + new_pts`,
+the subtract-old/add-new that keeps the cohort denominator = sum of CURRENT points and prevents replay-inflation)
+was mutation-blind — hypothesis: the idempotency test might check only stake.points (which is overwritten = new_pts
+regardless) and miss a denominator that ACCUMULATES on replay. Checked: NOT blind. crystallize_is_idempotent_under_
+replay_and_tracks_full_delta_not_accumulation reads the cohort denominator DIRECTLY (e2e.rs:402..418) and asserts
+it does not inflate across replays (the denom() assertions, distinct from the pts() ones). Dropping the subtract-
+old (replay accumulates the denom) makes it FAIL. So the replay-inflation / denominator-integrity guard — what
+stands between "each miner's honest delta-share" and "replay-crystallize to dilute everyone / seize a larger slice"
+— is genuinely SHARP. (Contrast the gv-binding test from earlier this session, which WAS offset-blind: that test
+read a stale field; this one reads the right field at the right offset.) Reverted, git clean, rd e2e 45 green.
+Cumulative mutation campaign: guard-removal[42] + 9 classes + 2 defense-in-depth; NO uncaught mutation.
+
+PRIOR TICK (C, mutation-verify the distribution seal authority — both halves SHARP, supply-capture guard):
 mutation-checked the seal_winner authority binding (lib.rs:503), the single most consequential guard in the stack
 — it gates who can seal the winning proposal that mints 100% of the COIN supply. Two clauses: is_signer (502) and
 key-match `authority.key == config.authority` (503). Dropped the KEY-MATCH (kept is_signer): an attacker signing
