@@ -11479,3 +11479,23 @@ subledger 365) remain the tripwire if a FUTURE upstream rev does move the layout
 than mis-read. NOTE for the user: the Cargo pin (0f87dcb/58dc118) and the loaded .so (ff75a08) are now out of
 sync but proven CONSISTENT; whether to bump the pin to ff75a08 is a user/dependency decision -- not changed
 here (siblings are read-only; the canary protects us either way). No code change.
+
+## Tick — rd CROSS-COHORT over-allocation guard (insurance+backing+lp > 100% -> shared-vault over-draw LOF) MUTATION-VERIFIED (surface D)
+
+The rd vault holds ONE fixed COIN supply, partitioned across 4 cohorts by bps. trader_bps = 10000 - insurance
+- backing - lp (SATURATING), so the four slices normally sum to exactly 100% and floor-rounding keeps the
+supply sum <= total_supply -- cross-cohort over-draw is structurally impossible. BUT that partition only holds
+if init REJECTS a config where the first three bps already exceed 100%: init (lib.rs:599) guards
+`insurance_bps + backing_bps + lp_bps > 10000 -> reject`. Without it, e.g. insurance=5000/backing=4000/lp=2000
+(=11000) is accepted, trader_bps saturates to 0, and cohort_supply(insurance)=50% + backing=40% + lp=20% =
+110% of total_supply. The three cohorts together can then draw MORE than the vault holds: the last claimers
+hit an empty vault (spl transfer fails) = honest depositors permanently bricked out of their COIN (DoS), and
+the over-allocated share is a real over-draw of the shared pool (LOF for whoever is last).
+
+MUTATION-VERIFIED the guard is the SOLE rejecter: neutered `> 10000` to `> u32::MAX` (never fires) -> the
+11000-bps config is accepted (all pool/market scopes pass, trader=0), so init_rejects_zero_supply_
+overallocation_and_unscoped_cohorts FAILED at the "bps sum > 100%" assertion (e2e.rs:1726). Reverted -> 48/48
+rd e2e green, src clean. SHARP. The cross-cohort conservation is ALSO covered end-to-end by the existing
+cross_cohort_claims_never_exceed_cohort_or_total_supply test (sum of all 4 cohorts' claims <= vault). No code
+change -- the cross-cohort partition invariant (the structural foundation of "total payout <= vault") is
+mutation-pinned at its one load-bearing init gate.
