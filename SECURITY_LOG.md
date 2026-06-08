@@ -8504,3 +8504,24 @@ be actioned without user confirmation (deprecated program + read-only percolator
 pre-existing from this, not a regression in the standalone scope.
 VERDICT: standalone scope is green, build-clean, deployment-ready; LOF/DoS/free-farm all closed and traced against
 real binaries. No code change this tick.
+
+### [VERIFIED — wash sub-terms mapped: self-referential spend (netting), churn-that-doesn't-raise-spent (fee), fee-rounding dodge (Sybil-rent bound)] tick (D)
+Mapped the prompt's three residual wash-farm sub-terms to their concrete defenses; all bounded, no free-farm:
+- "SELF-REFERENTIAL SPEND" = CHURN (close+reopen the SAME loss leg): the reopen posts margin that SPENDS the
+  account's own crystallized budget -> spent rises -> trader net (crystallized - spent) drops. Caught by the
+  net-by-spent counter. PINNED: churn_raises_own_spent_and_collapses_the_net_reward_vs_a_holder (sim:309, REAL
+  percolator) + churn_zeroes_a_trader_via_spent_netting (e2e:670).
+- "CHURN THAT DOES NOT RAISE SPENT" = the DELTA-NEUTRAL wash (long+short, separate accounts): the offsetting gain
+  lives in `pnl`, NOT in any residual counter, so the loss leg's spent stays 0 -> net = crystallized. The
+  spent-netting CANNOT catch it (by design); the anti-wash FEE is the bound. PINNED: sim/farm.rs asserts
+  market_spent==0 + post-fee capture == (1-fee)*cohort; lp_trader_claim_pays_the_anti_wash_fee (e2e:359),
+  trader_cohort_claim_also_pays_the_anti_wash_fee (452).
+- FEE-DODGE via ROUNDING (new sub-angle): fee = amount*fee_support_bps/10000 FLOORS, so a claim with
+  amount < 10000/bps (e.g. <5 atoms at 2000 bps) pays fee 0. But each stake claims its FULL amount in ONE shot
+  (claimed flag 959/1015; no partial-amount param) -> the only way to push amounts under the rounding threshold is
+  to Sybil into many tiny stakes, each a 211-byte STAKE_SIZE PDA needing rent + its OWN time-locked capital +
+  manufactured loss. The Sybil-flat cost (rent + per-stake capital) vastly exceeds the sub-atom fee dodged per
+  stake -> economically irrational. (No test added: the fee at meaningful amounts is already pinned 359/452, and
+  the dodge bound is economic, not a new on-chain boundary.)
+VERDICT: the trader/LP wash is bounded by net-by-spent (churn) + the fee (delta-neutral) + Sybil-flat manufacturing
+cost (incl. the rounding dodge); no free COIN beyond that documented, accepted bound. No code change; suites green.
