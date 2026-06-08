@@ -11072,3 +11072,22 @@ append_rejects_a_zero_amount_or_default_pubkey_entry FAILED (a zero/default entr
 claimable allocation (no un-claimable/un-sealable entry DOS), mutation-proven -- rounding out the distribution
 append verification (supply-cap cumulative/capacity/atomic + zero/default reject + foreign-creator + append-to
 -sealed).
+
+## Tick — set_reserve zero-denominator reject (auction-clearing brick) MUTATION-VERIFIED (surface A)
+
+process_set_reserve (the DAO's auction reserve-rate setter, Squads-gated) rejects reserve_den == 0
+(lib.rs:1124). The reserve rate is reserve_num/reserve_den, used by execute's clearing filter
+cmp_rate(c, u, reserve_num, reserve_den) to drop bids below the DAO's max acceptable USD-per-COIN. A zero
+denominator makes the rate undefined (num/0): the continued-fraction comparator would treat every bid as
+below an "infinite" reserve -> NO bid ever clears -> every execute is a perpetual roll = the buy/burn auction
+is permanently BRICKED (a config-level DoS) until a corrective set_reserve. init_book already rejects
+reserve_den == 0 (lib.rs:997) for the initial value; this pins the SETTER so a later reconfigure can't drive
+the book into the un-clearable state.
+
+MUTATION-VERIFIED: neutered the reserve_den == 0 reject (`if false && ...`), rebuilt the real .so ->
+e2e_set_reserve_rejects_a_zero_denominator_that_would_brick_execute FAILED (a zero-denominator reserve was
+accepted). Reverted -> 112/112 chain green, src clean. SHARP. No code change. VERDICT: the auction reserve
+rate is always well-defined (den != 0 at both init_book and set_reserve), so the clearing can never be bricked
+by a degenerate reserve -- completing the twap DAO-setter bounds verification (reconfigure + set_economics
+joint cap + set_reserved_floor monotonicity/anti-re-arm + set_reserve den + set_coin_sink + set_bid_fee, all
+require_squads_vault-gated).
