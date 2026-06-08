@@ -5,7 +5,23 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (B, systematic stale-offset audit follow-up — CLEAN + reads hardened): after last tick's GG-offset
+LATEST TICK (C/B, mutation-sharpness audit — append cap SHARP, co-depositor bound is DEFENSE-IN-DEPTH): continued
+the mutation-blindness lens. (C) mutation-verified the distribution APPEND supply-cap (lib.rs:478,
+`header.total_amount > config.total_supply -> reject`, the LOF guard against a sealed proposal over-allocating
+beyond the funded vault): dropping it makes BOTH append_cannot_exceed_total_supply AND append_supply_cap_is_
+cumulative FAIL -> genuinely SHARP, no backstop. (B) investigated the subledger co-depositor per-position bound
+(lib.rs:1194, `amount > position.principal`): its test comment CLAIMED "This pins it", but dropping the clause
+leaves the suite (incl. a_depositor_cannot_withdraw_more_than...) GREEN -> MASKED. Root: overflow-checks=true makes
+`position.principal -= amount` panic-REVERT on the same `amount > principal` condition (it does NOT wrap to
+u64::MAX as the old comment claimed), atomically reverting the issued CPI/transfer. So the clause is the clean
+early-reject and overflow-checks is the load-bearing backstop; the clause cannot be sharply isolated by a value
+test (the underflow always reverts first). The test still verifies the no-drain SECURITY property. FIX: corrected
+the over-claiming comment to an honest defense-in-depth note (no code change; this is the same comment-accuracy
+class as last tick's offset fix, but here the masking is the overflow-checks backstop, not a stale offset).
+Subledger green. (This was first noted in an earlier session; now precisely characterized + the misleading comment
+fixed.)
+
+PRIOR TICK (B, systematic stale-offset audit follow-up — CLEAN + reads hardened): after last tick's GG-offset
 mutation-blind finding, swept EVERY raw-byte-offset injection/read of GG-widened gv structs (Config.total_cast_
 weight u128@208, ProposalVote.support_weight u128@72 + support_principal u64@88, Ballot.voted_weight u128@72)
 across all test suites. RESULT CLEAN — the chain.rs back-two-proposals WRITE (fixed last tick) was the ONLY stale

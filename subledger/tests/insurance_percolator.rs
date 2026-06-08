@@ -1189,16 +1189,18 @@ fn policy_with_surplus_late_depositor_cannot_capture_pre_existing_surplus() {
     assert_eq!(env.token_amount(&env.perc_vault.clone()), 1, "only 1 atom of virtual-offset dust remains; the surplus went to the early backer, never the late joiner");
 }
 
-// CO-DEPOSITOR DRAIN (the per-position withdraw bound): insurance_withdraw caps `amount` by BOTH
-// `position.principal` AND `pool.outstanding_principal` (lib.rs:1054). Because outstanding is the SUM of
-// every position's principal, the per-position bound is always the tighter one and is the LOF-critical
-// guard: drop it and a depositor in a multi-party pool can withdraw up to the WHOLE pool (amount up to
-// outstanding), draining co-depositors AND underflowing their own `position.principal` to ~u64::MAX —
-// a self-perpetuating infinite-withdrawal position. The pro-rata test above only ever withdraws each
-// depositor's exact principal, so it never exercises this bound (the mutation that removes
-// `amount > position.principal` passes the whole suite). This pins it: in a HEALTHY 2-party pool Alice
-// tries to pull the whole 2M (> her 1M, but == outstanding so the pool-only bound would allow it); the
-// withdraw MUST be rejected and Bob's funds MUST be untouched.
+// CO-DEPOSITOR DRAIN (no-drain property, DEFENSE-IN-DEPTH): insurance_withdraw caps `amount` by BOTH
+// `position.principal` AND `pool.outstanding_principal`. Because outstanding is the SUM of every position's
+// principal, the per-position clause is the tighter one: without it a depositor in a multi-party pool could
+// request up to the WHOLE pool (amount up to outstanding) and drain co-depositors. This test pins the no-drain
+// property end-to-end: in a HEALTHY 2-party pool Alice tries to pull the whole 2M (> her 1M, but == outstanding
+// so the pool-only clause would allow it); the withdraw MUST be rejected and Bob's funds MUST be untouched.
+// HONEST NOTE (mutation-blind for the explicit clause): the over-withdraw is blocked by TWO layers, so dropping
+// the per-position clause alone leaves this test (and the suite) GREEN — the `overflow-checks = true` backstop
+// makes `position.principal -= amount` panic-REVERT on the same `amount > principal` condition (it does NOT wrap
+// to u64::MAX), atomically reverting the already-issued CPI/transfer. So the clause cannot be sharply isolated by
+// a value test (the underflow always reverts first); it is the clean early-reject, overflow-checks is the
+// load-bearing backstop. The test still correctly verifies the SECURITY property (no co-depositor drain).
 #[test]
 fn a_depositor_cannot_withdraw_more_than_their_own_principal_and_drain_a_co_depositor() {
     let mut env = Env::new();
