@@ -10082,3 +10082,30 @@ MUTATION-VERIFIED the SOLE defense (lib.rs:1189): neutered the `vote_locked` wit
 (`if false && position.vote_locked`), rebuilt the real .so → vote_locked_principal_cannot_exit_until_retracted
 FAILED (the locked position exited, leaving a free capital-less ballot). Reverted → 54/54 green. SHARP, not
 mutation-blind. No code change, no new test (surface fully pinned). VERDICT: capital-less-ballot is closed.
+
+## Tick — distribution claim/burn conservation: full COIN-supply solvency (surface C; sole-defense guard MUTATION-VERIFIED)
+
+Traced surface-C claim/burn conservation end to end to rule out an under-funded-seal FCFS strand (early
+claimants drain the vault, late claimants get InsufficientFunds = a claim-race LOF). seal_winner only
+enforces total_amount <= total_supply (the promised NUMBER, lib.rs:514) — it does NOT re-check the vault
+balance. The solvency is instead pinned UP FRONT at init_config and is airtight as a system:
+- mint authority AND freeze authority both revoked (lib.rs:336) — fixed supply, no dilution, no vault-freeze DOS.
+- mint.supply == total_supply (lib.rs:335) — the ENTIRE COIN supply equals the promised pool.
+- vault.amount >= total_supply (lib.rs:354) — the vault already holds the whole supply.
+Together: at init the vault holds 100% of every COIN that will ever exist. The only vault outflows are
+claim (bounded by per-entry amounts, Sigma = total_amount <= total_supply) and burn_unclaimed (post-window),
+both authorized solely by the config PDA — no external SPL transfer can drain it. So total_amount <=
+total_supply <= vault at all times => every named recipient can always claim; no FCFS strand. burn_unclaimed
+then destroys exactly the post-window remainder (window cutoff mirrors claim: claim rejects >= window_end,
+burn rejects < window_end — no overlap, no gap; off-by-one already verified). Conservation is exact.
+
+Also confirmed the subledger share math (surface B) is leak-free: mint_shares and redeem_shares both round
+DOWN (favor the pool), VIRTUAL_SHARES=1e6 bounds the donation-inflation skim, and the partial-withdraw
+proportional share-burn rounds down with a full-exit sweep (principal==0 -> shares=0) so no shares strand and
+no round-trip extracts > deposit. No code change.
+
+MUTATION-VERIFIED the SOLE solvency guard (lib.rs:354): neutered `vault.amount < total_supply`
+(`if false && ...`), rebuilt the real .so -> init_config_rejects_a_vault_underfunded_below_a_fully_minted_supply
+FAILED (an under-funded vault initialized, enabling the claim-race strand). Reverted -> 32/32 green. SHARP.
+No new test (solvency + share rounding fully pinned: 996/1048 + the claim/burn conservation suite). VERDICT:
+distribution claim/burn conservation is airtight; the under-funded-seal LOF is closed at init.
