@@ -10059,3 +10059,26 @@ FIX: none needed (guard correct). Added `residual_claim_rejects_a_substituted_po
 decoy net-99_999 portfolio; the claim is rejected (is_err) and pays 0, and the control bound-claim caps
 to 0. Mutation-SHARP: dropping the `portfolio.key` clause makes the decoy claim succeed and pay the full
 400_000 cohort → test fails (verified, then reverted). KEEP. rd suite 45→46 green, build-sbf clean.
+
+## Tick — vote-lock ↔ withdraw coupling: capital-less-ballot defense (surface B; sole-defense guard MUTATION-VERIFIED)
+
+Chased the surface-B "vote without capital" vector end-to-end: a voter votes (ballot live + position
+vote-locked), then frees their principal while the ballot keeps counting toward quorum/majority. Audited
+EVERY subledger exit path for the lock:
+- tag 2 process_withdraw: rejects insurance pools outright (`if pool.is_insurance() { reject }`, lib.rs:683),
+  and the genesis vote-bond pool IS an insurance pool — so a locked position can't be drained via the
+  own-vault path (pinned: vote_locked_insurance_position_cannot_be_drained_via_own_vault_withdraw:2320).
+- tag 5 process_insurance_withdraw: the ONLY vote-bond exit; rejects any amount while `vote_locked`
+  (lib.rs:1189), partial included (early-return before the principal math).
+- tag 6 process_set_vote_lock: unlock requires BOTH the vote_authority (gv config PDA) AND the owner to
+  sign; the PDA signs an unlock ONLY inside gv retract (where lock_val=has_live_ballot()=false), so
+  unlock ⟺ retract atomically — no self-unlock (pinned: owner_cannot_self_unlock_a_live_vote_to_exit_capital
+  :2728), and a direct tag-6 call can't forge the gv PDA signature.
+
+So the only way to free the capital is to retract (which clears the ballot). The coupling is sound and
+already comprehensively pinned (2249/2320/2373/2728 + the gv-side one-vote/double-retract/topup tests).
+
+MUTATION-VERIFIED the SOLE defense (lib.rs:1189): neutered the `vote_locked` withdraw guard
+(`if false && position.vote_locked`), rebuilt the real .so → vote_locked_principal_cannot_exit_until_retracted
+FAILED (the locked position exited, leaving a free capital-less ballot). Reverted → 54/54 green. SHARP, not
+mutation-blind. No code change, no new test (surface fully pinned). VERDICT: capital-less-ballot is closed.
