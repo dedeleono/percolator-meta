@@ -11761,3 +11761,19 @@ dust (conservation-safe, no attacker benefit). Audited all sites:
 
 CONCLUSION: the anti-wash claim fee was the SOLE floor-helps-attacker site in the stack; ceiling it (747bf8a)
 closes the class. No new bug, no code change. Recorded so future ticks don't re-probe the rounding class.
+
+## Tick — fix-safety: the ceil fee fix cannot payout-underflow (fee_support_bps<=10000 init guard MUTATION-VERIFIED) (surface D)
+
+Safety follow-up to the ceil fee fix (747bf8a). The ceil changed payout = amount - fee where now
+fee = ceil(amount * fee_support_bps / 10000). fee <= amount (no underflow) holds ONLY IF fee_support_bps <= 10000:
+at bps=10000, ceil(amount*10000/10000)=amount exactly (payout 0, safe); at bps=10001, ceil(amount*10001/10000) =
+amount + ceil(amount/10000) > amount -> payout underflow -> EVERY LP/trader claim reverts = permanent fund freeze
+(DoS). My ceil change made this boundary TIGHT (floor tolerated bps slightly over 100% on small amounts; ceil does
+not), so the init bound is now load-bearing for the fix.
+
+VERIFIED the bound is enforced + mutation-sharp: init (lib.rs:592) rejects residual_fee_bps > BPS_DENOMINATOR
+(10000). Neutering it to `> u16::MAX` (never fires) makes init_rejects_an_anti_wash_fee_above_100pct_no_claim_
+underflow_dos FAIL at "anti-wash fee > 100% must be rejected" (10001 wrongly accepted = the underflow-DoS config).
+Reverted -> 49/49 rd e2e green, src clean. SHARP. The test pins the exact inclusive boundary (10001 + u16::MAX
+rejected; 10000 + 0 accepted), so the ceil fee fix is proven underflow-safe: no config that would underflow the
+new arithmetic can be initialized. No code change.
