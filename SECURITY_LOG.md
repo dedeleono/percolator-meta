@@ -7390,3 +7390,16 @@ wrapper-config construction (the percolator forwarded InitMarket doesn't carry t
 needs the market built with the policy already in the wrapper, like subledger's make_live_market) or via whatever
 instruction replaced tag 33 — then drop the tag-33 CPI. Standalone sweep surfaces remain GREEN; flagged for the
 meta-program reconcile with this precise root cause.
+
+### [VERIFIED — genesis market is constructed deposits_only (principal-protection / surplus-exclusion pinned at init)] tick (A)
+SURFACE (genesis market init config, finding O). The #11 diagnosis revealed the percolator now sets the insurance-
+withdraw policy at market CONSTRUCTION via the wrapper config (UpdateInsurancePolicy instruction removed). That
+policy — insurance_withdraw_deposits_only=1 — is LOAD-BEARING: it caps each depositor's WithdrawInsuranceLimited
+at their deposited PRINCIPAL, so market profits/surplus stay in insurance to fund buy/burn and are NEVER
+withdrawable (the property pinned by surplus_above_outstanding_is_excluded). The genesis-market-init readback test
+asserted the full fee config (3bps + 20% redirect) but NOT this policy, so a misconstructed genesis market could
+silently drop deposits_only and let depositors drain the surplus (LOF) with no test catching it.
+TEST: extended genesis_market_initialized_with_3bps_fee_and_20pct_yield_to_insurance (real twap+perc .so,
+read_market readback) to also assert insurance_withdraw_deposits_only==1, insurance_withdraw_max_bps==10_000 (full
+principal recoverable), insurance_withdraw_cooldown_slots==0 (exit any time, no fund-trap). VERDICT: BLOCKED/
+correct — the genesis market IS principal-protected; now pinned at init alongside the fees. KEEP. twap chain 102 green.
