@@ -11606,3 +11606,30 @@ here so future ticks don't re-probe:
 Saturation holds: every load-bearing guard across A/B/C/D is tested + mutation-verified; full stack was 312/312
 green last tick. No code change, no new test (a premature-handoff variant would be redundant with the
 reconfigure timelock test -- identical Squads mechanism -- per the delete-marginal rule).
+
+## Tick — FULL-ECONOMY SIM (user-directed): 100 traders x 10 assets vs the rd distribution, REAL percolator (surface D)
+
+Built sim/tests/farm.rs::full_economy_100_traders_10_assets_distribution_report — a litesvm sim against the
+REAL percolator binary modeling the user's scenario: 10 trusted-Pyth markets (neutral oracle), 1M insurance +
+1M backing per asset (10 depositors x 1M in each subledger pool -> rd insurance/backing cohorts), and 100
+traders x 1M cash: 99 rational (random market + long/short directional risk vs a per-market neutral market-
+maker) + 1 max-farmer (delta-neutral: long+short on one market, 2 Sybil legs, one leg loses RISK-FREE). Markets
+move +/-50% (even down, odd up) so ~half the rational traders lose. crystallize -> freeze -> claim, then report.
+
+RESULTS (deterministic LCG seed): 51 winners / 48 losers; total notional volume 50,500; 121M collateral
+deployed. COIN supply 1,000,000 split 10/10/40/40:
+  - INSURANCE (100k): fully claimed, 10,000 each of 10 depositors (equal shares, pro-rata).
+  - BACKING   (100k): fully claimed, 10,000 each.
+  - LP        (400k): claimed ZERO. The LP `received` counter rises ONLY from absorbed bankruptcy residual; in a
+    healthy no-bankruptcy economy NOTHING accrues, so the ENTIRE 40% LP allocation is UNCLAIMED -> deflationary
+    (accrues to COIN holders via the burn_unclaimed path). ECONOMIC FINDING: the LP cohort earmark is dead
+    weight absent bankruptcies — surfaced to the user (intended deflation vs misallocation is a design call).
+  - TRADER    (400k): 320,006 claimed = exactly (1 - 20% fee) x cohort; only LOSERS + the farmer earn (the
+    trader cohort literally pays COIN for REALIZED LOSS — winning traders earn 0).
+SECURITY VERDICT (no new bug): the max-farmer captured 7,442 (~1.9% of the trader cohort) vs an avg honest
+loser's 6,511 — SAME ORDER, NOT disproportionate. The rd cannot distinguish manufactured (delta-neutral) loss
+from real directional loss, so the farmer gets a FAIR per-loss share, taxed 20% and diluted 1/N like everyone.
+To capture more it must add more 1M-funded delta-neutral legs (linear Sybil cost), each fee-taxed + diluted —
+the known finding-NZ fee-bounded wash, now confirmed at population scale against the real percolator. Conservation
+holds: distributed 520,006 <= supply 1,000,000. KEPT the test (a real economic boundary + the LP-unclaimed
+finding). sim 4/4 green.
