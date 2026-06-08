@@ -10710,3 +10710,30 @@ suite caught it: dao_cannot_re_arm_the_max_sentinel_to_bypass_the_floor_monotoni
 real floor to MAX, re-arming the sentinel for a later unbounded lower). Reverted -> 111/111 chain green, src
 clean. SHARP. No code change. VERDICT: BOTH finding-O/II floor-monotonicity clauses (no-lower + no-re-arm) are
 mutation-proven, closing the principal-drain-as-surplus LOF in both its direct and 2-step forms.
+
+## Tick — net-by-spent (crystallized - spent), the CORE anti-wash counter, MUTATION-VERIFIED (5 tests) (surface D)
+
+The trader cohort's residual_counter is the NET drain `crystallized.saturating_sub(spent)` (lib.rs:231,
+finding NZ): a trader's crystallized loss that is RECOVERED via its own matched-fill churn raises `spent`
+(the self-referential spend — percolator transfer_account_residual_reward_credit moves credit = min(net,
+counterparty_margin) by raising spent), so a closed-then-reopened (churned) position nets to 0 and earns NO
+trader points. Only loss that drained the backstop with NO counterparty recovery (spent < crystallized) counts.
+Without the `- spent`, a churning farmer would keep the FULL crystallized loss as points even after recovering
+it = the central wash free-farm.
+
+MUTATION-VERIFIED (the most heavily-pinned guard in the rd, as befits the core anti-wash invariant): changed
+residual_counter's trader branch from `crystallized - spent` to `crystallized` (ignore spent), rebuilt the
+real .so -> FIVE tests caught it:
+  - churn_zeroes_a_trader_via_spent_netting_but_lp_received_is_bounded_only_by_the_claim_fee
+  - trader_snap_captures_pre_existing_loss_and_spent_netting_holds_atop_a_nonzero_baseline
+  - trader_recovered_loss_without_recrystallize_stale_points_vs_honest_codeposit
+  - cross_cohort_trader_loss_then_lp_recovery_cannot_double_dip_the_same_loss
+  - residual_claim_rejects_a_substituted_portfolio_no_live_cap_bypass
+Reverted -> 48/48 rd green, src clean. SHARP. No code change.
+
+CAMPAIGN COMPLETION (surface D anti-wash, all mutation-proven): market allow-list (IL) + net-by-spent (this
+tick) + claim fee + log2 time-weight + live-cap (single + cross-cohort) + offset canary + cohort-to-pool scope
++ portfolio owner-bind + cross-genesis + over-allocation + LP `received` conservation. Every anti-wash and
+account-binding defense in the residual-distributor is now individually verified non-vacuous against the real
+binaries; combined with the A/B/C keystone proofs, the stack's full LOF/DoS/free-farm guard set is
+mutation-proven.
