@@ -7050,3 +7050,16 @@ WITHDRAW_BACKING_BUCKET_EARNINGS (52), TOP_UP_BACKING_BUCKET. (End-to-end, integ
 rejects funding/withdrawal tags + is locked over the genesis market until finalization.) VERDICT: BLOCKED. KEEP
 (regression guard so no future allow-list edit can silently open an insurance/principal drain). No behavior change.
 program lib green.
+
+### [VERIFIED — DoS/brick: init_config rejects a WRONG-MINT vault (no undistributable genesis)] sweep tick (C)
+SURFACE (distribution init_config vault bind). init binds the vault on BOTH owner AND mint (lib.rs:346
+vault_state.mint != coin_mint || vault_state.owner != expected_config). init_config_authority_bound_blocks_funded
+_vault_hijack covers the OWNER half; the MINT half was untested. A vault that is SPL-owned, owned by the CORRECT
+config PDA, funded to total_supply, but of a DIFFERENT mint, would (without the guard) pass init — yet every
+claim's SPL transfer (vault -> coin_mint recipient ata) fails on mint mismatch, so the WHOLE genesis is bricked
+and the real COIN supply stranded forever (a setup-time brick that only surfaces at the first failed claim).
+TEST: init_config_rejects_a_vault_of_the_wrong_mint_no_bricked_undistributable_genesis (distribution .so): coin_mint
+fully minted to a decoy (supply==100 so the supply check passes and we REACH the mint guard); a wrong-mint vault
+owned by the correct config PDA + funded 100 (only the mint differs) -> init rejected. VERDICT: BLOCKED. KEEP
+(closes the last untested init-vetting check, distinct from owner-hijack/underfunded/non-SPL/mintable/freezable/
+zero-window). No behavior change. distribution 30 green.

@@ -1420,3 +1420,47 @@ fn init_config_authority_bound_blocks_funded_vault_hijack() {
     let bh = svm.latest_blockhash();
     svm.send_transaction(Transaction::new_signed_with_payer(&[init(legit_config, legit_authority)], Some(&payer.pubkey()), &[&payer], bh)).expect("legit init succeeds");
 }
+
+// DoS/BRICK PROBE (wrong-mint vault, sweep tick C): init_config binds the vault on BOTH owner AND mint
+// (lib.rs:346 vault_state.mint != coin_mint || vault_state.owner != expected_config). The hijack test above
+// covers the OWNER half; the MINT half was untested. A vault that is SPL-owned, owned by the CORRECT config PDA,
+// and funded to total_supply — but of a DIFFERENT mint — would (without the guard) pass init, yet every claim's
+// SPL transfer (vault -> coin_mint recipient ata) fails on mint mismatch -> the whole genesis is bricked and the
+// real COIN supply stranded forever. Pin that init catches it up front (not at the first failed claim).
+#[test]
+fn init_config_rejects_a_vault_of_the_wrong_mint_no_bricked_undistributable_genesis() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(pid(), so_path()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let mint_authority = Keypair::new();
+    let coin_mint = create_mint(&mut svm, &payer, &mint_authority.pubkey());
+    let authority = Pubkey::new_unique();
+    let config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref(), authority.as_ref()], &pid()).0;
+
+    // coin_mint's ENTIRE 100 supply is minted (to a decoy) so the supply==total_supply check passes and we
+    // REACH the vault.mint guard; then revoke the authority (fixed-supply invariant).
+    let decoy = create_token_account(&mut svm, &payer, &coin_mint, &Pubkey::new_unique());
+    mint_to(&mut svm, &payer, &coin_mint, &mint_authority, &decoy, 100);
+    revoke_mint_authority(&mut svm, &payer, &coin_mint, &mint_authority);
+
+    // A WRONG-mint vault: a DIFFERENT SPL mint, owned by the CORRECT config PDA, funded with 100 — so ONLY the
+    // mint differs (the owner is right), isolating the vault.mint guard.
+    let wrong_auth = Keypair::new();
+    let wrong_mint = create_mint(&mut svm, &payer, &wrong_auth.pubkey());
+    let wrong_vault = create_token_account(&mut svm, &payer, &wrong_mint, &config);
+    mint_to(&mut svm, &payer, &wrong_mint, &wrong_auth, &wrong_vault, 100);
+
+    let mut data = vec![0u8];
+    data.extend_from_slice(&1_000_000u64.to_le_bytes()); // claim_window_slots
+    data.extend_from_slice(&100u64.to_le_bytes());       // total_supply
+    let ix = Instruction { program_id: pid(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(coin_mint, false), AccountMeta::new(config, false),
+        AccountMeta::new_readonly(wrong_vault, false), AccountMeta::new_readonly(authority, false), AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+    ], data };
+    let bh = svm.latest_blockhash();
+    assert!(
+        svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer], bh)).is_err(),
+        "a vault of the wrong mint must be rejected at init (else every claim bricks on SPL mint mismatch — undistributable genesis)"
+    );
+}
