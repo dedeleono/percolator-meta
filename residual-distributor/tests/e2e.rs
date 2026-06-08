@@ -781,12 +781,20 @@ fn freeze(svm: &mut LiteSVM, payer: &Keypair, env: &Env) -> Result<(), String> {
 // cranker keypair explicitly so tests can model both the owner's own claim and a foreign forced claim.
 fn claim_as(svm: &mut LiteSVM, payer: &Keypair, env: &Env, cranker: &Keypair, owner: &Pubkey, recipient_ata: &Pubkey, position: Option<&Pubkey>) -> Result<(), String> {
     let stake = stake_pda(env, owner);
-    let mut accounts = vec![
+    // The bound linked account is now REQUIRED at claim for EVERY cohort (share-value: the subledger position;
+    // LP/trader: the percolator portfolio — both == stake.backing_ledger). Use the explicit (possibly decoy)
+    // account if a test gives one; otherwise derive it from the stake's recorded backing_ledger (offset 72..104).
+    let linked = position.copied().unwrap_or_else(|| {
+        svm.get_account(&stake).filter(|a| a.data.len() >= 104)
+            .map(|a| Pubkey::new_from_array(a.data[72..104].try_into().unwrap()))
+            .unwrap_or(*recipient_ata)
+    });
+    let accounts = vec![
         AccountMeta::new(cranker.pubkey(), true), AccountMeta::new_readonly(env.rd_config, false),
         AccountMeta::new(stake, false), AccountMeta::new(env.vault, false),
         AccountMeta::new(*recipient_ata, false), AccountMeta::new_readonly(spl_token::ID, false),
+        AccountMeta::new_readonly(linked, false),
     ];
-    if let Some(p) = position { accounts.push(AccountMeta::new_readonly(*p, false)); }
     send(svm, payer, &[Instruction { program_id: rd_id(), accounts, data: vec![5u8] }], &[cranker])
 }
 // Default claim: the owner authorizes their own claim (valid for every cohort).
@@ -1388,6 +1396,64 @@ fn trader_snap_captures_pre_existing_loss_and_spent_netting_holds_atop_a_nonzero
     assert_eq!(token_amount(&svm, &t_ata), 0, "a trader whose post-register loss was recovered claims nothing — no free farm from a loss-loaded portfolio");
 }
 
+// FREE-FARM PROBE (stale frozen points bypass net-by-spent, sweep weird-state): the net-by-spent defense assumes
+// a stake's frozen points reflect the FINAL net (crystallized - spent). But the trader net is NOT monotonic
+// (spent rises -> net drops), and the LP/trader CLAIM uses the FROZEN stake.points with NO live re-read (unlike
+// the share-value cohorts' live-cap). So: crystallize at PEAK net -> raise spent to recover the loss (net -> 0)
+// -> do NOT re-crystallize -> freeze -> claim the STALE-HIGH points. An honest co-trader is diluted by the
+// attacker's recovered-but-still-counted loss. This probes whether that bypass pays out.
+#[test]
+fn trader_recovered_loss_without_recrystallize_stale_points_vs_honest_codeposit() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let env = setup(&mut svm, &payer, 1_000_000); // trader cohort = 40% = 400_000, fee = 0
+    set_slot(&mut svm, 100);
+
+    // Honest trader H: a real, UNRECOVERED 6_000 loss, crystallized at tenure 1024 (floor_log2 = 10).
+    let h = Keypair::new(); let h_pf = Pubkey::new_unique();
+    set_portfolio_full(&mut svm, &h_pf, &env.stub_perc, &env.market, &h.pubkey(), 0, 0, 0);
+    register(&mut svm, &payer, &env, &h, &h.pubkey(), &h_pf, COHORT_TRADER).expect("reg H");
+    // Attacker A: an IDENTICAL 6_000 loss, same tenure.
+    let a = Keypair::new(); let a_pf = Pubkey::new_unique();
+    set_portfolio_full(&mut svm, &a_pf, &env.stub_perc, &env.market, &a.pubkey(), 0, 0, 0);
+    register(&mut svm, &payer, &env, &a, &a.pubkey(), &a_pf, COHORT_TRADER).expect("reg A");
+
+    set_slot(&mut svm, 100 + 1024);
+    set_portfolio_full(&mut svm, &h_pf, &env.stub_perc, &env.market, &h.pubkey(), 0, 6_000, 0);
+    set_portfolio_full(&mut svm, &a_pf, &env.stub_perc, &env.market, &a.pubkey(), 0, 6_000, 0);
+    crystallize(&mut svm, &payer, &env, &h, &h_pf).expect("cry H (net 6_000)");
+    crystallize(&mut svm, &payer, &env, &a, &a_pf).expect("cry A (net 6_000)");
+
+    // THE ATTACK: A's loss is RECOVERED (spent 0 -> 6_000, net -> 0), but A does NOT re-crystallize. H's loss
+    // stays real (unrecovered). If the frozen points are used as-is, A still counts a phantom 6_000.
+    set_slot(&mut svm, 100 + 2048);
+    set_portfolio_full(&mut svm, &a_pf, &env.stub_perc, &env.market, &a.pubkey(), 0, 6_000, 6_000); // A net -> 0
+
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    freeze(&mut svm, &payer, &env).expect("freeze");
+
+    let h_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &h.pubkey());
+    let a_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &a.pubkey());
+    claim(&mut svm, &payer, &env, &h, &h_ata, None).expect("H claim");
+    let _ = claim(&mut svm, &payer, &env, &a, &a_ata, None); // may or may not pay
+    let h_got = token_amount(&svm, &h_ata);
+    let a_got = token_amount(&svm, &a_ata);
+    let _ = h_got;
+    // THE FIX (claim live-cap): A's claim re-reads A's portfolio, sees net 0 (loss recovered), and caps the
+    // payout at min(frozen, live) = 0. So the recovered-loss FREE-FARM is closed — A captures NOTHING even
+    // without a defensive re-crystallize. (Before the fix A claimed 200_000, half the cohort.)
+    assert_eq!(a_got, 0, "FREE-FARM CLOSED: a trader whose loss was recovered (net 0) claims 0 — the claim live-cap defeats the stale-points bypass");
+    // Residual (acceptable) effect: A's STALE frozen points still sit in the cohort DENOMINATOR (freeze
+    // snapshotted them), so H is diluted to half and the other half is LOCKED (A claimed 0, its denom share is
+    // unclaimable). This is a COSTLY GRIEF, not a farm: A burned real capital (loss + recovery) for zero gain.
+    // It is fully defended PRE-freeze by the permissionless, incentive-compatible re-crystallize (an honest
+    // claimant re-crystallizes A during the finalize window -> A's points -> 0 -> H takes the full 400k), exactly
+    // as pinned by trader_snap_captures_pre_existing_loss_and_spent_netting_holds_atop_a_nonzero_baseline.
+    assert_eq!(h_got, 200_000, "H is diluted by A's frozen-denominator share (the locked half is a grief, not A's profit)");
+}
+
 // ATTACK PROBE (crystallize replay / denominator inflation): an LP/trader stake's points are the Δ of a
 // MONOTONIC percolator counter since the register-time snapshot — `new_pts = counter - residual_snap`, and
 // the cohort denominator is updated subtract-old/add-new (`slot = slot - stake.points + new_pts`,
@@ -1656,6 +1722,7 @@ fn claim_cannot_be_redirected_or_paid_from_a_decoy_vault() {
             AccountMeta::new(cranker.pubkey(), true), AccountMeta::new_readonly(rd_config, false),
             AccountMeta::new(stake, false), AccountMeta::new(vault, false),
             AccountMeta::new(recipient_ata, false), AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(pf, false), // LP/trader live-cap portfolio (stake.backing_ledger)
         ], data: vec![5u8] }], &[cranker])
     };
 
@@ -1710,6 +1777,7 @@ fn claim_rejects_same_program_type_confusion_config_and_stake_discriminators() {
             AccountMeta::new(env.vault, false),
             AccountMeta::new(ata, false),
             AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(pf, false), // LP/trader live-cap portfolio (stake.backing_ledger)
         ], data: vec![5u8] }], &[&lp])
     };
     // (a) STAKE account in the config slot -> Config::deserialize sees RDSTAKE1 != RDCONFG1 -> reject.

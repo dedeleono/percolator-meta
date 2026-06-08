@@ -7974,7 +7974,8 @@ fn e2e_market_genesis_traders_residual_decider_then_handoff_twap() {
     let claim_b = Instruction { program_id: rd_id(), accounts: vec![
         AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(rd_config, false), AccountMeta::new(b_stake, false),
         AccountMeta::new(rd_vault, false), AccountMeta::new(backer_coin, false), AccountMeta::new_readonly(spl_token::ID, false),
-    ], data: vec![5u8] }; // LP: no live-cap account, permissionless cranker
+        AccountMeta::new_readonly(portfolio, false), // LP live-cap portfolio (received is monotonic -> no-op cap); permissionless cranker
+    ], data: vec![5u8] };
     svm.expire_blockhash(); let bh = svm.latest_blockhash();
     svm.send_transaction(Transaction::new_signed_with_payer(&[claim_a, claim_b], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("claims");
     assert_eq!(token_amount(&svm, &alice_coin), supply / 2, "insurance cohort (share value) -> 50% to the depositor");
@@ -8302,6 +8303,7 @@ fn e2e_organic_pnl_loss_real_trade_feeds_trader_cohort() {
     svm.send_transaction(Transaction::new_signed_with_payer(&[Instruction { program_id: rd_id(), accounts: vec![
         AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(rd_config, false), AccountMeta::new(t_stake, false),
         AccountMeta::new(rd_vault, false), AccountMeta::new(loser_coin, false), AccountMeta::new_readonly(spl_token::ID, false),
+        AccountMeta::new_readonly(loser_pf, false), // trader live-cap portfolio (stake.backing_ledger)
     ], data: vec![5u8] }], Some(&payer.pubkey()), &[&payer], bh)).expect("claim");
     // sole trader-cohort staker -> the full trader cohort supply (= 100% here), from an ORGANIC real-trade loss.
     assert_eq!(token_amount(&svm, &loser_coin), supply, "trader cohort earns the organically-settled residual loss");

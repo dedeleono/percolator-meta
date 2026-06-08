@@ -3,8 +3,25 @@
 Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdict.
 
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
-STATE: 300 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 50,
+STATE: 301 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 51,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
+REAL FREE-FARM FOUND + FIXED THIS TICK (D, stale-points wash bypass of net-by-spent): the net-by-spent anti-wash
+defense assumes a stake's frozen points reflect the FINAL net (crystallized - spent). But the TRADER net is NOT
+monotonic (spent rises -> net drops), and the LP/trader CLAIM used the FROZEN stake.points with NO live re-read
+(unlike share-value's live-cap). EXPLOIT (confirmed by test): crystallize at PEAK net -> raise spent to recover
+the loss (net -> 0) -> SKIP the re-crystallize -> freeze -> claim the stale-high points. trader_recovered_loss_
+without_recrystallize showed the attacker (recovered, net 0) claiming 200_000 = HALF the trader cohort, diluting
+an honest co-trader. FIX (under our authorship): live-cap the LP/trader claim. crystallize now records the
+net_delta behind the points (repurposing the vestigial earnings_snap field, lib.rs:844); claim re-reads the bound
+portfolio and scales points by min(1, live_net/frozen_net) (lib.rs:995-1015) — a recovery lowers the payout
+PROPORTIONALLY while the frozen TIME-WEIGHT is preserved exactly (so time_weight_rewards still holds). LP's
+`received` is monotonic -> live>=frozen -> harmless no-op. Permissionless-safe (each counter monotonic, no
+transient-low to grief). The claim now REQUIRES the portfolio account for LP/trader (parity with share-value's
+position). Residual (acceptable): the attacker's stale FROZEN points still sit in the denominator, so the
+recovered share is LOCKED not stolen — a costly grief (A burns real capital for 0 gain), fully defended pre-freeze
+by the incentive-compatible permissionless re-crystallize during the finalize window (pinned by trader_snap_
+captures...). Test updates: claim_as helper auto-passes stake.backing_ledger when no explicit account; manual
+claims in chain.rs (2 e2e) + sim/farm.rs updated. Full regression 301 green.
 LATEST TICK (A, weird-state audit of process_execute — the richest state machine — SOUND, 1 low-sev footgun
 noted, NO code change): drove the auction settlement state machine through its weird-state branches:
 (1) 4-way split rounding (burnable+savings floored) — retained = surplus-burnable-savings absorbs the floor, so

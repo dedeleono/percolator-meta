@@ -842,6 +842,10 @@ fn crystallize(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
             let slot = config.cohort_points_mut(stake.cohort);
             *slot = slot.saturating_sub(stake.points).saturating_add(new_pts);
             stake.points = new_pts;
+            // Record the net_delta behind these points (repurposing the vestigial earnings_snap) so the CLAIM
+            // can cap proportionally to a later net DROP (loss recovery / spent rise) without re-deriving the
+            // frozen time-weight. See the claim live-cap (finding: stale-points wash bypass of net-by-spent).
+            stake.earnings_snap = net_delta;
         }
     }
 
@@ -993,8 +997,31 @@ fn claim(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
             points_to_amount(cohort_supply, pts, frozen_denom)
         }
         _ => {
-            // Residual cohort (LP/trader): frozen monotonic Δ — no live dependency, no cap account needed.
-            points_to_amount(cohort_supply, stake.points, frozen_denom)
+            // Residual cohort (LP/trader): LIVE-CAP the frozen points against a post-crystallize NET DROP.
+            // The TRADER counter (crystallized - spent) is NOT monotonic — a loss-recovery (spent rises) drops
+            // the net. Without re-reading, a farmer could crystallize at PEAK net, recover the loss to net 0,
+            // SKIP the re-crystallize, and claim the stale-high FROZEN points — bypassing net-by-spent and
+            // diluting honest co-claimants (finding: stale-points wash). Re-read the bound portfolio and scale
+            // the points by min(1, live_net/frozen_net): a recovery (live_net < frozen_net) lowers the payout
+            // PROPORTIONALLY, while the frozen TIME-WEIGHT (already baked into stake.points) is preserved
+            // exactly — so an unrecovered net keeps its full crystallize-tenure multiplier. (LP's `received`
+            // is monotonic, so live_net >= frozen_net and the cap is a harmless no-op.) Permissionless-safe:
+            // each underlying counter is monotonic, so there is no transient-low moment to grief — live_net is
+            // the true current net, which is exactly what should be paid.
+            let portfolio = next_account_info(iter)?;
+            if *portfolio.key != stake.backing_ledger || *portfolio.owner != config.percolator_program {
+                return Err(ProgramError::InvalidAccountData);
+            }
+            let (received, crystallized, spent) = read_portfolio_residual(&portfolio.try_borrow_data()?)?;
+            let live_net = residual_counter(stake.cohort, received, crystallized, spent)
+                .saturating_sub(stake.residual_snap);
+            let frozen_net = stake.earnings_snap; // net_delta captured at the last crystallize
+            let pts = if frozen_net == 0 || live_net >= frozen_net {
+                stake.points
+            } else {
+                stake.points.saturating_mul(live_net) / frozen_net
+            };
+            points_to_amount(cohort_supply, pts, frozen_denom)
         }
     };
     // ANTI-WASH FEE (finding NZ): the LP/trader (PnL-flow) cohorts are wash-farmable via a delta-neutral

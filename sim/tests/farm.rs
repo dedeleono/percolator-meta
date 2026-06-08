@@ -232,11 +232,12 @@ fn rational_miner_farms_the_deterministic_distributor_across_uncontrolled_market
         AccountMeta::new(payer.pubkey(), true), AccountMeta::new(rd_config, false), AccountMeta::new_readonly(coin_mint, false), AccountMeta::new(rd_vault, false),
     ], data: vec![4u8] }], &[]).expect("freeze");
     let mut miner_coin = 0u64;
-    for (o, _cohort, _pf, ata) in &stakes {
+    for (o, _cohort, pf, ata) in &stakes {
         let stake = Pubkey::find_program_address(&[b"rd_stake", rd_config.as_ref(), o.pubkey().as_ref()], &rd_id()).0;
         send(&mut svm, &[Instruction { program_id: rd_id(), accounts: vec![
             AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(rd_config, false), AccountMeta::new(stake, false),
             AccountMeta::new(rd_vault, false), AccountMeta::new(*ata, false), AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(*pf, false), // LP/trader live-cap portfolio (stake.backing_ledger)
         ], data: vec![5u8] }], &[]).expect("claim");
         miner_coin += token_amount(&svm, ata);
     }
