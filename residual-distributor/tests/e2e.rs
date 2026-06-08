@@ -2063,6 +2063,68 @@ fn self_service_lifecycle_guards_freeze_window_and_post_freeze_closure() {
     assert!(freeze(&mut svm, &payer, &env).is_err(), "double-freeze must reject");
 }
 
+// ATTACK PROBE (cohort over-allocation -> FCFS-strand LOF at init). Each cohort's COIN budget is
+// `total_supply * bps / 10000` and the rd vault holds exactly `total_supply` (enforced at freeze,
+// lib.rs:907). If the four cohort shares could sum to MORE than 100%, then Sum(cohort_supply) > vault: the
+// cohorts that claim first drain the vault and the last cohort's honest claimants get InsufficientFunds —
+// an order-dependent strand (the residual-side analogue of the distribution under-funded-seal LOF). The
+// sole defense is the init guard `insurance_bps + backing_bps + lp_bps > 10000 -> reject` (lib.rs:579),
+// with trader taking the saturating remainder so the four always sum to <= 10000. The conservation test
+// below proves the in-bounds case; this pins the REJECTION of an over-allocating wire. Real rd .so.
+#[test]
+fn init_rejects_cohort_bps_summing_above_one_hundred_percent_no_overallocation() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let supply = 1_000_000u64;
+    let mint_auth = Keypair::new();
+    let coin_mint = create_mint(&mut svm, &payer, &mint_auth.pubkey());
+    let rd_config = Pubkey::find_program_address(&[b"rd_config", coin_mint.as_ref()], &rd_id()).0;
+    let dist_config = Pubkey::find_program_address(&[b"dist_config", coin_mint.as_ref(), rd_config.as_ref()], &dist_id()).0;
+    let vault = create_token_account(&mut svm, &payer, &coin_mint, &rd_config);
+    mint_to(&mut svm, &payer, &coin_mint, &mint_auth, &vault, supply);
+    revoke_mint(&mut svm, &payer, &coin_mint, &mint_auth);
+    let (stub_sub, stub_perc, ins_pool, back_pool, market) =
+        (Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique());
+    // ATTACK WIRE: insurance 50% + backing 50% + lp 50% = 150% (trader would saturate to 0). Sum > 100%.
+    let mut d = vec![0u8];
+    d.extend_from_slice(&supply.to_le_bytes());
+    d.extend_from_slice(&2_000u64.to_le_bytes());
+    d.extend_from_slice(&5_000u16.to_le_bytes()); // insurance 50%
+    d.extend_from_slice(&5_000u16.to_le_bytes()); // backing 50%
+    d.extend_from_slice(&5_000u16.to_le_bytes()); // lp 50% -> sum 150% > 10000
+    d.extend_from_slice(&500u64.to_le_bytes());
+    d.extend_from_slice(ins_pool.as_ref()); d.extend_from_slice(back_pool.as_ref()); d.extend_from_slice(market.as_ref());
+    d.extend_from_slice(&[0u8]);
+    let r = send(&mut svm, &payer, &[Instruction { program_id: rd_id(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(coin_mint, false),
+        AccountMeta::new_readonly(dist_id(), false), AccountMeta::new_readonly(dist_config, false),
+        AccountMeta::new_readonly(stub_perc, false), AccountMeta::new_readonly(stub_sub, false),
+        AccountMeta::new(rd_config, false), AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+    ], data: d }], &[]);
+    assert!(r.is_err(), "init with cohort bps summing to 150% must be rejected (no over-allocation)");
+
+    // CONTROL: the same wire with shares summing to EXACTLY 100% (50/30/20/0) initializes fine — the guard
+    // rejects only the OVER-allocation, never a valid full split.
+    let mut d = vec![0u8];
+    d.extend_from_slice(&supply.to_le_bytes());
+    d.extend_from_slice(&2_000u64.to_le_bytes());
+    d.extend_from_slice(&5_000u16.to_le_bytes()); // insurance 50%
+    d.extend_from_slice(&3_000u16.to_le_bytes()); // backing 30%
+    d.extend_from_slice(&2_000u16.to_le_bytes()); // lp 20% -> sum 100%, trader 0
+    d.extend_from_slice(&500u64.to_le_bytes());
+    d.extend_from_slice(ins_pool.as_ref()); d.extend_from_slice(back_pool.as_ref()); d.extend_from_slice(market.as_ref());
+    d.extend_from_slice(&[0u8]);
+    let r = send(&mut svm, &payer, &[Instruction { program_id: rd_id(), accounts: vec![
+        AccountMeta::new(payer.pubkey(), true), AccountMeta::new_readonly(coin_mint, false),
+        AccountMeta::new_readonly(dist_id(), false), AccountMeta::new_readonly(dist_config, false),
+        AccountMeta::new_readonly(stub_perc, false), AccountMeta::new_readonly(stub_sub, false),
+        AccountMeta::new(rd_config, false), AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+    ], data: d }], &[]);
+    assert!(r.is_ok(), "a valid 100% split (50/30/20/0) must initialize — the guard rejects only over-allocation");
+}
+
 // CONSERVATION property pin: across ALL FOUR cohorts with many stakes and deliberately NON-even point
 // splits (so floor rounding leaves dust), the sum of claims must never exceed any cohort's supply nor the
 // total supply, and the vault must be drained by EXACTLY the claimed total — never over-drawn. Real .so.

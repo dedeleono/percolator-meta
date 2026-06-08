@@ -10109,3 +10109,27 @@ MUTATION-VERIFIED the SOLE solvency guard (lib.rs:354): neutered `vault.amount <
 FAILED (an under-funded vault initialized, enabling the claim-race strand). Reverted -> 32/32 green. SHARP.
 No new test (solvency + share rounding fully pinned: 996/1048 + the claim/burn conservation suite). VERDICT:
 distribution claim/burn conservation is airtight; the under-funded-seal LOF is closed at init.
+
+## Tick — rd cohort over-allocation -> FCFS-strand LOF (surface D; sole-defense guard pinned + MUTATION-VERIFIED)
+
+Pursued the surface-D "drain the vault" angle from the supply side. Each cohort's COIN budget is
+`total_supply * bps / 10000` and the rd vault holds exactly `total_supply` (bound + checked at freeze,
+lib.rs:907 `v.amount < total_supply -> reject`, with mint.supply == total_supply and no mint/freeze
+authority). Confirmed the retained anti-wash fee is NOT drainable (claim transfers amount-fee, the fee
+stays locked in the config-PDA vault, and there is no sweep instruction — the only outflow is per-claim
+payout bound to config.vault, lib.rs:956), and Sum(cohort_supply) <= total_supply so the vault is always
+solvent => no FCFS strand... PROVIDED the four cohort shares sum to <= 100%.
+
+That bound is the SOLE defense and it lives at init: `insurance_bps + backing_bps + lp_bps > 10000 ->
+reject` (lib.rs:579), with trader taking the saturating remainder. If it regressed, an init with e.g.
+50/50/50 would set trader=0 but give Sum(cohort_supply)=150% of total_supply — the first cohorts to claim
+drain the vault and the last cohort's honest claimants get InsufficientFunds (an order-dependent strand,
+the residual-side analogue of the distribution under-funded-seal LOF closed last tick). This guard was
+UNPINNED: cross_cohort_claims_never_exceed_cohort_or_total_supply (2070) proves the in-bounds conservation,
+and 711 covers the FEE bps, but nothing asserted init REJECTS an over-allocating cohort wire.
+
+FIX: none needed (guard correct). Added init_rejects_cohort_bps_summing_above_one_hundred_percent_no_overallocation
+— a 50/50/50 (=150%) wire is rejected; control: a valid 50/30/20/0 (=100%) wire initializes. Mutation-SHARP:
+neutering lib.rs:579 (`if false && ...`) lets the 150% init succeed -> test fails (verified, reverted).
+KEEP. rd suite 46->47 green, build-sbf clean. VERDICT: rd vault conservation is airtight on BOTH sides
+(supply allocation bounded at init, vault funding bound at freeze) — no over-allocation drain.
