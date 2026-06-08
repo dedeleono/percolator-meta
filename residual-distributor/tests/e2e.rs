@@ -475,6 +475,43 @@ fn trader_cohort_claim_also_pays_the_anti_wash_fee() {
     assert_eq!(token_amount(&svm, &env.vault), supply - 320_000, "the 80_000 trader fee is retained in the vault");
 }
 
+// ANTI-WASH FEE AT THE 100% EXTREME (claim-layer graceful degradation): init accepts fee_support_bps == 10_000
+// (the inclusive boundary, pinned at init by init_rejects_an_anti_wash_fee_above_100pct...). This pins the RUNTIME
+// counterpart the init test never exercises: a real crystallize->freeze->CLAIM at 100% must degrade gracefully —
+// payout = amount - fee = amount - amount = 0, the `if payout > 0` guard SKIPS the transfer (no 0-amount transfer,
+// no underflow, no panic), the whole cohort payout is RETAINED in the vault (intentionally deflationary), and the
+// stake is STILL marked claimed so a re-claim cannot retry. A future change to the claim fee math (dropping the
+// guard, reordering amount-fee) would brick every LP/trader claim at high fees — an init-only test wouldn't catch it.
+#[test]
+fn trader_claim_at_a_100pct_anti_wash_fee_pays_zero_gracefully_and_still_consumes_the_stake() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let supply = 1_000_000u64; // trader cohort = remainder 40% = 400_000
+    let env = setup_with_fee(&mut svm, &payer, supply, 10_000); // 100% anti-wash fee — the inclusive max
+    set_slot(&mut svm, 100);
+
+    let t = Keypair::new();
+    let pf = Pubkey::new_unique();
+    set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &t.pubkey(), 0, 0);
+    register(&mut svm, &payer, &env, &t, &t.pubkey(), &pf, COHORT_TRADER).expect("reg trader");
+    set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &t.pubkey(), 0, 9_000); // crystallized loss
+    set_slot(&mut svm, 1_000);
+    crystallize(&mut svm, &payer, &env, &t, &pf).expect("cry trader");
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    freeze(&mut svm, &payer, &env).expect("freeze");
+
+    let ata = create_token_account(&mut svm, &payer, &env.coin_mint, &t.pubkey());
+    // The claim SUCCEEDS (no panic / no underflow) even though the entire payout is skimmed.
+    claim(&mut svm, &payer, &env, &t, &ata, None).expect("claim at 100% fee must succeed gracefully, not revert");
+    assert_eq!(token_amount(&svm, &ata), 0, "100% anti-wash fee -> the trader receives 0 (whole payout skimmed)");
+    assert_eq!(token_amount(&svm, &env.vault), supply, "the full payout is retained in the vault (deflationary) — nothing left it");
+    // The stake is consumed: a re-claim cannot retry to drain the vault even though the first claim paid 0.
+    assert!(claim(&mut svm, &payer, &env, &t, &ata, None).is_err(), "a zero-payout claim still consumes the stake — no re-claim retry");
+    assert_eq!(token_amount(&svm, &env.vault), supply, "vault still intact after the rejected re-claim");
+}
+
 // PERMISSIONLESS CRYSTALLIZE (LP/trader, sweep tick D): share_value_crystallize_cannot_be_forced_by_a_third_party
 // pins that share-value (insurance/backing) crystallize is OWNER-GATED (finding KO) — a forced crystallize at a
 // transient low-share moment would grief. The COMPLEMENT, untested: LP/trader crystallize is PERMISSIONLESS — any

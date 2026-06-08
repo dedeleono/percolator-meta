@@ -7445,3 +7445,17 @@ SUBLEDGER SHARE CONSERVATION (subledger/tests/): over-withdraw cross-depositor L
 cannot_over_withdraw_to_drain_a_codepositor, splitting_an_impaired_exit_cannot_beat_the_pro_rata_or_drain_a_codepositor;
 pro-rata/order-independence: impaired_insurance_exit_is_pro_rata, impaired_pool_is_pro_rata_and_order_independent;
 share-inflation defense = virtual-shares+1 in redeem_shares (lib.rs:329). VERDICT: all BLOCKED/pinned. No change.
+
+### [VERIFIED — rd anti-wash fee at the 100% extreme: claim degrades gracefully, no brick] tick (D)
+SURFACE (rd claim payout under the anti-wash fee_support_bps). init accepts fee==10_000 (the inclusive boundary,
+pinned at init by init_rejects_an_anti_wash_fee_above_100pct...). The RUNTIME claim at 100% was untested. Verified
+the claim math (lib.rs:985-993): fee = amount*bps/10_000 = amount; payout = amount - fee = 0; `if payout > 0`
+SKIPS the transfer -> no 0-amount transfer, no underflow, no panic; the whole cohort payout is RETAINED in the
+vault (intentionally deflationary, line 981); the stake is still marked claimed (no re-claim retry). Also confirmed
+the free-farm surface is saturated: the sim main-farm test (rational_miner_farms..., farm.rs:93) opens a
+DELTA-NEUTRAL pair and the neutral (un-pushable) oracle halves the mark -> crystallizes the long's loss (trader
+points) AND the short's gain -> LP `received` (BOTH sides of the wash), shown fee-bounded + diluted; the LP
+`received` asymmetry "is farmable the same way and taxed the same way" (farm.rs:103). TEST: added
+trader_claim_at_a_100pct_anti_wash_fee_pays_zero_gracefully_and_still_consumes_the_stake (real rd .so) — claim
+succeeds, pays 0, vault retains full supply, re-claim rejected. VERDICT: BLOCKED/correct (graceful by construction).
+KEEP. rd e2e green.
