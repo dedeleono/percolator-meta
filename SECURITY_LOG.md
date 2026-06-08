@@ -8207,3 +8207,24 @@ duplicate test I drafted was DELETED per the dedup rule):
   (rd_config_cannot_be_reinitialized..., the soft-veto direction tests).
 VERDICT: no LOF, no free-farm — the budget cap, the rank-implied per-bid refund, and the frozen-denominator over-draw
 guard are all sound and covered. No code change; one redundant draft test removed; suite 107 green.
+
+### [VERIFIED — cross-cohort over-allocation (D) + distribution conservation (C): vault never over-drawn] tick (C/D)
+Traced two SOLVENCY surfaces (could total claims across independent sub-allocations exceed the funded vault ->
+strand late claimers / DoS?); both sound + comprehensively pinned:
+- RD CROSS-COHORT (surface D): the vault holds total_supply; claims draw against four independent cohort supplies
+  (cohort_supply = total_supply * bps/10000). trader_bps is the saturating remainder (10000 - ins - back - lp), so a
+  naive read could over-allocate IF ins+back+lp > 10000 (each explicit cohort still gets its full bps while trader
+  saturates to 0 -> Σ cohort_supply > total_supply -> over-draw). BLOCKED at init (lib.rs:579: ins+back+lp > 10000 ->
+  reject), so Σ cohort_supply <= total_supply always. Pinned by init_rejects_zero_supply_overallocation_and_unscoped_
+  cohorts (e2e 1447: 5000+4000+2000=11000 rejected) + full_four_way_split_pays_each_cohort_its_share (e2e 800:
+  all four cohorts registered/frozen/claimed against the real binary, payouts sum to exactly total_supply = vault
+  exactly drained). Share-value cohorts additionally over-draw-safe via the claim-time min(stake.points, live_pts)
+  cap (Σ claims <= Σ frozen points = frozen_denom; post-kickstart deposits closed so live shares only decrease).
+- DISTRIBUTION (surface C): append enforces total_amount <= total_supply per-iteration (lib.rs:478), init enforces
+  vault.amount >= total_supply (354), claim zeroes the entry after paying (600 -> no same-index re-claim), claim/burn
+  windows are mutually exclusive by slot. A duplicate recipient across two indices is ALLOWED but not an over-draw
+  (both amounts count toward the <= total_supply cap). Exhaustively pinned (append_cannot_exceed_total_supply 777,
+  append_supply_cap_is_cumulative 798, init_config_rejects_a_vault_underfunded 1017, double_claim_cannot_drain 319,
+  burn_unclaimed_also_burns_unallocated_headroom_full_conservation 693, window-cutoff 664).
+VERDICT: no LOF/DoS — every multi-slice allocation (4 rd cohorts, the distribution entry list) is bounded <= the
+funded vault, so the vault can never be over-drawn and no claimer is stranded. No code change; suites green.
