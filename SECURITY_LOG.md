@@ -11195,3 +11195,24 @@ shutdown-confiscation, init-brick — the whole auction relies on the ordering).
 + chain 112/112 green, src clean. SHARP. No code change. VERDICT: the live auction comparator is correct
 (COIN-per-USD descending), mutation-proven; the twap library is confirmed unused dead-reference code with no
 deployed attack surface.
+
+## Tick — twap INSURANCE_OFFSET canary (finding-T slab-drift -> over-pull/brick) MUTATION-VERIFIED (surface A)
+
+The twap reads asset-0 insurance from the percolator slab at a HARDCODED offset (INSURANCE_OFFSET = 448 + 301,
+lib.rs:268) to compute surplus = insurance - reserved_floor, the basis for every execute pull. A percolator
+struct reorder that drifted this offset would be a silent LOF/DoS: reading the VAULT field (larger, includes
+non-insurance collateral) as "insurance" inflates surplus -> over-pull DRAINS principal; reading a smaller/zero
+field under-pulls -> the buy/burn is starved/bricked. This is the twap-side complement of the rd offset canary
+(residual-distributor/tests/offsets.rs) and the subledger PERC_INSURANCE_OFFSET canary (impair_market).
+
+The guard is the canary test insurance_offset_matches_real_percolator_slab (chain:1773): it asserts
+INSURANCE_OFFSET == 448 + offset_of!(percolator::MarketGroupV16HeaderAccount, insurance) against the REAL
+percolator struct, AND vault_offset != INSURANCE_OFFSET (the specific finding-T aliasing: never read
+vault@733 as insurance@749), AND reads insurance at the offset from a real slab.
+
+MUTATION-VERIFIED: drifted INSURANCE_OFFSET 301 -> 285 (toward the vault field), rebuilt the real .so ->
+insurance_offset_matches_real_percolator_slab FAILED (the offset no longer matches offset_of! the real field).
+Reverted -> 112/112 chain green, src clean. SHARP. No code change. VERDICT: the twap's hardcoded insurance
+read is pinned to the real percolator layout (no drift -> no surplus-basis over-pull/brick), mutation-proven --
+both percolator-slab consumers (twap + rd, plus the subledger constant) now have their offset canaries proven
+non-vacuous, closing the GT/HF/T cross-dependency drift class across the whole stack.
