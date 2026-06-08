@@ -187,6 +187,17 @@ pub fn share_value_points(shares: u128, withdrawn: bool) -> u128 {
 // earns NO trader points. Only loss that drained insurance with no counterparty recovery (spent < crystallized)
 // counts. The LP `received` leg has no symmetric per-account recovery counter, so it is netting-resistant and
 // is bounded instead by the claim fee (see process_claim). spent <= crystallized is shape-validated by percolator.
+// CROSS-ACCOUNT CONSERVATION (percolator v16.rs transfer_account_residual_reward_credit, via
+// transfer_trade_residual_reward_credit on a position INCREASE): when a trader with an outstanding net loss
+// (crystallized - spent) re-trades, `credit = min(net, counterparty_increased_margin)` is moved — the trader's
+// `spent` rises by credit AND the counterparty's `received` rises by the SAME credit. So `received` is NOT free:
+// it is exactly the trader crystallized loss transferred to an LP that committed real margin to back it, it is
+// globally bounded by the trader's REAL crystallized loss (each transfer raises spent, depleting `net`, so the
+// same loss can never be transferred twice), and it is ZERO-SUM with the trader cohort's net-by-spent. An
+// attacker self-dealing trader+LP cannot double-count the SAME loss across both cohorts: the trader leg's frozen
+// points are capped to its live net at claim (the live-cap, defense (3)) — pinned by
+// cross_cohort_trader_loss_then_lp_recovery_cannot_double_dip_the_same_loss. So the LP cohort, like the trader
+// cohort, costs real capital-at-risk + the claim fee; it is the LEAST farmable, not a free counter.
 // The portfolio's provenance market_group_id is the FIRST field of the struct, so it sits right after
 // the percolator account header. The LP/trader cohorts MUST scope to it (finding IL): the residual
 // counters are admin-mark-manipulable on a market whose oracle the registrant controls, so a portfolio

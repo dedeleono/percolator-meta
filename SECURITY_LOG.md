@@ -10397,3 +10397,29 @@ deposit now SUCCEEDS, re-opening the principal-drain LOF: insurance rises above 
 to pull). Reverted -> 111/111 chain green, src clean. SHARP. No code change. VERDICT: the handoff's
 foreign-account binds + the finding-S deposit-revoke (the static-floor soundness precondition) are correct and
 mutation-proven; the post-handoff principal-drain LOF is closed.
+
+## Tick — LP `received` free-farm DEFINITIVELY closed: the credit-transfer mechanism + conservation bound documented (surface D)
+
+Completed the percolator-source trace of the LP `received` counter (the user's #1 free-farm target). The credit
+that raises `received` fires on a TRADE, not a bankruptcy: percolator v16.rs:8367
+transfer_trade_residual_reward_credit, invoked when a position is INCREASED (new_abs_q > old_abs_q), calls
+transfer_account_residual_reward_credit(trader, lp, counterparty_increased_margin) which computes
+`credit = min(trader.crystallized - trader.spent, counterparty_increased_margin)` and raises BOTH the trader's
+`spent` AND the counterparty's `received` by that SAME credit.
+
+Three consequences => NOT a free-farm (definitive):
+1. SYMMETRIC, not "no net": received += credit IFF some trader's spent += credit. The rd-local "no symmetric
+   net" framing (received is monotonic, can't self-recover -> fee-taxed) is correct for the LP's OWN view, but
+   cross-account `received` is exactly the trader's transferred crystallized loss.
+2. GLOBALLY BOUNDED by real loss: each transfer raises the trader's spent, depleting `net = crystallized -
+   spent`, so the SAME loss can never be transferred twice; total received across all LPs <= the trader's REAL
+   crystallized loss. And the recovering LP must commit REAL margin (counterparty_increased_margin) to receive.
+3. NO CROSS-COHORT DOUBLE-COUNT: an attacker self-dealing trader+LP can't bank the loss in BOTH cohorts — the
+   trader leg's frozen points are capped to its live net at claim (the live-cap), pinned last tick by
+   cross_cohort_trader_loss_then_lp_recovery_cannot_double_dip_the_same_loss.
+
+So the LP cohort, like the trader cohort, costs real capital-at-risk + the claim fee — the LEAST farmable, not a
+free counter. Documented this in lib.rs (the cross-account conservation note on the received counter) so a
+future auditor need not re-derive it from percolator internals. Doc-only; rd 48/48 green, build-sbf clean.
+VERDICT: the LP `received` free-farm is closed and now fully documented at the mechanism + conservation level;
+the user's strongest emphasis (a free-farm bypassing the anti-wash defenses) has no remaining unexamined path.
