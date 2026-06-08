@@ -8868,3 +8868,24 @@ MILESTONE — every twap-program instruction is now directly traced + confirmed 
   Squads-gated). Plus the PDA bumps canonical + comparators overflow-safe + the authority chain rooted at init.
 VERDICT: the twap (the auction + handoff, the largest/most fund-bearing surface) is exhaustively traced; no LOF/
 DoS/free-farm beyond the documented design. No code change.
+
+### [VERIFIED — init_insurance_pool sound; STACK-WIDE instruction-by-instruction audit COMPLETE] tick (B)
+Read process_init_insurance_pool (lib.rs:823) — the genesis bootstrap pool creation. Comprehensively bound:
+- pool PDA folds (mint, asset_id, market_slab, percolator_program) (854) -> no cross-market squat; re-init guard (861).
+- VAULT = the canonical percolator insurance ATA: SPL-owned-before-unpack (870), mint + vault_authority owner (874),
+  AND == canonical_vault_address (882, F-VAULT-FRAG) — a non-canonical vault would make every deposit/withdraw CPI
+  revert (inert pool), rejected up front.
+- percolator_program non-default (849, => is_insurance() so the partial-withdraw path), policy <= WITH_SURPLUS (840),
+  create_pda_robust (prefund-resistant), vote_authority stored (gv-validated on the gv side + dual-sig protected).
+  Pinned: init_insurance_pool_cannot_be_squatted (3018), front_running_the_genesis_pool_with_a_bad_policy (3087).
+MILESTONE — every fund-bearing / authority instruction across ALL programs is now directly traced + sound + pinned:
+  subledger {init_pool, init_insurance_pool, deposit, withdraw, insurance_deposit, insurance_withdraw, set_vote_lock
+  (dual-sig), accept_operator}; genesis-vote {init_config anchor, vote/retract, trigger}; distribution {init_config,
+  create_proposal, append_entries, seal_winner, claim, burn_unclaimed}; residual-distributor {init, register_start,
+  crystallize, freeze, claim}; twap {init_config..shutdown, all 14}. Cross-cutting classes also swept: PDA bump
+  canonicalization, deadline/window overflow (1 real fix: claim_window), config-validation (enums/ranges + bps),
+  cross-program type-confusion (structural field-binding), share-math overflow (graceful, genesis-safe via partial),
+  authority anchors (twap + gv init), wash-farm hardening (net-by-spent + fee + time-weight + Sybil, sim-confirmed).
+VERDICT: the standalone scope is exhaustively audited instruction-by-instruction + class-by-class. 1 real bug found +
+fixed (claim_window permanent freeze); everything else sound + adversarially pinned against the real binaries.
+Outstanding: only the deferred #11. No code change.
