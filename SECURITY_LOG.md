@@ -7020,3 +7020,19 @@ deposit at slot 100 (start_slot 100); warp to 1124; top-up 1_999_999 -> principa
 to 1124 (not kept at 100). So the whole stake is dated to the top-up slot; late capital earns only its own short
 tenure. (Note: kept the warp inside the market's 2000-slot oracle-freshness window; a 1M-slot warp made percolator
 reject the deposit as stale, err 0x1b.) VERDICT: BLOCKED. KEEP. No behavior change. subledger 48 + 10 + 10 green.
+
+### [CHARACTERIZED — net-by-spent asymmetry: churn zeroes a TRADER but only the fee bounds LP received] tick (D)
+SURFACE (rd residual_counter / crystallize). The TRADER counter is NET `crystallized - spent`, so a farmer who
+CHURNS (recycles capital -> spends their own crystallized budget -> spent rises to crystallized) nets their
+trader points to ZERO. The LP counter is raw `received`, which has NO symmetric self-recovery term, so the SAME
+churn leaves LP points UNTOUCHED. Directly addresses the sweep's "net-by-spent" + "a churn that does NOT raise
+[trader] reward" + the LP-cohort fee reliance.
+TEST: churn_zeroes_a_trader_via_spent_netting_but_lp_received_is_bounded_only_by_the_claim_fee (real rd .so): a
+trader stake and an LP stake with IDENTICAL fully-churned counters (crystallized 10_000, spent 10_000 -> net 0;
+received 10_000) -> the trader claims 0 (spent-netting kills trader churn); the LP claims 320_000 = full 80% of
+its cohort (the SAME churn does nothing to received). Added set_portfolio_full (writes residual_spent@212).
+VERDICT: ACCEPTED / BY DESIGN — the trader cohort has TWO bounds (net-by-spent + claim fee); the LP cohort has
+ONE on-chain bound (the claim fee) because `received` is realized counterparty flow with no self-cancelling leg.
+So the anti-wash claim fee is LP's SOLE on-chain bound (plus off-chain: per-trade fee, time-weight, dilution) and
+is NOT redundant with the spent-netting (which protects only the trader half). KEEP (pins why the fee is
+mandatory + the cohort asymmetry). No behavior change. rd e2e 30 green.

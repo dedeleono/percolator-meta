@@ -100,6 +100,17 @@ fn set_portfolio(svm: &mut LiteSVM, key: &Pubkey, perc: &Pubkey, market: &Pubkey
     svm.set_account(*key, Account { lamports: 1_000_000_000, data, owner: *perc, executable: false, rent_epoch: 0 }).unwrap();
 }
 
+// Like set_portfolio but ALSO writes residual_spent@212 (the self-recovery counter the trader cohort nets out).
+fn set_portfolio_full(svm: &mut LiteSVM, key: &Pubkey, perc: &Pubkey, market: &Pubkey, owner: &Pubkey, received: u128, crystallized: u128, spent: u128) {
+    let mut data = vec![0u8; 512];
+    data[16..48].copy_from_slice(market.as_ref());
+    data[116..148].copy_from_slice(owner.as_ref());
+    data[196..212].copy_from_slice(&crystallized.to_le_bytes());
+    data[212..228].copy_from_slice(&spent.to_le_bytes());
+    data[228..244].copy_from_slice(&received.to_le_bytes());
+    svm.set_account(*key, Account { lamports: 1_000_000_000, data, owner: *perc, executable: false, rent_epoch: 0 }).unwrap();
+}
+
 struct Env {
     rd_config: Pubkey,
     coin_mint: Pubkey,
@@ -409,6 +420,57 @@ fn time_weight_rewards_registration_tenure_not_residual_age_early_over_captures(
     // Conserved: the two split the whole cohort up to 1 atom of independent-floor rounding dust (stays locked).
     assert_eq!(early_paid + late_paid, 399_999, "cohort fully shared between the two minus 1-atom floor dust");
     assert!(400_000 - (early_paid + late_paid) <= 1, "at most 1 atom of rounding dust stays locked in the vault");
+}
+
+// FREE-FARM PROBE (net-by-spent asymmetry: churn defeats trader, only the fee bounds LP, sweep tick D): the
+// TRADER counter is the NET drain `crystallized - spent` (residual_counter), so a farmer who CHURNS — recycles
+// capital by closing+reopening, which spends their own crystallized budget — drives spent up to crystallized and
+// nets their trader points to ZERO. But the LP counter is raw `received`, which has NO symmetric self-recovery
+// term to net against, so the SAME churn leaves LP points untouched. This pins that asymmetry end-to-end against
+// the real rd .so: a fully-churned position (spent == crystallized) is worth 0 in the trader cohort but FULL
+// (minus only the anti-wash claim fee) in the LP cohort.
+// VERDICT: ACCEPTED / BY DESIGN. The trader cohort gets two bounds (net-by-spent + the fee); the LP cohort gets
+// one (the claim fee) because `received` reflects realized counterparty flow with no self-cancelling leg. So the
+// claim fee is LP's SOLE on-chain bound (plus the per-trade fee, the time-weight, and cohort dilution off-chain).
+// This is why the fee is mandatory and why it is NOT redundant with the spent-netting (which protects only the
+// trader half). [[residual-cohort-pyth-allowlist]]
+#[test]
+fn churn_zeroes_a_trader_via_spent_netting_but_lp_received_is_bounded_only_by_the_claim_fee() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let supply = 1_000_000u64; // trader = 40% = 400_000 ; lp = 40% = 400_000
+    let env = setup_with_fee(&mut svm, &payer, supply, 2_000); // 20% anti-wash fee
+    set_slot(&mut svm, 100);
+
+    // A TRADER and an LP staker, each on a fresh empty portfolio (register-time snap = 0).
+    let t = Keypair::new(); let t_pf = Pubkey::new_unique();
+    set_portfolio(&mut svm, &t_pf, &env.stub_perc, &env.market, &t.pubkey(), 0, 0);
+    register(&mut svm, &payer, &env, &t, &t.pubkey(), &t_pf, COHORT_TRADER).expect("reg trader");
+    let l = Keypair::new(); let l_pf = Pubkey::new_unique();
+    set_portfolio(&mut svm, &l_pf, &env.stub_perc, &env.market, &l.pubkey(), 0, 0);
+    register(&mut svm, &payer, &env, &l, &l.pubkey(), &l_pf, COHORT_LP).expect("reg lp");
+
+    // The IDENTICAL fully-churned wash counters on both: crystallized 10_000 FULLY spent (net 0), received 10_000.
+    set_portfolio_full(&mut svm, &t_pf, &env.stub_perc, &env.market, &t.pubkey(), 10_000, 10_000, 10_000);
+    set_portfolio_full(&mut svm, &l_pf, &env.stub_perc, &env.market, &l.pubkey(), 10_000, 10_000, 10_000);
+    set_slot(&mut svm, 1_000); // tenure > 0
+    crystallize(&mut svm, &payer, &env, &t, &t_pf).expect("cry trader");
+    crystallize(&mut svm, &payer, &env, &l, &l_pf).expect("cry lp");
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    freeze(&mut svm, &payer, &env).expect("freeze");
+
+    // TRADER: counter = crystallized - spent = 0 -> 0 points -> claims NOTHING. Churn defeated by net-by-spent.
+    let t_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &t.pubkey());
+    claim(&mut svm, &payer, &env, &t, &t_ata, None).expect("trader claim (zero)");
+    assert_eq!(token_amount(&svm, &t_ata), 0, "a fully-churned trader nets to 0 — spent-netting kills trader churn");
+
+    // LP: counter = received = 10_000 (spent is irrelevant to it) -> full points -> claims the WHOLE lp cohort
+    // minus only the 20% anti-wash fee. The SAME churn that zeroed the trader does NOTHING to the LP cohort.
+    let l_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &l.pubkey());
+    claim(&mut svm, &payer, &env, &l, &l_ata, None).expect("lp claim (full minus fee)");
+    assert_eq!(token_amount(&svm, &l_ata), 320_000, "the SAME churn leaves LP at full 80% of its cohort — the claim fee is LP's only on-chain bound");
 }
 
 // DoS PROBE (claim-underflow via an out-of-range anti-wash fee, sweep): claim pays `payout = amount - fee`
