@@ -10889,3 +10889,23 @@ insurance.saturating_sub(u128::MAX) = 0, so the holding stays 0 (nothing pulled)
 underflow-panic so execute reverts (the .expect fails) — either way caught. KEEP (pins the un-armed reorder
 safety end to end). chain 111->112 green. No code change. VERDICT: the MAX sentinel makes the
 handoff-before-floor window safe; a permissionless execute can never drain principal before the floor is armed.
+
+## Tick — auction settle burn/sink split conservation (over-debit of the shared coin_escrow) MUTATION-VERIFIED (surface A)
+
+At settle, the bought COIN (total_coin) is split per the 4-way economics: to_sink = total_coin * buyback_bps /
+10000 retained to the DAO coin_sink (SINK_SEND mode), and to_burn = total_coin - to_sink BURNED (lib.rs:1733).
+The `checked_sub` is the conservation guard: to_sink + to_burn == total_coin EXACTLY, and the buyback_bps <=
+10000 bound (lib.rs:577, tested at chain:912) keeps to_sink <= total_coin so the sub never underflows. The
+coin_escrow is the SHARED pool of every bidder's escrowed COIN, so without `- to_sink` the settle would burn
+the WHOLE total_coin AND ALSO send to_sink to the sink = debit total_coin + to_sink from the shared escrow,
+draining OTHER bidders' COIN refunds (a cross-bidder LOF).
+
+MUTATION-VERIFIED (triply): changed to_burn from `total_coin - to_sink` to `total_coin` (burn all AND send the
+sink share), rebuilt the real .so -> THREE tests caught it:
+  - e2e_execute_buyback_retains_fraction_to_sink_and_burns_the_rest
+  - e2e_dao_flips_burn_to_buyback_only_via_squads
+  - e2e_execute_full_four_way_split_composes_in_one_round
+Reverted -> 112/112 chain green, src clean. SHARP. No code change. VERDICT: the burn/sink split conserves
+exactly (every bought COIN is either burned or sent to the sink, never both; no over-debit of the shared
+escrow), mutation-proven. This completes the auction's COIN-side conservation (mint-supply burn + sink split +
+per-bid refund + escrow no-double-spend), alongside the USD-side (settlement_usd, no double-claim).
