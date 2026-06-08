@@ -8850,3 +8850,21 @@ the buyback; SOUND + fully pinned:
   consumes ONLY the bound book.coin_sink (1740, validated even when to_sink==0).
 VERDICT: no non-DAO buyback redirect, no cross-config sink hijack, no DAO-mistake strand of the buyback. No code
 change.
+
+### [VERIFIED — set_bid_fee sound; twap instruction-by-instruction audit COMPLETE (every ix directly traced)] tick (A)
+Read process_set_bid_fee (lib.rs:1191): Squads-gated (require_squads_vault 1205) + book.config bound (1207); no
+upper bound but a huge bid_fee only DETERS bidding (the fee is BURNED from the bidder's COIN at place_bid, capped
+by their balance -> they can't bid -> the auction simply rolls), a predictable DAO governance choice, not a brick;
+no overflow (fee is a burn amount; bid legs u64-bounded). Pinned by e2e_bid_fee_is_charged_and_burned (5235) + the
+shared Squads-gate + book.config bind (cross-config 7086).
+MILESTONE — every twap-program instruction is now directly traced + confirmed sound + pinned:
+  init_config (DAO->Squads link + 1-week timelock anchor), accept_operator (foreign vault/market/perc bound, op
+  hardcoded), reconfigure + set_economics (bps joint-cap, reads each other's live value), set_reserved_floor
+  (finding-O monotonic-up, no re-arm MAX), set_reserve (Euclidean cmp_rate, den!=0), set_coin_sink (finding-AS
+  coin_escrow-strand guard), set_bid_fee (this tick), init_book (Squads-gated, empty-escrow + SPL-owner + reserve/
+  round bounds), place_bid (escrow-dest bind, eviction refund to recorded ATA, fee burned), execute (finding-O
+  safe-default floor, surplus split, savings/coin sinks bound, marginal-fill conservation, reorder-safe), claim
+  (both dest bindings, no replay), cancel (owner-bound, anti-spoof cooldown, no replay), shutdown (holding-only,
+  Squads-gated). Plus the PDA bumps canonical + comparators overflow-safe + the authority chain rooted at init.
+VERDICT: the twap (the auction + handoff, the largest/most fund-bearing surface) is exhaustively traced; no LOF/
+DoS/free-farm beyond the documented design. No code change.
