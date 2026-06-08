@@ -7922,3 +7922,21 @@ Re-examined the four named anti-wash defenses for correctness (not just test-pre
   pays min(frozen_points, live_shares) so a post-crystallize withdraw reduces (soft-veto) and a post-crystallize
   deposit cannot inflate (capped at frozen) — both directions pinned (854/891/936).
 VERDICT: all four anti-wash defenses sound + comprehensively pinned. No free-farm. No change.
+
+### [AUDIT — captured-DAO threat model re-examined: no path to the depositor principal (finding-O context)] tick (A)
+The finding-O on-chain guards exist because a post-handoff DAO can be CAPTURED (the winning COIN holders). Swept
+every DAO-controlled (Squads-gated, timelock'd) action for a path to drain the depositor PRINCIPAL (the surplus
+above the floor is legitimately the DAO's). None reach the principal:
+- set_reserved_floor: monotonic-up + can't re-arm the MAX sentinel (raise-to-MAX FIXED, re-init re-arm pinned) ->
+  the floor can never be lowered below the principal.
+- reconfigure(burn_bps) + set_economics(savings_bps): bounded 0..=100% with the combined cap; BOTH pull from
+  surplus = insurance - reserved_floor, so even savings=100% to a DAO-personal sink extracts only the SURPLUS,
+  never below the floor (e2e_execute_splits_surplus_to_savings_sink_without_breaching_principal + finding-O floor +
+  e2e_execute_pulls_nothing_when_insurance_below_floor).
+- shutdown: sweeps the holding (DAO surplus) but is rejected on the book_escrow-owned settlement_usd (winners' USD,
+  e2e_dao_shutdown_cannot_confiscate_winners_parked_settlement_usd).
+- set_coin_sink (SEND buyback): finding-AV-bound (can't be the coin_escrow); the sink is the DAO's own surplus
+  destination. set_bid_fee / set_reserve: reversible DAO-discretion griefs (no bids), no drain; cross-tenant
+  isolated (config-A can't touch config-B, 7027/e2e_config_a_cannot_mutate_config_bs_book).
+VERDICT: a captured DAO can spend/redirect its own SURPLUS (intended) but has NO on-chain path to the
+floor-protected depositor principal. The finding-O floor (now drain-proof both ways) is the linchpin. No change.
