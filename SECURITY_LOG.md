@@ -11561,3 +11561,27 @@ unclaimed_is_burned_after_window + burn_unclaimed_also_burns_unallocated_headroo
 (the boundary + complement are already pinned; a race-specific test would be redundant per the delete-marginal
 rule). No code change -- the claim/burn windows are provably non-overlapping and the no-overlap boundary is
 regression-protected.
+
+## Tick — FULL-STACK regression checkpoint: 312/312 green; surface-B/C/D integrity guards re-confirmed covered (honest saturation)
+
+This tick probed three more attack vectors and found each already BLOCKED and pinned (no new vector surfaced):
+- (B) DOUBLE-RETRACT of a gv ballot underflowing the quorum tallies -> BLOCKED: retract zeroes the ballot
+  (voted_proposal=default), so has_live_ballot() is false and the 2nd retract hits "nothing to retract"
+  (lib.rs:646) BEFORE any checked_sub; already pinned by double_retract_is_rejected_and_does_not_double_
+  release_the_tally + the prior e2e_double_retract...cannot_underflow_the_quorum_tally tick.
+- (B) WITHDRAW-WHILE-VOTE-LOCKED (vote without capital / quorum manipulation) -> BLOCKED at lib.rs:1189,
+  already MUTATION-VERIFIED twice (the full-vs-partial weakening at log:487 + the `if false &&` removal at
+  log:1890; vote_locked_principal_cannot_exit_until_retracted covers full+partial+post-retract exit).
+- (C) CLAIM-VS-BURN race -> structurally impossible (disjoint window predicates), mutation-verified last tick.
+
+Since no NEW vector surfaced and the major guards across A/B/C/D are exhaustively tested + mutation-verified,
+ran a FULL-STACK regression sweep against the CURRENT sources and the recently-drifted percolator binary
+(ff75a08, +5 commits over our pin). ALL GREEN -- 312 tests:
+  integration: gv seal 17, gv offsets 2, distribution 32, rd e2e 48, rd offsets 4, subledger own-vault 11,
+    subledger insurance_percolator 58, twap chain 112, setup 1  (= 285)
+  lib-unit: gv 3, distribution 4, rd 3, subledger 10, twap 4  (= 24)
+  sim (real percolator): 3
+Every deployed program builds clean (build-sbf) and its whole suite passes against the live binaries. This is
+the honest saturation state: the standalone scope is comprehensively secured; future ticks warrant a NEW
+substantive find only on a real change (dependency rev bump our pin tracks, a new instruction, or a novel
+attack class) -- otherwise meta-audit/regression-confirm rather than manufacture marginal finds. No code change.
