@@ -11454,3 +11454,28 @@ freeze -> saturating_add [this tick]; (2) rd stale-points wash -> claim live-cap
 prior ticks]; (3) gv one-vote-one-proposal mutation-blind test -> the GG-offset fix made the binding test sharp
 [prior]; (4) auction stale-round_end competition-skip -> the claim/cancel round_end re-anchor [prior].
 Every fix for every real bug is pinned, so none can silently regress.
+
+## Tick — EXTERNAL-CHANGE verification: on-disk percolator_prog.so rebuilt at ff75a08 (5 commits ahead of our pin) is NON-BREAKING across all slab consumers (all surfaces)
+
+A real external change landed: the litesvm tests load ../../percolator-prog/target/deploy/percolator_prog.so,
+and that artifact was rebuilt today from sibling HEAD ff75a08 -- 5 commits ahead of our Cargo pin 0f87dcb
+(percolator-prog crate) / 58dc118 (percolator lib). The 5 new upstream commits add gates/tests: per-asset
+oracle-authority isolation, withdraw-blocked-when-resolve-matured (#66 solvency gate), asset-activation
+cooldown, live-backing-withdrawal-rejected-under-exposed-lag, ConfigurePermissionlessResolve gating+bounds.
+
+RISK: our test code constructs the percolator slab (make_live_market) and reads it (INSURANCE_OFFSET=448+301,
+WrapperConfigV16) using TYPES from the PINNED crate (0f87dcb), but those bytes are now interpreted by the
+NEWER binary (ff75a08). A layout/instruction drift across those revs would silently mismatch and either brick
+the chain or, worse, let finding-O surplus reads point at the wrong field.
+
+VERIFIED non-breaking against the current on-disk binary -- every percolator-slab consumer green:
+- twap-program chain (genesis->handoff->twap, finding-O pull, auction): 112/112 passed
+- subledger insurance_percolator (PERC_INSURANCE_OFFSET slab read, finding-L haircut): 58/58 passed
+- sim real-percolator (3bps fee redirect, LP received credit-transfer, deterministic-distributor farm): 3/3 passed
+
+CONCLUSION: the WrapperConfigV16 slab layout + insurance offset are STABLE across 0f87dcb->ff75a08; the new
+percolator gates do not perturb the genesis->DAO->twap surplus/haircut path. The offset canaries (twap 268,
+subledger 365) remain the tripwire if a FUTURE upstream rev does move the layout -- they'd fail loud rather
+than mis-read. NOTE for the user: the Cargo pin (0f87dcb/58dc118) and the loaded .so (ff75a08) are now out of
+sync but proven CONSISTENT; whether to bump the pin to ff75a08 is a user/dependency decision -- not changed
+here (siblings are read-only; the canary protects us either way). No code change.
