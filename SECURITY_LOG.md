@@ -11034,3 +11034,23 @@ MUTATION-VERIFIED: replaced saturating_mul with `*`, recompiled -> the host-side
 points_to_amount_is_overflow_safe_never_panics_and_never_over_allocates FAILED (PANIC on the u64::MAX/u128::MAX
 extreme inputs). Reverted -> offsets 4/4 + e2e 48/48 green, src clean. SHARP. No code change. VERDICT: the
 pro-rata payout is overflow-safe (no brick on a large-points cohort, no wrap-drain), mutation-proven.
+
+## Tick — EMPIRICAL real-trade confirmation of the LP `received` credit-transfer mechanism (surface D; closes the deferred sim)
+
+Closed the long-deferred empirical step: confirm AGAINST THE REAL PERCOLATOR that the LP `received` counter is
+the trader's TRANSFERRED crystallized loss (conservation-bounded), not a free counter. Realized the existing
+churn-vs-hold sim ALREADY triggers the credit transfer — the churner's REOPEN is a long-INCREASE, which fires
+percolator's transfer_trade_residual_reward_credit -> transfer_account_residual_reward_credit(long, short,
+short_margin): it raises the long's `spent` AND the counterparty short's `received` by the SAME credit. (The
+short GAINED on the mark drop, so it has no crystallized loss and the symmetric short->long transfer
+contributes 0.)
+
+Added the `received`-side measurement to churn_raises_own_spent_and_collapses_the_net_reward_vs_a_holder.
+RESULT (real percolator .so): churner-long spent 250 == counterparty-short received 250, both bounded by the
+long's crystallized loss 250. So empirically: (1) `received` IS reachable by a real trade (the reopen
+increase), NOT only by absorbed bankruptcy residual as an earlier note guessed; (2) it equals the trader-long's
+spent 1:1 and is bounded by the real crystallized loss; (3) therefore `received` is exactly the trader's
+transferred crystallized loss — conservation-bounded, zero-sum with net-by-spent, so the LP cohort costs real
+capital-at-risk just like the trader cohort (no free-farm). This is the empirical closure matching the
+source-level trace (v16.rs:8312) and the rd-side cross-cohort double-dip pin. KEEP (real-trade evidence on the
+user's #1 free-farm question). sim 3/3 green, no src change. No new bug.

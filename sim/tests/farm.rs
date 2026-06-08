@@ -410,6 +410,19 @@ fn churn_raises_own_spent_and_collapses_the_net_reward_vs_a_holder() {
     println!("===============================================\n");
     assert!(c_spent > 0, "churn (close+reopen) raises the churner's OWN spent");
     assert!(c_net < h_net, "the churner's net-by-spent reward ({c_net}) is below the holder's ({h_net})");
+
+    // EMPIRICAL `received` MECHANISM (closes the LP-cohort free-farm question with REAL trades): the reopen is a
+    // long INCREASE, which fires percolator's transfer_account_residual_reward_credit(long, short, short_margin)
+    // — it raised the long's `spent` AND the COUNTERPARTY short's `received` by the SAME credit. (The short GAINED
+    // on the mark drop so it has no crystallized loss, so the symmetric short->long transfer contributes 0.) So
+    // `received` IS reachable by a real trade, it equals the churner-long's spent 1:1, and it is bounded by the
+    // long's real crystallized loss — i.e. `received` is exactly the trader's TRANSFERRED crystallized loss,
+    // conservation-bounded and zero-sum with net-by-spent (the source-level closure, now confirmed empirically).
+    let c_short_received = read_received(&svm, &c_short);
+    println!("CHURN credit transfer: churner-long spent {c_spent} == counterparty-short received {c_short_received} (bounded by crystallized {})", read_crystallized(&svm, &c_long));
+    assert_eq!(c_short_received, c_spent, "the credit moved 1:1 from the long's net to the counterparty short's `received`");
+    assert!(c_short_received > 0 && c_short_received <= read_crystallized(&svm, &c_long),
+        "`received` is reachable by a real trade but bounded by the trader's real crystallized loss (not free)");
 }
 
 // SURFACE A — buy/burn FUEL verification (sweep tick): the genesis market is configured with trade_fee_base_bps=3
