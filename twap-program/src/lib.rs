@@ -1841,6 +1841,18 @@ fn process_claim(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> 
     }
     if !any {
         d[BK_STATE] = BOOK_STATE_OPEN;
+        // Reset the round timer so the REOPENED round runs its full competition window from NOW. `execute`
+        // sets round_end at SETTLE (= settle_slot + round_length) for "the next round", but the next round
+        // does not actually start until the settled book's claims drain. If that drain takes longer than
+        // round_length, the reopened round would inherit a round_end already in the past and be INSTANTLY
+        // executable — letting a bidder (who could engineer it by delaying their own claim) place a bid and
+        // crank execute before any competitor reacts, clearing ALONE and skipping the round_length window
+        // that pushes the uniform clearing price above the reserve floor. Re-anchor round_end to the actual
+        // round start (this reopen) so every round ages its full length first.
+        let round_length = book_rd_u64(&d, BK_ROUND_LENGTH);
+        let now = solana_program::clock::Clock::get()?.slot;
+        let next_end = now.saturating_add(round_length);
+        d[BK_ROUND_END..BK_ROUND_END + 8].copy_from_slice(&next_end.to_le_bytes());
     }
     Ok(())
 }

@@ -4639,9 +4639,17 @@ fn e2e_execute_on_a_settled_book_is_frozen_until_claims_drain_it() {
     send(&mut svm, &[&cranker], claim_ix(&cranker.pubkey(), &env.twap_cfg, &bk.book, &bk.book_escrow, &bk.settlement_usd, &bk.coin_escrow, &a_usd, &a_src, 0)).expect("alice claim drains the book");
     assert_eq!(token_amount(&svm, &a_usd), 400_000, "alice got her parked USD");
 
-    // Now OPEN again, execute is accepted (an empty book just rolls; surplus is exhausted so it pulls
-    // nothing). This proves the freeze was the SETTLED state, lifted precisely by the drain.
-    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute accepted once the book drained back to OPEN");
+    // Now OPEN again — but the reopen (at slot 500) RE-ANCHORED round_end to now + round_length = 510, so the
+    // reopened round must age its full window first. An immediate execute is REJECTED on the round-active gate
+    // (NOT instantly executable off the stale settle-time round_end of 121) — this closes the competition-skip
+    // where a bidder delays their own claim, reopens with a past round_end, and clears alone near-reserve.
+    assert!(
+        send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).is_err(),
+        "the reopened round must age round_length from the reopen — no instant execute off a stale round_end"
+    );
+    // Once the reopened round ages, execute is accepted (empty book rolls; surplus exhausted -> pulls nothing).
+    warp_to(&mut svm, 511);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute accepted once the reopened round has aged its full length");
     let _ = alice;
 }
 

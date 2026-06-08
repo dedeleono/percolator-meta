@@ -5,7 +5,22 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (A, auction stale-round_end competition-skip — INVESTIGATED, reserve-bounded, NOT a safety bug, fix
+LATEST TICK (A, FIX the stale-round_end competition-skip — round_end now re-anchored at reopen): implemented the
+fix proposed last tick. process_claim's reopen (lib.rs:1842) now resets round_end = now + round_length when the
+last claim flips the book back to OPEN, so a REOPENED round ages its full competition window from its ACTUAL start
+instead of inheriting the premature settle-time round_end. This closes the manipulation where a bidder delays
+their own claim, reopens with a past round_end, and places a bid + instantly cranks execute to clear ALONE
+near-reserve (skipping the round_length window). Logically correct: round_end must be relative to a round's start
+(reopen), not the prior settle. Only ONE test moved (e2e_execute_on_a_settled_book...:4642 — the incidental
+instant-execute) -> updated to PIN the new behavior (an immediate post-reopen execute is REJECTED on the
+round-active gate; it succeeds only after the reopened round ages round_length). The update is the regression pin
+(without the fix the immediate execute is accepted -> the is_err assert fails). Full regression 302 green (twap
+114), all 5 build-sbf clean. NOTE: still reserve-bounded either way (the verified-sharp reserve filter caps the
+worst price); the fix restores the intended COMPETITION above that floor. REAL FINDS THIS SESSION now: distribution
+claim_window LOF, rd stale-points free-farm, gv binding mutation-blind gap, auction competition-skip (this) + 3
+defense-in-depth corrections.
+
+PRIOR TICK (A, auction stale-round_end competition-skip — INVESTIGATED, reserve-bounded, NOT a safety bug, fix
 PROPOSED not applied): NEW FINDING. round_end is set at SETTLE (execute lib.rs:1716 = settle_slot + round_length),
 but the next round does not actually OPEN until claims drain (process_claim reopen, 1842-1843, sets state=OPEN but
 does NOT reset round_end). So if a settled book's claims take LONGER than round_length, the reopened round inherits
