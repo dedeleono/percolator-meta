@@ -34,9 +34,9 @@ const PERM_ALL: u8 = 7;
 const TIMELOCK_1_WEEK_SECS: u32 = 7 * 24 * 60 * 60;
 
 fn squads_program_bytes() -> Vec<u8> {
-    // Reuse the Squads v4 fixture dumped for the program/ handover tests.
+    // Squads v4 fixture (dumped from mainnet) used by the genesis->handoff chain tests.
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("../program/tests/fixtures/squads_v4.so");
+    path.push("tests/fixtures/squads_v4.so");
     assert!(path.exists(), "Squads v4 binary missing at {:?}", path);
     std::fs::read(path).unwrap()
 }

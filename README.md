@@ -45,7 +45,6 @@ are interchangeable behind the same distribution seam.
 | `twap-program/` | Deployable BPF for the **authority chain** and the post-mint **uniform-price (Dutch) buy/burn auction**. After the mint, Squads rotates the asset-0 insurance operator to its PDA; it then runs permissionless rounds that pull the burn-share of insurance *surplus*, clear a ranked, uncancellable bid book at one marginal price, and burn (or treasury-send) the bought COIN. Never reaches principal. |
 | `twap/` | Reference library for the buy/burn (schedule + bid book); only its overflow-safe rate comparator is reused on-chain. |
 | `setup/` | Host-side helper: init the fixed-supply 42M COIN mint and revoke the mint authority. |
-| `program/`, `governance/` | The original *custodial* single-program design — superseded by the above, retained and green, removable. |
 
 ## Lifecycle
 

@@ -204,10 +204,12 @@ THIS SESSION COMPLETED two exhaustive audits (no other bug found):
   spent -> netting; lone farmer <=1/N; time-weight = registration-age common factor, ACCEPTED limitation); cross-
   genesis foreign-pool scope BLOCKED by atomic-init + non-default scope + register binding (do NOT add on-chain
   binding per atomic-init memory).
-OUTSTANDING (unchanged, deferred OUT of standalone scope): #11 — the DEPRECATED meta program's
-process_kickstart_genesis_market CPIs the percolator's REMOVED UpdateInsurancePolicy (tag 33); root-caused, NOT to be
-actioned without user confirmation (deprecated program + read-only percolator); the 4 integration.rs fails are
-pre-existing from this, not a regression.
+OUTSTANDING: none. (Deferred #11 — the DEPRECATED meta program's process_kickstart CPI to the percolator's
+REMOVED UpdateInsurancePolicy — is RESOLVED by removal: the legacy custodial crates program/ (rewards-program) +
+governance/ (governance-adapter) were deleted per user direction, taking the 4 pre-existing integration.rs fails
+with them. The Squads v4 fixture chain.rs depends on was relocated program/tests/fixtures -> twap-program/tests/
+fixtures and the path updated; full chain suite 110 green. spec.md/audit.md still describe the removed legacy
+design (flagged to user, left as historical record).)
 
 ## Checkpoint — session refresh (prior session)
 FULL STANDALONE REGRESSION GREEN: 290 tests across the five real binaries + sim (subledger 73 = insurance_percolator
