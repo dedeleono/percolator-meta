@@ -7235,3 +7235,17 @@ FIX (our authorship): pin OFF_PORTFOLIO_SPENT == PERC_HEADER_LEN + offset_of!(P,
 in offsets.rs (parity with the other three residual offsets). The canary PASSES — 196 is currently correct — so
 this is a regression guard, not a current bug. VERDICT: HARDENED (closes the finding-T canary gap on the
 load-bearing spent field). KEEP. rd e2e 35 + offsets 3 green.
+
+### [HARDENED — twap insurance-offset canary now pins the SRC const, not a re-declared copy] tick (A)
+SURFACE (twap-program offset canary, finding-O/T discipline). Continuing the offset-canary audit (after the rd
+SPENT gap): the twap surplus-pull reads asset-0 insurance@749 (INSURANCE_OFFSET = 448+301); a drift to the
+adjacent vault@733 (larger) would over-pull surplus into depositor PRINCIPAL (finding-O LOF class). The canary
+test insurance_offset_matches_real_percolator_slab DID pin the value against offset_of!(MarketGroupV16Header,
+insurance) + asserted vault != insurance — but it used a LOCAL `const INSURANCE_OFFSET = 448+301` ("must match
+twap src"), NOT the actual src const. So a src-const code-drift (e.g. someone edits the src to 448+305) would
+pass the local-copy assert yet silently change the real read — the canary's whole purpose, defeated.
+FIX (our authorship): made twap src INSURANCE_OFFSET `pub` and changed the test to `use twap_program::
+INSURANCE_OFFSET` so it pins the ACTUAL src const against the real struct (parity with rd offsets.rs, which
+imports its OFF_PORTFOLIO_* consts). The value (749) is unchanged, so the .so behavior is identical (rebuilt for
+hygiene). VERDICT: HARDENED (closes the src-const-drift gap on the most LOF-critical raw offset). KEEP. twap
+chain 102 green.

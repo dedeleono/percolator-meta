@@ -1752,7 +1752,9 @@ fn e2e_attacker_cannot_grant_operator_bypassing_squads() {
 // `vault` is the finding-O failure class: trader capital would be pulled as "surplus".
 #[test]
 fn insurance_offset_matches_real_percolator_slab() {
-    const INSURANCE_OFFSET: usize = 448 + 301; // must match twap src
+    // Pin the ACTUAL twap src const (not a re-declared copy) — a src-const drift would otherwise pass a
+    // local-copy assert yet silently change the real surplus-pull read.
+    use twap_program::INSURANCE_OFFSET;
     // (1) pin against the real percolator struct.
     use percolator::MarketGroupV16HeaderAccount as H;
     assert_eq!(INSURANCE_OFFSET, 448 + core::mem::offset_of!(H, insurance),

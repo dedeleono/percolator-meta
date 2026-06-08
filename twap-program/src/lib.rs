@@ -263,7 +263,9 @@ fn create_pda_robust<'a>(
 // vault here would let the surplus pull treat live trader/depositor capital as "surplus"
 // (the finding-O failure class). The `insurance_offset_matches_real_percolator_slab` canary
 // pins this exactly against the real percolator struct via offset_of!.
-const INSURANCE_OFFSET: usize = 448 + 301;
+// pub so the offset canary test pins THIS const (not a re-declared copy) against the real percolator struct —
+// a src-const drift on the surplus-pull insurance read would over-pull into depositor principal (LOF).
+pub const INSURANCE_OFFSET: usize = 448 + 301;
 
 /// Read the market's asset-0 insurance balance directly from the slab account bytes.
 fn read_asset0_insurance(slab_data: &[u8]) -> Result<u128, ProgramError> {
