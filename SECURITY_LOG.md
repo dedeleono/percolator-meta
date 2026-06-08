@@ -3,8 +3,22 @@
 Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdict.
 
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
-STATE: 301 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 51,
+STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
+LATEST TICK (D, harden last tick's free-farm fix — pin the live-cap is ONE-SIDED): the new live-cap scales points
+by min(1, live_net/frozen_net). Last tick pinned the DOWN side (recovery -> cap down). This pins the symmetric
+danger: it must NOT pay UP when live_net > frozen_net. If a trader takes MORE loss after crystallizing and skips
+the re-crystallize, that extra loss is in NEITHER stake.points NOR the frozen denominator; scaling the payout up
+to the live net would credit un-accounted loss and let the trader over-draw the cohort, starving honest
+co-stakers. New test live_cap_never_pays_above_the_frozen_points_when_live_net_grew_without_recrystallize (co-staker
+H + T whose live grows to 14_000 > frozen 6_000 without re-cry): T is paid its FROZEN 60_000 (50%), H keeps 50%.
+MUTATION-VERIFIED: dropping the `|| live_net >= frozen_net` guard (scale up) makes T draw the whole 400_000 cohort
+(over-allocation-capped) and starve H -> test FAILS; reverted, git clean, rd e2e 45 green. Also analyzed the fix's
+new dependency on the live portfolio at claim: SAFE — the percolator residual counters are monotonic+persistent
+(crystallized/spent/received only rise), so a legit claimant's live_net stays >= 0 and an attacker cannot zero a
+victim's counters; the portfolio account persists past a position close. Cumulative mutation campaign: guard-
+removal[35], off-by-one[3], equivalent[1], constant-magnitude[1], offset-constant[1], live-cap[1], snap-baseline[1],
+last-write-clock[1], share-pricing-source[1], one-sided-cap[1] + 2 defense-in-depth; NO uncaught mutation.
 REAL FREE-FARM FOUND + FIXED THIS TICK (D, stale-points wash bypass of net-by-spent): the net-by-spent anti-wash
 defense assumes a stake's frozen points reflect the FINAL net (crystallized - spent). But the TRADER net is NOT
 monotonic (spent rises -> net drops), and the LP/trader CLAIM used the FROZEN stake.points with NO live re-read

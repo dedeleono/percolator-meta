@@ -1454,6 +1454,53 @@ fn trader_recovered_loss_without_recrystallize_stale_points_vs_honest_codeposit(
     assert_eq!(h_got, 200_000, "H is diluted by A's frozen-denominator share (the locked half is a grief, not A's profit)");
 }
 
+// LIVE-CAP ONE-SIDEDNESS (the fix must not over-pay either, sweep): the claim live-cap scales points by
+// min(1, live_net/frozen_net). It caps DOWN on a recovery (live < frozen) — but it must NEVER pay UP when the
+// live net is HIGHER than the crystallized (frozen) net. If a trader takes MORE loss after crystallizing and
+// does NOT re-crystallize, the new loss is in neither stake.points NOR the frozen DENOMINATOR; paying it at
+// claim (live > frozen) would credit un-accounted loss and over-draw the cohort. Pin that the claim pays the
+// FROZEN value (the trader must re-crystallize to get credit for the new loss).
+#[test]
+fn live_cap_never_pays_above_the_frozen_points_when_live_net_grew_without_recrystallize() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let env = setup(&mut svm, &payer, 1_000_000); // trader cohort = 400_000, fee = 0
+    set_slot(&mut svm, 100);
+
+    // Honest co-staker H: a 6_000 loss, crystallized and LEFT as-is (frozen == live).
+    let h = Keypair::new(); let h_pf = Pubkey::new_unique();
+    set_portfolio_full(&mut svm, &h_pf, &env.stub_perc, &env.market, &h.pubkey(), 0, 0, 0);
+    register(&mut svm, &payer, &env, &h, &h.pubkey(), &h_pf, COHORT_TRADER).expect("reg H");
+    // T: an IDENTICAL 6_000 loss, same crystallize, but its live net later GROWS without a re-crystallize.
+    let t = Keypair::new(); let pf = Pubkey::new_unique();
+    set_portfolio_full(&mut svm, &pf, &env.stub_perc, &env.market, &t.pubkey(), 0, 0, 0);
+    register(&mut svm, &payer, &env, &t, &t.pubkey(), &pf, COHORT_TRADER).expect("reg T");
+    set_slot(&mut svm, 100 + 1024); // tenure 1024 -> floor_log2 = 10 -> each frozen = 10 * 6_000 = 60_000
+    set_portfolio_full(&mut svm, &h_pf, &env.stub_perc, &env.market, &h.pubkey(), 0, 6_000, 0);
+    set_portfolio_full(&mut svm, &pf, &env.stub_perc, &env.market, &t.pubkey(), 0, 6_000, 0);
+    crystallize(&mut svm, &payer, &env, &h, &h_pf).expect("cry H");
+    crystallize(&mut svm, &payer, &env, &t, &pf).expect("cry T");
+
+    // T's loss GROWS to 14_000 (live net 14_000 > frozen 6_000), but T does NOT re-crystallize: the extra loss
+    // is in NEITHER stake.points NOR the frozen DENOMINATOR (still 60_000 + 60_000 = 120_000).
+    set_slot(&mut svm, 100 + 2048);
+    set_portfolio_full(&mut svm, &pf, &env.stub_perc, &env.market, &t.pubkey(), 0, 14_000, 0);
+
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    freeze(&mut svm, &payer, &env).expect("freeze");
+    let t_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &t.pubkey());
+    let h_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &h.pubkey());
+    claim(&mut svm, &payer, &env, &t, &t_ata, None).expect("T claim");
+    claim(&mut svm, &payer, &env, &h, &h_ata, None).expect("H claim");
+    // One-sided cap: live (14_000) > frozen (6_000) -> min(1, live/frozen) = 1 -> T is paid its FROZEN 60_000,
+    // NOT scaled up to the un-crystallized 14_000. So T and H split 50/50; a pay-UP bug would let T draw
+    // 140_000/120_000 (capped at the whole 400_000 cohort) and starve H.
+    assert_eq!(token_amount(&svm, &t_ata), 200_000, "T paid its FROZEN points (50%), NOT the higher un-crystallized live net");
+    assert_eq!(token_amount(&svm, &h_ata), 200_000, "the honest co-staker keeps its full 50% — T's grown live net did not steal from H");
+}
+
 // ATTACK PROBE (crystallize replay / denominator inflation): an LP/trader stake's points are the Δ of a
 // MONOTONIC percolator counter since the register-time snapshot — `new_pts = counter - residual_snap`, and
 // the cohort denominator is updated subtract-old/add-new (`slot = slot - stake.points + new_pts`,
