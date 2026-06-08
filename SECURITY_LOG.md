@@ -5,7 +5,21 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (D, offset-discipline regression audit on the rd test reads — CLEAN after my recent struct touches):
+LATEST TICK (cross-cutting, CLOSE the offset-masking class — prior "latent gap" was over-cautious): finished the
+offset-discipline thread. The MASKING risk (a test silently passing a guard) requires a test that WRITES (injects)
+at a stale offset so the value lands in the wrong field — exactly the gv-binding case (it wrote support_principal@80
+after GG shifted it to 88, masking the binding; FIXED). A test that READS at a stale offset instead FAILS its
+value assertion (self-canary), never masks. Audited the rd accordingly: ALL rd test writes are to STUB percolator/
+subledger accounts (set_portfolio/set_position — crystallized@196, shares@104, etc.), and those offsets ARE
+canaried (portfolio_residual_counter_offsets_match + subledger_position_offsets_match assert them == offset_of!
+the real structs). There are ZERO rd test writes to its OWN Stake/Config bytes, and its own-struct reads (pts@176,
+denom@402) self-canary. So the rd has NO masking-risk surface — my prior "latent gap" note conflated reads with
+writes. Spot-checked subledger/distribution own-struct writes too: the few (forged-position principal@72, etc.)
+are NOT load-bearing for their guard (the forgery is rejected by the owner/PDA checks BEFORE principal is read, so
+a drift cannot mask the rejection). CONCLUSION: the offset-masking class is FULLY CLOSED across the stack — the gv
+binding test was the sole instance, now fixed + mutation-verified. No code change.
+
+PRIOR TICK (D, offset-discipline regression audit on the rd test reads — CLEAN after my recent struct touches):
 applied the offset-discipline lens (which found the GG-blind gv test) to the residual-distributor TEST reads, since
 I recently touched the rd structs (earnings_snap@152 repurposing + the claim live-cap). Verified the raw-offset
 reads against the current serialize: pts = data[176..192] == Stake.points (serialize:461); denom = data[402..418]
