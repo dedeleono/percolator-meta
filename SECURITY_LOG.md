@@ -7965,3 +7965,22 @@ Re-examined surface-B math for correctness (not just test-presence). All sound +
   (cannot_over_withdraw_to_drain_a_codepositor, splitting_an_impaired_exit_cannot_beat_the_pro_rata).
 VERDICT: the surface-B governance + share math is adversarially sound. No free-vote, no quorum/majority manipulation,
 no impairment rounding edge. No change.
+
+### [AUDIT — Squads v4 reliance re-examined adversarially: the twap inherits Squads security soundly] tick (A)
+The twap gates every privileged action on the Squads vault (the DAO's executor) and inherits Squads' multisig +
+timelock + replay protection. Re-examined that reliance for gaps:
+- VAULT SIGNING: squads_vault is a Squads PDA — only the Squads program signs for it (via execute, post approval +
+  timelock). The twap binds config.squads_vault at init; a foreign/attacker multisig vault != the bound one is
+  rejected (e2e_config_a_cannot_mutate_config_bs_book, the parasite-config test). No path to a vault signature
+  without a real Squads execute.
+- MULTISIG VALIDATED at init: time_lock >= 1 week enforced (twap_config_rejects_a_multisig_below_the_one_week_
+  timelock); the DAO is the config_authority; a non-DAO/non-timelock signer can't drive the operator grant or any
+  setter (the gating tests).
+- EXECUTE REORDER: Squads can execute any approved+ready tx (not strict index order), but every twap action is
+  SELF-CHECKING (floor monotonic, bps capped, one-shot inits) so no reorder yields a harmful sequence; the finding-O
+  re-arm is blocked irrespective of order (raise-to-MAX rejected). REPLAY: e2e_completed_squads_execute_cannot_be_
+  replayed. STALE-INDEX: DAO-controlled (its own multisig) -> no cross-party harm.
+VERDICT: the twap's Squads reliance is sound; it inherits Squads' approval/timelock/replay guarantees and binds the
+vault so they can't be sidestepped. This completes the adversarial re-examination of ALL surfaces (A finding-O +
+captured-DAO + Squads, B governance/share math, C distribution, D anti-wash) — the finding-O lens found 1 real bug
+(the principal-drain monotonicity bypass, FIXED) and confirmed every other defense correct, not merely tested. No change.
