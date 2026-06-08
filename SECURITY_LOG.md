@@ -10537,3 +10537,24 @@ trigger_with_a_substituted_low_outstanding_pool_cannot_fake_quorum_to_steal_the_
 pool faked quorum). Reverted -> 56/56 subledger green, src clean. SHARP. No code change. VERDICT: the quorum
 denominator is bound to the genesis's own pool AND read live; a substituted-pool minority-capture supply-theft
 is closed and mutation-proven.
+
+## Tick — winner-take-all irreversibility: distribution seal_winner is_sealed() gate MUTATION-VERIFIED across the gv->distribution CPI (surfaces B+C)
+
+Audited the gv trigger account bindings (lib.rs:713): pv.config == config (734, no cross-config pv), pv.executed
+(no same-proposal double-trigger), distribution_program/config/proposal bound (737-739), anti-bait-and-switch
+snapshot (748-755), live-pool quorum key-bind (761, mutation-verified last tick). All sound.
+
+The keystone is the CROSS-PROPOSAL winner-take-all irreversibility: two competing gv proposals share ONE
+distribution config, and a post-execution retract lets voters shift weight from the executed proposal onto a
+rival, so the gv layer ALONE does not guarantee a single winner (each proposal has its own pv.executed). The
+TRUE single-winner gate is distribution seal_winner's `if config.is_sealed() -> reject` (lib.rs:506): once the
+first winner seals the shared distribution config, any second proposal's trigger reverts at the seal CPI. Without
+it, a second proposal could RE-SEAL the config -> two winners / the COIN redirected to a proposal voters did not
+ultimately choose / supply distributed twice (LOF + governance subversion).
+
+MUTATION-VERIFIED across the program boundary: neutered the seal_winner is_sealed() guard (`if false && ...`),
+rebuilt the real distribution .so -> a_second_proposal_cannot_reseal_after_a_winner_is_sealed (genesis-vote
+/tests/seal.rs) FAILED — the gv trigger(B) CPI now re-sealed the config after A had won. Reverted -> gv seal
+17/17 + distribution 32/32 green, src clean. SHARP. No code change. VERDICT: winner-take-all irreversibility is
+enforced by the distribution seal is_sealed() gate (the cross-program single-winner guarantee), mutation-proven
+end to end through the gv->distribution seal CPI.
