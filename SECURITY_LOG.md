@@ -8167,3 +8167,23 @@ copy not). All uniformly covered:
   (..._rejects_a_non_spl_owned_token_shaped_... per program).
 VERDICT: the parallel-implementation class is closed — no shared-logic copy is left with a pinned sibling and an
 unpinned self. The rd time-weight floor was the sole gap; now pinned. No change.
+
+### [AUDIT — residual lenses (off-by-one boundary, state-completeness, ordering, rent) all covered/marginal] tick (A-D)
+After the 4 discovery lenses converged (finding-O generalizations, symmetry, discriminator-parity, parallel-impl),
+swept the remaining structural lenses; no new substantive gap:
+- OFF-BY-ONE boundaries: the IMPACTFUL ones are exactly-pinned — rd freeze finalize-window (freeze at window-1
+  rejected, at exactly window succeeds: self_service_lifecycle_guards...), distribution claim window (succeeds
+  through the last slot, fails exactly at window-end: claim_succeeds_through_the_last_window_slot...), gv vote-weight
+  age-2, reserve r>=reserve inclusive. The cancel-cooldown / round_end boundaries are +1-tested and their exact
+  off-by-one is MARGINAL by design: the cancel cooldown is 2*round_length which spans the FIRST execute at
+  round_end = place_slot + round_length, so the bid is committed across the execute regardless of a 1-slot
+  difference at the cooldown end -> no anti-spoof impact.
+- STATE COMPLETENESS: the auction OPEN->SETTLED->(permissionless claims drain)->OPEN has no stuck state (a settled
+  book with unclaimed bids is drained by permissionless claims; a closed refund-ATA is recoverable); rd/distribution
+  lifecycles are one-shot-guarded with no orphan state.
+- CROSS-PROGRAM ORDERING: each CPI is gated (execute requires config==operator 2404; trigger checks quorum/majority
+  before the seal CPI) and atomic (one tx); the handoff floor=MAX window pulls nothing.
+- REALLOC / RENT: all accounts fixed-size (no realloc), created rent-exempt, never drained of rent.
+VERDICT: no new substantive vector — the residual lenses are covered or marginal-by-design. The standalone sweep is
+exhaustively complete across behavioral, adversarial-correctness, structural, threat-model, build, and free-farm axes.
+No change.
