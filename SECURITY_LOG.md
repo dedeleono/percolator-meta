@@ -8228,3 +8228,25 @@ strand late claimers / DoS?); both sound + comprehensively pinned:
   burn_unclaimed_also_burns_unallocated_headroom_full_conservation 693, window-cutoff 664).
 VERDICT: no LOF/DoS — every multi-slice allocation (4 rd cohorts, the distribution entry list) is bounded <= the
 funded vault, so the vault can never be over-drawn and no claimer is stranded. No code change; suites green.
+
+### [VERIFIED — share-inflation / donation skim / impaired redemption (B): defended + pinned math AND end-to-end] tick (B)
+Traced the ERC4626 first-depositor share-inflation/donation-skim vector (prompt's "share inflation / impaired
+redemption rounding") through both the math and the real subledger binary; SOUND and comprehensively pinned:
+- DEFENSE: VIRTUAL_SHARES=1_000_000 offset applied SYMMETRICALLY (lib.rs:322 mint = amount*(S+V)/(B+1);
+  lib.rs:330 redeem = shares*(B+1)/(S+V), both floor). Deposit prices off the RAW donatable vault balance
+  (process_deposit:602 token_balance(vault)), so the donation surface is real for own-vault pools — but the
+  offset makes it (a) self-defeating (the attacker loses ~half any donation to unredeemable virtual shares) and
+  (b) dust-bounded (victim skim <= ~victim/V). Realistic deposits mint S = amount*1e6 >> V, so the held-back
+  redemption dust is negligible; only sub-V dust depositors forfeit (the intended self-defeat).
+- ZERO-SHARE LOF GUARD: a victim deposit that would round to 0 shares is REJECTED before any token transfer
+  (lib.rs:596 own-vault / :980 slab), so principal is never silently donated to existing shareholders.
+- COVERAGE: math unit tests (lib.rs first_depositor_inflation_skim_is_bounded_and_self_defeating 1612,
+  impaired_pool_redemptions...conserve_no_insolvency 1645) + END-TO-END vs the real binary
+  (subledger.rs first_depositor_inflation_attack_cannot_skim_a_later_depositor 394,
+  a_deposit_that_rounds_to_zero_shares_is_rejected_before_any_transfer 430 [atomic reject, ATA untouched],
+  impaired_pool_is_pro_rata_and_order_independent 465).
+- GENESIS THREAT MODEL: the donation route doesn't even exist in the genesis flow — the only way to raise asset-0
+  insurance without minting shares is tenure-shared market PnL (no permissionless TopUp; insurance is authority-
+  gated). So the donation is a worst-case hypothetical the attacker cannot even stage in production.
+VERDICT: no LOF/free-farm — the share price can't be weaponized to skim a later depositor's principal, and a
+round-to-zero deposit can't silently lose funds. No code change; suites green.
