@@ -7789,3 +7789,24 @@ REPRO: dao_cannot_re_arm_the_max_sentinel_to_bypass_the_floor_monotonicity (real
 `if reserved_floor != MAX && (new_floor < reserved_floor || new_floor == MAX) { reject }`. A legitimate "pause all
 pulls" is still any high REAL value (surplus saturates to 0); MAX is reserved for the pre-handoff unset state alone.
 Rebuilt twap_program.so. VERDICT: REAL LOF — fixed + pinned. twap chain 103 green (no regressions).
+
+### [AUDIT — sentinel-overloading bug class swept stack-wide; only reserved_floor MAX was reachable (fixed)] tick (A-D)
+Follow-up to the finding-O bug (u128::MAX overloaded as both "unset sentinel" and a valid maximal floor -> 2-step
+monotonicity bypass). Swept every sentinel comparison in all 5 programs for the same flaw — a value used as "unset"
+that is ALSO a reachable valid value. Findings:
+- twap reserved_floor == u128::MAX: REACHABLE overloading (raise-to-MAX re-arms the sentinel) -> FIXED last tick
+  (dao_cannot_re_arm_the_max_sentinel_to_bypass_the_floor_monotonicity).
+- Pubkey::default() as "unset" (gv voted_proposal, distribution sealed_proposal, subledger own-vault
+  percolator_program/market_slab/vote_authority, rd unscoped markets/extra_markets, twap init keys): SAFE — a real
+  pubkey never collides with all-zeros, and default is explicitly REJECTED everywhere it would be a valid input
+  (distribution append rejects default recipient; rd register rejects default recipient; twap init rejects default
+  metadao/percolator).
+- freeze_slot == 0 (rd/twap "not frozen") and start_slot == 0 (gv "no vote weight"): the 0 sentinel is UNREACHABLE
+  as a real value — the freeze/deposit slot is the live clock, never 0 in production; and both fail CONSERVATIVELY
+  (no claim / no weight, never an over-pay).
+- subledger read_asset0_insurance u64::try_from(v).unwrap_or(u64::MAX): the u64::MAX fallback is UNREACHABLE — SPL
+  token amounts are u64-bounded so the asset-0 insurance (a collateral balance) always fits u64; the try_from never
+  fails. Even if it did, the impaired-haircut transfer is capped by the vault balance. (Noted: the fallback DIRECTION
+  is over-pay, but it cannot be reached.) The twap execute reads insurance as full u128 (no clamp).
+VERDICT: the finding-O reserved_floor MAX was the SOLE reachable instance of the sentinel-overloading class; all
+other sentinels are either collision-free (default pubkey), unreachable (slot 0, u64-clamp), or conservative. No change.
