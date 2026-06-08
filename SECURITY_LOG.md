@@ -7221,3 +7221,17 @@ TEST: init_book_rejects_a_non_spl_owned_coin_escrow_fail_fast (real twap+squads 
 non-SPL token-shaped coin_escrow is rejected; the book PDA stays uninitialized. twap chain 102 green.
 CLASS NOW CLOSED stack-wide: distribution (init_config), rd (freeze), subledger (init_pool/init_insurance_pool)
 all GUARD it; twap (init_book) hardened for fail-fast; gv has no token-account bindings.
+
+### [HARDENED — rd offset canary gap: residual_SPENT offset was un-pinned (net-by-spent drift risk)] tick (D)
+SURFACE (residual-distributor tests/offsets.rs, finding-T offset discipline). Audit of the raw-offset reads vs
+their canaries: the percolator-portfolio canary pinned market_group + owner + crystallized_loss + received via
+offset_of!(PortfolioAccountV16Account, ...), but OFF_PORTFOLIO_SPENT (PERC_HEADER_LEN+196, added later for the
+finding-NZ net-by-spent) was the ONE residual offset left UN-canaried. It is load-bearing: trader net =
+crystallized - spent. A percolator struct reorder that drifted it would silently break the anti-wash defense — if
+`spent` read an always-0 field, churning would no longer raise spent (FREE-FARM, the spent-netting defeated); if
+it read a large field, every trader claim would net to 0 (DoS). The reorder would pass all behavioral tests (they
+run against the current struct) — only the offset_of! canary catches it.
+FIX (our authorship): pin OFF_PORTFOLIO_SPENT == PERC_HEADER_LEN + offset_of!(P, residual_spent_principal_atoms_total)
+in offsets.rs (parity with the other three residual offsets). The canary PASSES — 196 is currently correct — so
+this is a regression guard, not a current bug. VERDICT: HARDENED (closes the finding-T canary gap on the
+load-bearing spent field). KEEP. rd e2e 35 + offsets 3 green.

@@ -8,7 +8,7 @@ use core::mem::offset_of;
 use percolator::PortfolioAccountV16Account as P;
 use residual_distributor::{
     OFF_PORTFOLIO_CRYSTALLIZED_LOSS, OFF_PORTFOLIO_MARKET_GROUP, OFF_PORTFOLIO_OWNER,
-    OFF_PORTFOLIO_RECEIVED, PERC_HEADER_LEN,
+    OFF_PORTFOLIO_RECEIVED, OFF_PORTFOLIO_SPENT, PERC_HEADER_LEN,
 };
 
 // LP & trader cohort counters live in PortfolioAccountV16Account (read at HEADER_LEN..). PINNED so a
@@ -35,6 +35,16 @@ fn portfolio_residual_counter_offsets_match_the_real_percolator_struct() {
         OFF_PORTFOLIO_RECEIVED,
         PERC_HEADER_LEN + offset_of!(P, residual_received_atoms_total),
         "LP cohort: residual-received counter offset"
+    );
+    // CANARY GAP CLOSED (sweep): the SPENT counter (finding NZ net-by-spent) was added after this test and was
+    // the one residual offset left UN-pinned. It is load-bearing for the trader anti-wash defense — trader net =
+    // crystallized - spent. A percolator reorder that drifted it would silently break net-by-spent: if `spent`
+    // read an always-0 field, churning would stop being penalized (free-farm); if it read a large field, every
+    // trader claim would net to 0 (DoS). Pin it against the real struct like the others.
+    assert_eq!(
+        OFF_PORTFOLIO_SPENT,
+        PERC_HEADER_LEN + offset_of!(P, residual_spent_principal_atoms_total),
+        "trader cohort: residual-SPENT (self-recovery) counter offset — net-by-spent anti-wash"
     );
 }
 
