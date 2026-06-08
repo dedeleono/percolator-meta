@@ -2128,6 +2128,56 @@ fn re_voting_the_same_proposal_does_not_double_count_weight() {
     assert_eq!(read_cast(&env), 10 * amount, "global cast still exactly one vote");
 }
 
+// ANTI-DOUBLE-VOTE via a SECOND (non-canonical) BALLOT (surface B): the per-voter ballot is the PDA
+// ["gv_ballot", config, voter]; vote re-derives it and binds ballot_account.key == that PDA (lib.rs:607).
+// re_voting_the_same_proposal (above) shows re-using the CANONICAL ballot subtract-old/add-news (no
+// double-count) — but a voter could instead try to add weight a SECOND time by passing a DIFFERENT ballot
+// account, banking two ballots' worth of cast weight (a free majority/quorum inflation toward supply theft).
+// This pins that a non-canonical ballot is REJECTED so each voter has exactly one ballot. (The guard is
+// defense-in-depth: even with the 607 key-bind removed, the create path's invoke_signed seeds derive the
+// CANONICAL address — a fresh non-canonical account can't be created — and the re-vote path checks the stored
+// ballot.owner == voter; so the property holds via those backstops. This was the untested boundary the 607
+// mutation-blindness surfaced.)
+#[test]
+fn a_voter_cannot_double_vote_with_a_second_non_canonical_ballot() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("deposit");
+    let dest = Pubkey::new_unique();
+    let (_dp, gv_proposal) = create_and_register_proposal(&mut env, &ve, 1, &dest);
+    env.warp_slot(1124);
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("alice's one legitimate vote");
+    let support_after_one = gv_proposal_support(&env, &gv_proposal).0;
+    assert!(support_after_one > 0, "alice's single vote is counted");
+
+    // ATTACK: vote AGAIN but pass a DIFFERENT (non-canonical, fresh) ballot account to bank a second tally.
+    let rogue_ballot = Pubkey::new_unique();
+    let rogue_vote = Instruction {
+        program_id: gv_id(),
+        accounts: vec![
+            AccountMeta::new(alice.pubkey(), true),
+            AccountMeta::new(ve.gv_config, false),
+            AccountMeta::new(rogue_ballot, false), // NOT PDA(["gv_ballot", config, alice])
+            AccountMeta::new(gv_proposal, false),
+            AccountMeta::new(env.position_pda(&alice.pubkey()), false),
+            AccountMeta::new_readonly(env.pool, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(sub_id(), false),
+        ],
+        data: vec![3u8, 1u8], // vote, action=back
+    };
+    assert!(env.send(&[rogue_vote], &[&alice]).is_err(),
+        "a second vote with a non-canonical ballot must be rejected — one ballot per voter");
+    // The proposal's weight is UNCHANGED: alice still has exactly one ballot's worth, no double-count.
+    assert_eq!(gv_proposal_support(&env, &gv_proposal).0, support_after_one,
+        "the rejected second-ballot vote did not inflate the proposal's weight");
+}
+
 // ONE-VOTE-ONE-PROPOSAL (cross-proposal phantom inflation): a voter with a live ballot on proposal A must
 // RETRACT before backing proposal B (lib.rs:612). It is subtler than the same-proposal double-count: the
 // re-vote backout subtracts ballot.voted_weight from the PASSED proposal, so backing a DIFFERENT proposal B

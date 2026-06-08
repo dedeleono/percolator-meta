@@ -10801,3 +10801,21 @@ complementary self-unlock side -- vote_authority.is_signer -- is pinned by
 owner_cannot_self_unlock_a_live_vote_to_exit_capital, and the cross-program unlock<=>retract atomicity by the
 one-tx veto-exit test.) VERDICT: the vote-lock toggle is dual-signed -- neither a hostile authority can freeze a
 depositor nor an owner can self-unlock -- both directions mutation-proven.
+
+## Tick — anti-double-vote via a second non-canonical ballot pinned; gv ballot PDA bind characterized as defense-in-depth (surface B)
+
+Probed the gv vote ballot PDA bind (lib.rs:607, `ballot_account.key == PDA(["gv_ballot", config, voter])`).
+MUTATION-BLIND: neutering 607 fails NO test, which (correctly) reveals it is DEFENSE-IN-DEPTH, not a sole
+guard. The anti-double-vote property (one ballot per voter, so a voter can't bank a SECOND ballot's worth of
+cast weight = a free majority/quorum inflation toward winner-take-all supply theft) holds via two backstops:
+(1) create path (data_len==0) — create_pda's invoke_signed seeds derive the CANONICAL ballot address, so a
+fresh NON-canonical account simply cannot be created; (2) re-vote path (data_len!=0) — `ballot_account.owner
+== program_id` (624) + the stored `ballot.owner == voter` (628) reject any foreign existing ballot, and only
+gv ever creates ballots (at canonical addresses), so a non-canonical gv-owned ballot cannot exist.
+
+The mutation-blindness surfaced a genuine TEST GAP: no test directly exercised the second-ballot double-vote.
+Added a_voter_cannot_double_vote_with_a_second_non_canonical_ballot: alice votes once (canonical ballot), then
+a second vote passing a fresh NON-canonical ballot account is REJECTED, and the proposal's weight is UNCHANGED
+(no inflation). Real gv + subledger .so. KEEP (pins a real anti-double-vote/weight-inflation boundary,
+previously only implicit). subledger 57->58 green. No code change (property correct; 607 is a redundant early
+-reject backed by the canonical-PDA create + ballot.owner backstops).
