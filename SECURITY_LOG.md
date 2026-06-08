@@ -7372,3 +7372,21 @@ Also confirmed this tick: register_rejects_foreign_distribution_proposal (insura
 the gv<->distribution cross-config bind at REGISTRATION (a foreign-config proposal can't be registered -> can't
 win -> can't seal), so the trigger's pv.config==config_account check is defense-in-depth (the harm is blocked +
 tested upstream) — no separate cross-config trigger test needed.
+
+### [DIAGNOSED ROOT CAUSE — integration #11: percolator REMOVED UpdateInsurancePolicy (tag 33); meta kickstart calls it] tick
+Pinpointed the exact cause of the 4 pre-existing meta-program integration failures (genesis kickstart/exit/
+withdraw/full-lifecycle), NOT a sweep regression. The current percolator instruction decoder (v16_program.rs)
+has variants 37 UpdateLiquidationFeePolicy / 49 UpdateMaintenanceFeePolicy / 51 UpdateBackingFeePolicy / 55
+UpdateTradeFeePolicy / 58 UpdateFeeRedirectPolicy / 59 UpdateMarketInitFeePolicy — but there is NO
+UpdateInsurancePolicy arm: the instruction was REMOVED. percolator's insurance_withdraw policy
+(insurance_withdraw_max_bps:u16 / _deposits_only:u8 / _cooldown_slots:u64) is now set at market CONSTRUCTION via
+WrapperConfigV16 (init_market_account_zero_copy) — which is how the standalone subledger sets it (green). But the
+META program's process_kickstart_genesis_market (program/src/lib.rs) still CPIs PERC_IX_UPDATE_INSURANCE_POLICY=33
+to flip the market to deposits_only before the TopUp; the rebuilt percolator no longer recognizes tag 33 ->
+InstructionError(1, InvalidInstructionData). (TopUpInsurance tag 9 + InitMarket are fine — verified the widths.)
+TASK #11 reconcile (out of the standalone sweep's per-tick scope, meta-program only): the kickstart must establish
+the deposits_only insurance-withdraw policy via the percolator's CURRENT surface — either set it at the InitMarket/
+wrapper-config construction (the percolator forwarded InitMarket doesn't carry these fields today, so this likely
+needs the market built with the policy already in the wrapper, like subledger's make_live_market) or via whatever
+instruction replaced tag 33 — then drop the tag-33 CPI. Standalone sweep surfaces remain GREEN; flagged for the
+meta-program reconcile with this precise root cause.
