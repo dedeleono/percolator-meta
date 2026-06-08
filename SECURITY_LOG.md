@@ -10615,3 +10615,21 @@ locked-but-not-exited or exited-but-still-voting), (2) the lock is never a trap 
 in the same tx), (3) "those who stay decide" — the quorum numerator drops the instant a voter vetoes. Real gv +
 subledger + percolator .so. KEEP (pins a real, previously-untested boundary; the control + the cross-program
 intra-tx propagation make it non-tautological). subledger 56->57 green. No code change (behavior correct).
+
+## Tick — subledger deposit live-insurance share-pricing (late-depositor surplus-capture free-farm) MUTATION-VERIFIED (surface B)
+
+POLICY_WITH_SURPLUS prices each insurance deposit's shares against the LIVE asset-0 insurance read straight
+from the slab BEFORE the deposit's own top-up: shares_minted = mint_shares(amount, total_shares,
+insurance_before) where insurance_before = read_asset0_insurance(slab) (lib.rs:985). This is the free-farm
+guard for the late-depositor surplus-capture: when the market has earned a surplus (insurance > outstanding),
+the live price has risen, so a LATE depositor gets FEWER shares per atom and can only redeem their OWN
+principal back -- never a slice of the early backers' pre-existing surplus. If instead the deposit priced
+against a STALE-LOW insurance, the late depositor would mint cheap shares and skim the surplus that the early
+risk-takers earned (a direct value transfer / free-farm), and (mirror) could over-extract on exit.
+
+MUTATION-VERIFIED: priced mint_shares against 0 (stale-low/empty insurance) instead of the live
+insurance_before, rebuilt the real .so -> policy_with_surplus_late_depositor_cannot_capture_pre_existing_surplus
+FAILED (the late depositor minted enough cheap shares to capture pre-existing surplus, exceeding the
+principal-only recovery the test asserts). Reverted -> 57/57 subledger green, src clean. SHARP. No code change.
+VERDICT: the tenure-fair live-balance share pricing (no late-comer surplus capture) is the load-bearing guard
+and is mutation-proven. (Complements finding HB, the zero-share-deposit reject, verified earlier.)
