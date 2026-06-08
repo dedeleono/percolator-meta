@@ -9043,3 +9043,17 @@ MUTATION-VERIFICATION TALLY (4 critical invariants, all non-vacuous): finding-O 
 net-by-spent (320k churn farm), anti-wash fee (80k untaxed-wash), distribution entry-zeroing (co-recipient
 double-claim drain). The stack's mutation-blind-hardened tests are confirmed to genuinely catch real-fund regressions.
 No code change.
+
+### [MUTATION-VERIFIED — subledger vote-lock (Sybil-resistance core); critical-invariant mutation coverage now spans all 4 surfaces] tick (B)
+Mutation-tested the Sybil-resistance core — insurance_withdraw's `if position.vote_locked { return Err }` (lib.rs:1189),
+which blocks exiting principal while a genesis ballot is live (a vote MUST stay backed by at-risk capital).
+Temporarily mutated the guard to `if false` (allow exit while vote-locked), rebuilt, ran:
+- vote_locked_principal_cannot_exit_until_retracted (2142): FAILED at 2170 — a vote-locked withdraw now succeeds =
+  vote-WITHOUT-capital (the core Sybil break the whole bootstrap rests on). Caught.
+- owner_cannot_self_unlock_a_live_vote_to_exit_capital (2621): FAILED at 2683 — same. Caught.
+REVERTED + rebuilt + tests PASS; git clean.
+MUTATION-VERIFICATION COMPLETE across all 4 prompt surfaces (5 invariants, each catches its worst-case fund regression):
+  (A) finding-O floor -> 1.2M depositor-principal drain; (B) vote-lock -> vote-without-capital Sybil break;
+  (C) distribution entry-zeroing -> co-recipient double-claim drain; (D) net-by-spent -> 320k churn free-farm +
+  anti-wash fee -> 80k untaxed-wash free-farm. The stack's load-bearing LOF/DoS/free-farm guards are confirmed
+  NON-VACUOUS — each test genuinely fails when its guard is removed. No code change (all mutations reverted).
