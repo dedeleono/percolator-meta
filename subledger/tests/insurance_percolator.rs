@@ -838,6 +838,41 @@ fn deposit_into_real_percolator_insurance_records_position() {
     assert_eq!(env.pool_outstanding(), amount);
 }
 
+// SYBIL/FREE-FARM PROBE (vote-weight tenure gaming, sweep tick B): vote weight = floor(log2(now - start_slot)) *
+// principal, and genesis-vote reads the subledger position's start_slot. start_slot is LAST-WRITE-TIME: every
+// deposit stamps it to `now` (lib.rs:1087 insurance / :635 own-vault). The attack the reset blocks: deposit 1
+// DUST atom early to bank a very old start_slot, sit on it while tenure accrues, then TOP UP the real capital
+// right before voting — if start_slot stayed at the dust slot, the freshly-added principal would borrow the full
+// early tenure and mint a huge floor(log2(now-100)) * principal weight for capital that was only just put at
+// risk. The reset dates ALL the capital to the top-up slot, so late capital earns only its own (short) tenure.
+#[test]
+fn a_top_up_deposit_resets_start_slot_late_capital_cannot_borrow_early_tenure() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+
+    let (alice, alice_ata) = new_depositor(&mut env, 2_000_000);
+    let pool = env.pool;
+    let h1 = create_holding(&mut env, &pool);
+    let h2 = create_holding(&mut env, &pool);
+
+    // (1) Dust deposit at slot 100 -> banks start_slot = 100.
+    env.insurance_deposit(&alice, &alice_ata, &h1, 1).expect("dust deposit");
+    let (p1, s1, _) = env.read_position(&alice.pubkey());
+    assert_eq!(p1, 1, "1 atom of principal");
+    assert_eq!(s1, 100, "dust deposit dates the position to slot 100");
+
+    // (2) Warp ahead (within the market's oracle-freshness window), then TOP UP the real capital. The reset
+    // moves start_slot to the top-up slot.
+    env.warp_slot(1124);
+    env.insurance_deposit(&alice, &alice_ata, &h2, 1_999_999).expect("top-up");
+    let (p2, s2, _) = env.read_position(&alice.pubkey());
+    assert_eq!(p2, 2_000_000, "principal accumulates across both deposits");
+    assert_eq!(s2, 1124, "start_slot RESET to the top-up slot — the 1_999_999 cannot claim slot-100 tenure");
+    assert!(s2 > s1, "the tenure clock moved forward on the top-up; the dust-banked early slot is gone");
+    // The whole 2M is now dated to slot 1124: its vote weight uses floor(log2(now - 1124)) — the late capital
+    // earns only its own (short) tenure, exactly as a fresh deposit would. No early-tenure free-ride.
+}
+
 // Venue haircut behaviour of the insurance exit, against real percolator (finding L FIXED).
 //
 // SURPLUS: correctly EXCLUDED. percolator caps each WithdrawInsuranceLimited to

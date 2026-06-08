@@ -7006,3 +7006,17 @@ append alice (1/2); a [bob,carol] batch overflows -> rejected; a single dave app
 (proving bob's mid-loop write was rolled back — not partially committed); a further eve append is rejected as
 full; seal+claim distributes exactly alice(0)=10 + dave(1)=40. VERDICT: BLOCKED. KEEP (pins the capacity cap +
 partial-batch atomicity, distinct from supply cap). No behavior change. distribution 29 green.
+
+### [VERIFIED — Sybil/free-farm: a top-up deposit RESETS start_slot (late capital can't borrow early tenure)] tick (B)
+SURFACE (subledger deposit start_slot, the vote-weight tenure input). vote weight = floor(log2(now - start_slot))
+* principal, and genesis-vote reads the position's start_slot. start_slot is LAST-WRITE-TIME: every deposit
+stamps it to `now` (lib.rs:1087 insurance / :635 own-vault). The existing test only checked the FIRST deposit's
+start_slot (==100). The attack the reset blocks: deposit 1 DUST atom early to bank a very old start_slot, let
+tenure accrue, then TOP UP the real capital right before voting — if start_slot stayed at the dust slot, the
+freshly-added principal would borrow the full early tenure and mint a huge floor(log2(now-100)) * principal weight
+for capital only just put at risk (a cheap weight inflation / Sybil-quorum lever).
+TEST: a_top_up_deposit_resets_start_slot_late_capital_cannot_borrow_early_tenure (real subledger+perc .so): dust
+deposit at slot 100 (start_slot 100); warp to 1124; top-up 1_999_999 -> principal 2_000_000 AND start_slot RESET
+to 1124 (not kept at 100). So the whole stake is dated to the top-up slot; late capital earns only its own short
+tenure. (Note: kept the warp inside the market's 2000-slot oracle-freshness window; a 1M-slot warp made percolator
+reject the deposit as stale, err 0x1b.) VERDICT: BLOCKED. KEEP. No behavior change. subledger 48 + 10 + 10 green.
