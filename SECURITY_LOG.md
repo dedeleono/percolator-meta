@@ -11149,3 +11149,26 @@ principal redeems to the attacker's ATA). Neutered the owner clause (kept the po
 Reverted -> subledger.rs 11/11 + insurance_percolator 58/58 green, src clean. SHARP. No code change. VERDICT:
 the own-vault pool is the second subledger pool type and its withdraw is owner-bound (no cross-owner theft),
 mutation-proven; both subledger pool paths (own-vault + insurance) are now verified.
+
+## Tick — genesis_setup COIN-init mint-authority revoke (fixed-supply at the PRODUCTION source) MUTATION-VERIFIED; setup + twap crates covered
+
+Enumerated ALL test files; two crates were outside this campaign's checkpoints: setup (genesis_setup — the
+"coin/mint/activate" COIN producer) and twap (the surplus ranking LIBRARY, 24 comparator unit tests, green; the
+twap-PROGRAM reimplements the comparator, so the library is the reference impl). Both build + pass.
+
+genesis_setup::init_fixed_supply_coin_ixs is the COIN PRODUCTION source — it emits: InitializeMint with NO
+freeze authority (holders can never be frozen) -> mint_to the FULL 42M supply to the destination -> set_authority
+(MintTokens, None) to REVOKE the mint authority (fixed supply, forever). The revoke is the no-inflation guard at
+the source: distribution::init_config later CHECKS mint_authority.is_none() (verified earlier) and refuses to
+bind a mintable COIN, but THIS is what makes the COIN fixed-supply in the first place. Without the revoke, the
+genesis COIN keeps a live mint authority -> its holder could mint unlimited COIN (the COIN IS the MetaDAO ->
+unbounded governance + value dilution = supply theft / free-farm) -- and only the downstream distribution check
+would stop it from being distributed.
+
+MUTATION-VERIFIED: removed the set_authority(MintTokens, None) revoke instruction from init_fixed_supply_coin_ixs
+-> default_init_creates_a_fixed_supply_42m_coin FAILED (the produced mint still had a live authority). Reverted
+-> setup 1/1 (+lib) green, src clean. SHARP. No code change. VERDICT: the genesis COIN is fixed-supply +
+non-freezable AT PRODUCTION (mint authority revoked in the same init tx, full supply in the destination),
+mutation-proven -- closing the COIN-supply integrity chain end to end: setup PRODUCES the revoked-authority
+fixed-supply COIN, distribution VERIFIES it (init_config mint-authority check), and rd/distribution distribute
+it conservation-bounded. All 11 integration test files across the workspace are now examined + verified.
