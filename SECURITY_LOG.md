@@ -11091,3 +11091,24 @@ rate is always well-defined (den != 0 at both init_book and set_reserve), so the
 by a degenerate reserve -- completing the twap DAO-setter bounds verification (reconfigure + set_economics
 joint cap + set_reserved_floor monotonicity/anti-re-arm + set_reserve den + set_coin_sink + set_bid_fee, all
 require_squads_vault-gated).
+
+## Tick — burn_unclaimed window cutoff (permissionless burn-during-window LOF) MUTATION-VERIFIED; attacker-facing surface complete (surface C)
+
+burn_unclaimed is PERMISSIONLESS (any cranker), so its window gate is attacker-facing: `clock.slot <
+window_end -> reject` (lib.rs:638) bars the burn until the claim window has CLOSED. Without it, a griefer
+cranks burn_unclaimed DURING the window and destroys the entire un-claimed vault balance -- including COIN
+that named recipients have not yet claimed but are still entitled to (a direct LOF / griefing). The cutoff
+mirrors the claim cutoff exactly (claim rejects clock.slot >= window_end; burn rejects clock.slot < window_end)
+-> no overlap, no gap: every slot is either claimable XOR burnable, never both, never neither. The window_end
+uses saturating_add so an absurd claim_window never overflow-reverts both paths (graceful, never a brick).
+
+MUTATION-VERIFIED: neutered the burn window cutoff (`if false && clock.slot < window_end`), rebuilt the real .so
+-> TWO tests caught it: burn_unclaimed_is_rejected_during_the_claim_window AND
+an_absurd_claim_window_saturates_and_never_bricks_claims. Reverted -> 32/32 distribution green, src clean. SHARP.
+
+MILESTONE: every PERMISSIONLESS / attacker-callable instruction across the stack now has its guards
+mutation-proven -- twap {execute, claim, place_bid, cancel_bid}; rd {crystallize, freeze, claim}; gv {vote,
+trigger}; distribution {claim, burn_unclaimed (this tick)}; subledger {deposit, withdraw, set_vote_lock}. The
+remaining unverified guards are all on DAO-gated (Squads-vault, timelock'd) setters/init -- setup-integrity /
+DAO-footgun, not attacker-reachable. The attacker-facing LOF/DoS/free-farm/theft/freeze surface is exhaustively
+mutation-verified against the real binaries. No code change.
