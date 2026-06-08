@@ -5,7 +5,20 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (D, mutation-verify the crystallize denominator subtract-old — SHARP, not mutation-blind): probed
+LATEST TICK (D, offset-discipline regression audit on the rd test reads — CLEAN after my recent struct touches):
+applied the offset-discipline lens (which found the GG-blind gv test) to the residual-distributor TEST reads, since
+I recently touched the rd structs (earnings_snap@152 repurposing + the claim live-cap). Verified the raw-offset
+reads against the current serialize: pts = data[176..192] == Stake.points (serialize:461); denom = data[402..418]
+== Config.lp_total_points (LIVE, serialize:354) — and crystallize_is_idempotent registers COHORT_LP, whose
+cohort_points_mut targets lp_total_points, so the read hits exactly the field crystallize updates. NO drift: the
+earnings_snap repurposing reused an EXISTING field (152..168) without shifting any offset, and points@176 /
+lp_total_points@402 are unchanged. So my recent rd changes did not silently blind any test (contrast the GG
+widening, which DID shift gv offsets). LATENT-GAP NOTE (follow-up, lower risk): the rd has offset-CANARY tests for
+the PERCOLATOR/SUBLEDGER fields it READS (portfolio_residual_counter_offsets_match, subledger_position_offsets_
+match) but NOT for its OWN Stake/Config offsets that the tests poke (pts@176, denom@402) — a future rd struct
+reorder could re-blind them; the structs would need to be pub to offset_of!-canary them. No code change.
+
+PRIOR TICK (D, mutation-verify the crystallize denominator subtract-old — SHARP, not mutation-blind): probed
 whether the rd crystallize denominator update (lib.rs:843 residual branch, `*slot = slot - stake.points + new_pts`,
 the subtract-old/add-new that keeps the cohort denominator = sum of CURRENT points and prevents replay-inflation)
 was mutation-blind — hypothesis: the idempotency test might check only stake.points (which is overwritten = new_pts
