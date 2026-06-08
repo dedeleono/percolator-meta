@@ -10494,3 +10494,27 @@ authority. Neutered it (`if false && ...`), rebuilt the real .so -> seal_then_re
 FAILED at its inline "non-authority cannot seal" sub-assertion (distribution.rs:284 — a non-authority signer
 sealed). Reverted -> 32/32 distribution green, src clean. SHARP. No code change. VERDICT: the seal authority
 binding (only the governance-bound authority decides the winner) is load-bearing and mutation-proven.
+
+## Tick — re-register / cross-owner portfolio double-bind: BLOCKED (3 layers) + residual owner-bind MUTATION-VERIFIED (surface D)
+
+Chased the user's "re-register tricks" free-farm: could two owners both register the SAME percolator portfolio
+(each with snap=0 before the loss) and both crystallize the SAME loss = double-count one real loss into two
+stakes / two cohort shares? Or could an attacker register a stake bound to a VICTIM's loss-making portfolio
+and farm the victim's real losses? Three independent layers block it:
+  1. PERCOLATOR portfolio owner is IMMUTABLE: written once at init_portfolio_account (v16_program.rs:2720),
+     header/wire consistency validated (402/2779), and there is NO transfer/reassign instruction — so a
+     portfolio can never change owner.
+  2. register binds OFF_PORTFOLIO_OWNER == registrant (lib.rs:742, finding GY) — only the portfolio's own
+     (immutable) owner can register it; a foreign/victim portfolio is rejected.
+  3. One stake PDA per (config, owner) + register requires data_len == 0 — one owner gets exactly one stake,
+     no re-register.
+Together: a given portfolio is registerable by exactly ONE party (its immutable owner), exactly ONCE — no
+cross-owner double-bind, no victim-portfolio farming.
+
+MUTATION-VERIFIED the residual (LP/trader) portfolio owner-bind is non-vacuous: neutered lib.rs:742
+(`if false && OFF_PORTFOLIO_OWNER != owner`), rebuilt the real .so -> the FULL e2e suite caught it:
+register_lp_trader_binds_portfolio_to_its_owner_no_double_count FAILED (a non-owner registered another's
+portfolio). (register_rejects_foreign_owner_and_foreign_pool covers the parallel INSURANCE/subledger-position
+owner-bind.) Reverted -> 48/48 rd green, src clean. SHARP. No code change. VERDICT: re-register / cross-owner
+double-bind and victim-portfolio farming are blocked by the immutable-owner + register owner-bind + one-stake
+-per-owner layers, and the residual owner-bind is mutation-proven.
