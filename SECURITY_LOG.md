@@ -9171,3 +9171,22 @@ MUTATION CAMPAIGN — 12 load-bearing guards proven non-vacuous, all 4 surfaces:
   (C) entry-zeroing + append supply-cap; (D) market allow-list + net-by-spent + anti-wash fee + time-weight + claim
   recipient-binding. Every removed guard makes its test genuinely fail with the worst-case LOF/DoS/free-farm/mint
   regression. No code change (all mutations reverted).
+
+### [MUTATION-VERIFIED — rd freeze fixed-supply / no-mint-authority (finding EZ/GX); COIN-mint-inflation defense non-vacuous] tick (D)
+Mutation-tested the rd freeze's COIN supply-integrity gate (`if mint.mint_authority.is_some() ||
+mint.freeze_authority.is_some() || mint.supply != config.total_supply { reject }`, lib.rs:894) — before the
+distribution can be finalized, the COIN must be a FIXED pool: no mint authority (can't inflate / dilute claimers),
+no freeze authority (can't freeze a claimer's account), and supply == the distributed total. Temporarily dropped the
+whole check (`if false`), rebuilt, ran:
+- freeze_enforces_fixed_supply_and_vault_integrity (1982): FAILED at 1998 — freeze now accepts a coin with a LIVE mint
+  authority (and/or wrong supply); the authority holder could then mint unlimited COIN to dilute every backer's claim
+  = free COIN inflation. Caught.
+REVERTED + rebuilt + test PASSES; git clean.
+MUTATION CAMPAIGN — 13 load-bearing guards proven non-vacuous, all 4 surfaces:
+  (A) finding-O execute floor + re-arm monotonicity;
+  (B) vote-lock + trigger majority + trigger quorum;
+  (C) distribution entry-zeroing + append supply-cap;
+  (D) market allow-list + net-by-spent + anti-wash fee + log2(tenure) time-weight + claim recipient-binding + freeze
+      fixed-supply.
+Coverage now spans: depositor-principal protection, Sybil-resistance, winner-take-all integrity (quorum+majority),
+conservation/over-allocation, double-claim, redirect-theft, the full anti-wash suite, AND COIN-mint-inflation. No code change.
