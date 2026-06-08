@@ -10327,3 +10327,26 @@ Confirmed the pin is NON-VACUOUS: mutated the crystallize time-weight to be tenu
 FAILS. Reverted -> 2/2 time-weight tests green, src clean. So the registration-tenure semantics (and their
 accepted-limitation framing) cannot silently regress. No code change. VERDICT: the "without time-locked
 capital" vector is a documented, bounded, accepted property — closed and regression-protected.
+
+## Tick — fix stale "DO NOT PUSH" header on the load-bearing percolator offset canary (surface D; regression-prevention)
+
+The rd reads the wash counters (crystallized@196 / spent@212 / received@228) + owner@100 + market_group@0 from
+the percolator PortfolioAccountV16 at HARDCODED byte offsets. The SOLE structural protection against a
+percolator struct reorder silently shifting those reads is the canary suite
+residual-distributor/tests/offsets.rs (portfolio_residual_counter_offsets_match_the_real_percolator_struct +
+subledger_position_offsets_match), which asserts each rd offset == HEADER_LEN + offset_of!(real struct field).
+A drift here is a free-farm/DoS: if `spent` read an always-0 field, churn would stop being penalized
+(net-by-spent defeated -> free-farm); if it read a large field, every trader claim would net to 0 (DoS).
+
+That security-critical, ACTIVELY-MAINTAINED, PUSHED canary carried a stale "[branch-only, DO NOT PUSH]"
+header (line 1) — flatly contradicted by reality: it is committed on master, passes (4/4), and recent pushed
+commits add to it (the SPENT canary 0e24e11, the overflow-safety pin 7f78d93). The whole workspace already
+builds from local-path git deps (percolator-prog AND percolator are both file:///...), so the file carries no
+extra portability coupling — the marker is purely stale. Risk: a maintainer trusting "DO NOT PUSH" could
+DELETE the canary, silently removing the offset-drift protection.
+
+FIX: corrected the header to "LOAD-BEARING canary suite — KEEP IN THE SUITE", documenting the free-farm/DoS a
+drift would cause and noting the stale marker was wrong. Confirmed the canary is MUTATION-SHARP: drifting
+OFF_PORTFOLIO_SPENT 196->200 makes portfolio_residual_counter_offsets_match FAIL (caught the drift); reverted
+-> 4/4 offsets green, src clean. Doc-only change; no behavior change. VERDICT: the offset-drift free-farm/DoS
+guard is real (mutation-sharp) and its "keep me" status is now unambiguous so it can't be deleted by mistake.

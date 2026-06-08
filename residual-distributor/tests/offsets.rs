@@ -1,8 +1,14 @@
-//! [branch-only, DO NOT PUSH] Finding-T pins: the decider's hardcoded snapshot offsets MUST equal
-//! HEADER_LEN + offset_of!(real percolator struct, field), and its subledger Position offsets MUST
-//! equal the subledger's canonical layout. If percolator reorders PortfolioAccountV16Account or the
-//! subledger reorders Position, these fail — preventing the GT/HF-class drift where a consumer reads
-//! at stale offsets against a rebuilt dependency.
+//! LOAD-BEARING canary suite (finding T) — KEEP IN THE SUITE. The decider's hardcoded snapshot offsets
+//! MUST equal HEADER_LEN + offset_of!(real percolator struct, field), and its subledger Position offsets
+//! MUST equal the subledger's canonical layout. If percolator reorders PortfolioAccountV16Account or the
+//! subledger reorders Position, these fail — preventing the GT/HF-class drift where a consumer reads at
+//! stale offsets against a rebuilt dependency. A drift that silently shifted the residual reward reads is a
+//! free-farm/DoS (e.g. `spent` reading an always-0 field stops penalizing churn; reading a large field nets
+//! every trader claim to 0), so this canary is the SOLE structural guard against it — do not delete.
+//!
+//! (The earlier "[branch-only, DO NOT PUSH]" header was STALE: this file is committed on master, passes, and
+//! is actively maintained — the whole workspace already builds from local-path git deps, so it carries no
+//! extra portability coupling. It must ship with the suite.)
 
 use core::mem::offset_of;
 use percolator::PortfolioAccountV16Account as P;
