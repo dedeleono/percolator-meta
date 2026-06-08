@@ -1603,13 +1603,15 @@ fn self_service_lifecycle_guards_freeze_window_and_post_freeze_closure() {
     set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &lp.pubkey(), 5_000, 0);
     crystallize(&mut svm, &payer, &env, &lp, &pf).expect("crystallize");
 
-    // (1) freeze BEFORE emission_end + finalize_window is rejected.
+    // (1) freeze at the LAST in-window slot (emission_end + finalize_window - 1) is rejected — the check is
+    // `now < emission_end + finalize_window -> reject`, so backers get the FULL finalize window to crystallize
+    // their points (an off-by-one here would forfeit slow backers' final-slot points).
     set_slot(&mut svm, env.emission_end + env.finalize_window - 1);
-    assert!(freeze(&mut svm, &payer, &env).is_err(), "freeze before the finalize window closes must reject");
+    assert!(freeze(&mut svm, &payer, &env).is_err(), "freeze at window_end - 1 must reject — the finalize window is still open");
 
-    // window closes -> freeze succeeds (one-shot).
-    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
-    freeze(&mut svm, &payer, &env).expect("freeze after the window");
+    // EXACTLY emission_end + finalize_window is the FIRST slot freeze is permitted (inclusive cutoff), one-shot.
+    set_slot(&mut svm, env.emission_end + env.finalize_window);
+    freeze(&mut svm, &payer, &env).expect("freeze succeeds at exactly emission_end + finalize_window (first valid slot)");
 
     // (2) register is closed after freeze (would dilute the frozen denominator).
     let late = Keypair::new();

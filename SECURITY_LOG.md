@@ -7403,3 +7403,11 @@ TEST: extended genesis_market_initialized_with_3bps_fee_and_20pct_yield_to_insur
 read_market readback) to also assert insurance_withdraw_deposits_only==1, insurance_withdraw_max_bps==10_000 (full
 principal recoverable), insurance_withdraw_cooldown_slots==0 (exit any time, no fund-trap). VERDICT: BLOCKED/
 correct — the genesis market IS principal-protected; now pinned at init alongside the fees. KEEP. twap chain 102 green.
+
+### [VERIFIED — rd freeze finalize-window cutoff is exact/inclusive (no off-by-one shrinking the window)] tick (D)
+SURFACE (rd freeze timing). freeze rejects `now < emission_end + finalize_window` (lib.rs). The lifecycle test
+checked window-1 (rejected) and window+1 (succeeds) but not the EXACT boundary. Tightened it: freeze at
+window_end-1 is rejected (the finalize window is STILL OPEN — backers get the FULL window to crystallize their
+final-slot points; an off-by-one here would silently forfeit a slow backer's last-slot points), and freeze at
+EXACTLY emission_end + finalize_window is the FIRST permitted slot (inclusive cutoff). Pins the off-by-one on the
+finalize-window deadline. VERDICT: BLOCKED/correct. KEEP. rd e2e green.
