@@ -2700,7 +2700,7 @@ fn e2e_voter_cannot_back_two_proposals_without_retracting() {
     // Backing B while the ballot is live on A is rejected — by guard 612, now that no underflow can mask it.
     assert!(send(&mut svm, vote(&gv_b, 1)).is_err(), "cannot back a second proposal without retracting the first");
     // alice's weight is still wholly on A (no phantom leak to/from B): A unchanged, B's injected support intact.
-    let a_support = u64::from_le_bytes(svm.get_account(&gv_a).unwrap().data[72..80].try_into().unwrap());
+    let a_support = u128::from_le_bytes(svm.get_account(&gv_a).unwrap().data[72..88].try_into().unwrap()); // support_weight is u128 (GG)
     assert!(a_support > 0, "alice's weight stays on A — the rejected back-of-B left no phantom split");
     // Retract A, then B can be backed.
     send(&mut svm, vote(&gv_a, 2)).expect("retract A");
@@ -3719,8 +3719,8 @@ fn e2e_retract_reback_cannot_inflate_vote_weight() {
         svm.expire_blockhash(); let bh = svm.latest_blockhash();
         svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, &alice], bh)).expect("vote");
     };
-    let support = |svm: &LiteSVM| u64::from_le_bytes(svm.get_account(&gv_proposal).unwrap().data[72..80].try_into().unwrap());
-    let cast = |svm: &LiteSVM| u64::from_le_bytes(svm.get_account(&env.gv_config).unwrap().data[208..216].try_into().unwrap());
+    let support = |svm: &LiteSVM| u128::from_le_bytes(svm.get_account(&gv_proposal).unwrap().data[72..88].try_into().unwrap()); // u128 (GG)
+    let cast = |svm: &LiteSVM| u128::from_le_bytes(svm.get_account(&env.gv_config).unwrap().data[208..224].try_into().unwrap()); // u128 (GG)
 
     // First back establishes the single contribution W.
     vote(&mut svm, 1);
@@ -3855,9 +3855,9 @@ fn e2e_sybil_splitting_gives_no_vote_advantage() {
         svm.send_transaction(Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer, who], bh)).expect("vote");
     }
 
-    let support = u64::from_le_bytes(svm.get_account(&gv_proposal).unwrap().data[72..80].try_into().unwrap());
+    let support = u128::from_le_bytes(svm.get_account(&gv_proposal).unwrap().data[72..88].try_into().unwrap()); // u128 (GG)
     // A single 1,000,000 position at age 16 would weigh floor(log2(16)) * 1,000,000 = 4,000,000.
-    let single_position_weight = 4u64 * (split * n);
+    let single_position_weight = 4u128 * (split * n) as u128;
     assert_eq!(support, single_position_weight, "splitting capital across {} identities gives no weight advantage", n);
     // Quorum denominator (voted principal) is likewise just the summed capital, not multiplied.
     let voted = u64::from_le_bytes(svm.get_account(&env.gv_config).unwrap().data[200..208].try_into().unwrap());

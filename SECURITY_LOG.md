@@ -5,7 +5,20 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (B, mutation-blind test FIXED — the one-vote-one-proposal binding was UNVERIFIED): mutation-checked the
+LATEST TICK (B, systematic stale-offset audit follow-up — CLEAN + reads hardened): after last tick's GG-offset
+mutation-blind finding, swept EVERY raw-byte-offset injection/read of GG-widened gv structs (Config.total_cast_
+weight u128@208, ProposalVote.support_weight u128@72 + support_principal u64@88, Ballot.voted_weight u128@72)
+across all test suites. RESULT CLEAN — the chain.rs back-two-proposals WRITE (fixed last tick) was the ONLY stale
+injection that MASKED a guard. All others verified correct: seal.rs:362/367 are GG-aware (u128@208 / u128@72 +
+u64@88); insurance_percolator.rs:1829 injects total_cast_weight u128@208 correctly (+ mutation-sharp for the GG
+fix itself); slab @749 + portfolio/position stub offsets are offset-canaried. The remaining gv READS at data[72..
+80] / [208..216] read the LOW u64 of a u128 field — functionally correct + NON-masking (test weights stay < 2^64,
+so the low-u64 read still catches a regression, e.g. retract_reback accumulation), but a latent fragility of the
+same width-change class. HARDENED all 4 (chain.rs:2703/3722/3723/3858) to read the full u128 width. No program
+code changed; chain 110 green. (Discipline: a width change silently un-sharpens raw-offset value-injection tests —
+extend the offset-canary mindset to test fixtures AND reads, not just program struct reads.)
+
+PRIOR TICK (B, mutation-blind test FIXED — the one-vote-one-proposal binding was UNVERIFIED): mutation-checked the
 gv binding (vote lib.rs:635, `ballot.has_live_ballot() && ballot.voted_proposal != proposal -> reject`), the
 keystone of "one voter -> one proposal" + correct retract (it stops backing/retracting a DIFFERENT proposal than
 the one the ballot is on — which would strand phantom weight on the original + corrupt the target's tally). The
