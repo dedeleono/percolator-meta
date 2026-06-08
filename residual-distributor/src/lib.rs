@@ -1053,7 +1053,13 @@ fn claim(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     // making manufactured residual always cost a fraction of what it earns. The share-value cohorts
     // (insurance/backing) are capital-at-risk, not PnL-flow, so they pay NO fee.
     let fee = if matches!(stake.cohort, COHORT_LP | COHORT_TRADER) {
-        ((amount as u128) * (config.fee_support_bps as u128) / (BPS_DENOMINATOR as u128)) as u64
+        // CEIL the fee, not floor: a flooring fee rounds to 0 on dust claims (amount*bps < BPS_DENOMINATOR),
+        // letting a Sybil farmer FRAGMENT one farm into many dust stakes that EACH pay 0 fee and dodge the
+        // anti-wash skim entirely (the fee is the sole economic bound on the delta-neutral cross-margin wash).
+        // Ceiling makes every nonzero LP/trader claim pay >= 1 atom, so fragmentation can never reduce the
+        // effective fee below the intended rate. fee <= amount holds (bps <= BPS_DENOMINATOR):
+        // ceil(amount*bps/DEN) <= amount, so the payout subtraction never underflows.
+        ((amount as u128) * (config.fee_support_bps as u128)).div_ceil(BPS_DENOMINATOR as u128) as u64
     } else {
         0
     };

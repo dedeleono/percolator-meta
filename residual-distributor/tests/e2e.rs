@@ -355,6 +355,57 @@ fn init_rejects_a_malformed_or_overlong_extra_market_allow_list() {
 // FINDING NZ: the anti-wash fee is skimmed from LP/trader (PnL-flow) claims and RETAINED in the vault, but
 // NOT from the share-value (insurance/backing, capital-at-risk) cohorts. A sole LP staker with a 20% fee
 // claims 80% of its cohort; the 20% stays locked in the vault. A sole insurance staker pays nothing.
+// ANTI-WASH FEE DUST-DODGE (surface D, follow-up: last tick established the claim fee is the SOLE economic bound
+// on the cross-margin delta-neutral wash). The fee = amount * fee_bps / 10000. If that FLOORS, a claim small
+// enough (amount * fee_bps < 10000) rounds the fee to ZERO -- so a Sybil farmer who FRAGMENTS one farm into many
+// dust stakes pays 0 fee on each and dodges the anti-wash skim entirely. This pins that fragmentation cannot
+// reduce the effective fee below the intended rate (the fix CEILs the fee so every nonzero LP/trader claim pays
+// >= 1 atom, making dust claims pay a >= -rate fee instead of 0). supply 100 -> trader cohort 40; 10 equal dust
+// stakes each claim 4 -> floor fee 0 (DODGED) vs ceil fee 1 (>= the 20% intended).
+#[test]
+fn anti_wash_fee_cannot_be_dust_dodged_by_fragmentation() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let supply = 100u64; // trader cohort = 40% = 40 atoms
+    let env = setup_with_fee(&mut svm, &payer, supply, 2_000); // 20% anti-wash fee
+    set_slot(&mut svm, 100);
+
+    // N trader stakes, each a stub portfolio with EQUAL crystallized loss -> each claims trader_supply/N = 4 atoms.
+    let n = 10usize;
+    let mut traders: Vec<(Keypair, Pubkey)> = Vec::new();
+    for _ in 0..n {
+        let t = Keypair::new();
+        let pf = Pubkey::new_unique();
+        set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &t.pubkey(), 0, 0); // snap 0 at register
+        register(&mut svm, &payer, &env, &t, &t.pubkey(), &pf, COHORT_TRADER).expect("reg trader");
+        set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &t.pubkey(), 0, 1_000); // equal crystallized loss
+        traders.push((t, pf));
+    }
+    set_slot(&mut svm, 1_000); // tenure 900 -> floor(log2)=9 (uniform across all stakes)
+    for (t, pf) in &traders { crystallize(&mut svm, &payer, &env, t, pf).expect("cry"); }
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    freeze(&mut svm, &payer, &env).expect("freeze");
+
+    let mut total_payout = 0u64;
+    for (t, pf) in &traders {
+        let ata = create_token_account(&mut svm, &payer, &env.coin_mint, &t.pubkey());
+        claim(&mut svm, &payer, &env, t, &ata, Some(pf)).expect("claim");
+        total_payout += token_amount(&svm, &ata);
+    }
+    // trader cohort = 40; the INTENDED 20% fee on the aggregate is 8, so an un-dodgeable fee leaves <= 32 paid out.
+    let trader_cohort = supply as u128 * 4_000 / 10_000; // 40
+    let intended_fee = (trader_cohort * 2_000 / 10_000) as u64; // 8
+    // FRAGMENTATION DODGE GUARD: total paid out must NOT exceed cohort - intended_fee. A floor fee lets each
+    // 4-atom dust claim pay 0 -> total_payout = 40 > 32 (fee fully dodged). A ceil fee makes each pay >= 1 ->
+    // total_payout <= 32. Pin that fragmentation cannot dodge the anti-wash skim.
+    assert!(total_payout <= trader_cohort as u64 - intended_fee,
+        "anti-wash fee dust-dodged via fragmentation: {n} dust claims paid out {total_payout} of the {trader_cohort} trader cohort (intended fee {intended_fee} skimmed -> should leave <= {})", trader_cohort as u64 - intended_fee);
+    // The dodged/retained fee stays locked in the vault (deflationary), never over-drawn.
+    assert!(total_payout as u128 <= trader_cohort, "conservation: never pays more than the cohort");
+}
+
 #[test]
 fn lp_trader_claim_pays_the_anti_wash_fee_share_value_cohorts_dont() {
     let mut svm = LiteSVM::new();

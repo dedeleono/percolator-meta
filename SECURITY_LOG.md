@@ -11713,3 +11713,26 @@ log2(tenure) hold requirement + 1/N dilution are the bound, exactly as finding-N
 tick's misleading "only NET loss earns" println (the accounting was right — any losing leg earns — only the
 explanation was wrong). KEPT the probe (pins the load-bearing GROSS fact + spent==0). sim 6/6 green. No code
 change.
+
+## Tick — REAL FIX: anti-wash claim fee was DUST-DODGEABLE via Sybil fragmentation (ceil the fee) (surface D)
+
+Direct follow-up to last tick (the claim FEE is the SOLE economic bound on the cross-margin delta-neutral wash —
+spent-netting=0 and the allow-list don't apply). So: can the fee itself be dodged? YES. process_claim computed
+fee = amount * fee_bps / BPS_DENOMINATOR with FLOOR division (lib.rs:1056). A claim small enough that
+amount*fee_bps < 10000 floors the fee to ZERO. A Sybil farmer who FRAGMENTS one farm into many DUST stakes thus
+pays 0 fee on each and dodges the anti-wash skim ENTIRELY.
+
+REAL (low-sev free-farm erosion), built + confirmed: new rd e2e anti_wash_fee_cannot_be_dust_dodged_by_
+fragmentation — supply 100 (trader cohort 40), 10 equal trader stakes each claiming 4 atoms. On the FLOOR code
+each 4-atom claim paid floor(4*2000/10000)=floor(0.8)=0 fee -> total payout 40 = the FULL trader cohort, the
+intended 8-atom (20%) skim entirely dodged (test FAILED on the unfixed code, proving the vector). Conservation
+still held (never over-draws the cohort) so it is not a LOF to other depositors — it erodes the deflationary
+anti-wash skim, the documented bound on the wash.
+
+FIX (our authorship, lib.rs:1056): CEIL the fee — ((amount*fee_bps)).div_ceil(BPS_DENOMINATOR). Every nonzero
+LP/trader claim now pays >= 1 atom, so a dust claim pays a >= -rate fee instead of 0 and fragmentation can NEVER
+reduce the effective fee below the intended rate. fee <= amount still holds (bps <= 10000 -> ceil(amount*bps/DEN)
+<= amount, no payout underflow); large claims pay at most +1 atom vs floor (negligible, and the existing
+round-number fee tests — 400000*2000/10000=80000 exact — are unchanged). Post-fix the 10 dust claims pay 1 each
+-> total payout 30 <= 32 (the dodge is closed). MUTATION-SHARP by construction: the test FAILS on the pre-fix
+floor code, PASSES on the ceil fix. rd e2e 49/49, rd offsets 4/4, sim 6/6 green; rebuilt rd .so. KEPT the test.
