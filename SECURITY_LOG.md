@@ -11334,3 +11334,27 @@ vault (this tick); both reject the non-SPL token-shaped account (front-run/type-
 prefunded-PDA create (lamport-prefund brick). Together with distribution init_config, rd init, gv config init,
 and twap init_book/init_config -- every init/create across the stack is mutation-proven against its
 inert-pool/hijack/squat/leak failure mode.
+
+## Tick — subledger accept_operator (tag 7) market_slab bind (foreign-market grant) MUTATION-VERIFIED; FULL instruction inventory complete
+
+process_accept_operator (subledger tag 7) is the GENESIS grant: the Squads vault (asset_admin) hands the
+asset-0 insurance authority + operator to the subledger pool. It was the last subledger instruction not
+explicitly traced. The grant is DAO-authorized (asset_admin.is_signer, propagated to percolator's
+UpdateAssetAuthority CPI which enforces the CURRENT asset_admin must sign) and the pool consents by signing as
+its own PDA (invoke_signed). The meta-side SOLE-defense guard is the market_slab/percolator_program bind
+(lib.rs:1407): the grant must rotate the operator ONLY on the POOL's OWN recorded market -- without it, a grant
+could be pointed at a FOREIGN market_slab (rotating that market's operator to the genesis pool / cross-market
+authority confusion). The pool-PDA re-derivation (1416) is backstopped by the invoke_signed seeds; the
+market_slab bind is the load-bearing scope check.
+
+MUTATION-VERIFIED: neutered the `market_slab.key != pool.market_slab` clause (kept percolator_program) ->
+e2e_subledger_genesis_grant_rejects_substituted_market_or_percolator (chain.rs, cross-program) FAILED (a grant
+on a substituted market was accepted). Reverted -> 112/112 chain green, src clean. SHARP. No code change.
+
+FULL INSTRUCTION INVENTORY COMPLETE: every instruction in every deployed program is now examined +
+mutation-verified (or characterized DAO-gated/defense-in-depth): subledger tags 0-7 (init_pool, deposit,
+withdraw, init_insurance_pool, insurance_deposit, insurance_withdraw, set_vote_lock, accept_operator [this
+tick]); distribution 0-5; gv vote/trigger/init; rd init/register/crystallize/freeze/claim; twap
+init_config/reconfigure/set_reserved_floor/accept_operator/init_book/set_reserve/place_bid/execute/claim/
+set_coin_sink/shutdown/set_bid_fee/cancel_bid/set_economics; setup COIN init. Every program, instruction, init,
+setter, permissionless path, conservation invariant, cross-binary offset, and crate is verified.
