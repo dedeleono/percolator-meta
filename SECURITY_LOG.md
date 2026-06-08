@@ -5,7 +5,19 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (A, mutation-verify the auction reserve filter — SHARP): mutation-checked the execute reserve-rate
+LATEST TICK (D, mutation-verify the anti-wash claim FEE — SHARP; ALL anti-wash defenses now verified): mutation-
+checked the rd anti-wash fee (claim lib.rs:1035, `fee = amount*fee_support_bps/10000` retained in the vault, the
+NZ tax on LP/trader PnL-flow that bounds a delta-neutral wash the spent-netting can't catch). Forcing fee=0 makes
+3 tests FAIL (lp_trader_claim_pays_the_anti_wash_fee, trader_cohort_claim_also_pays, the 100pct-fee graceful case)
+-> genuinely SHARP. This completes the mutation-verification of EVERY anti-wash defense (the user's emphasis
+surface): (1) market allow-list [verified-sharp]; (2) net-by-spent crystallized-spent [verified + the stale-points
+bypass FIXED via the live-cap]; (3) the claim fee [verified-sharp now]; (4) log2(tenure) time-weight [snap-baseline
++ floor verified]; (5) the live-cap [both directions verified, down + one-sided]. Reverted, git clean, rd e2e 45
+green. Cumulative mutation campaign: guard-removal[37], off-by-one[3], equivalent[1], constant-magnitude[1],
+offset-constant[1], live-cap[1], snap-baseline[1], last-write-clock[1], share-pricing-source[1], one-sided-cap[1]
++ 2 defense-in-depth; NO uncaught mutation across all 4 surfaces.
+
+PRIOR TICK (A, mutation-verify the auction reserve filter — SHARP): mutation-checked the execute reserve-rate
 filter (lib.rs:1624, `cmp_rate(c, u, reserve_num, reserve_den) == Less -> skip`) — the LOF guard that drops bids
 BELOW the DAO-set reserve (max USD-per-COIN), so a whale's huge expensive (low-rate) bid cannot drag the marginal
 clearing price down and make the protocol overpay/drain the surplus. Disabling the filter makes e2e_reserve_blocks_
