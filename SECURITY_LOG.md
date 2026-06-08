@@ -10853,3 +10853,20 @@ rebuilt the real .so -> self_service_lifecycle_guards_freeze_window_and_post_fre
 succeeded inside the window, before slow crystallizers could finalize). Reverted -> 48/48 rd green, src clean.
 SHARP. No code change. VERDICT: the freeze/claim lifecycle ordering (no premature freeze that strands
 un-crystallized stakers; register/crystallize closed post-freeze) is mutation-proven.
+
+## Tick — auction one-active-bid guard (partial-exit-via-duplicate-self-eviction / anti-spoof bypass) MUTATION-VERIFIED (surface A)
+
+place_bid enforces ONE active bid per bidder and NEVER cancels an existing bid via a re-place: it scans the
+book and rejects if this bidder already occupies a slot (`SL_OCCUPIED==1 && SL_BIDDER==bidder.key ->
+InvalidArgument`, lib.rs:~1295). This is STRONGER than the planned "ratchet-up re-place" — there is no re-place
+path at all. It closes two attacks: (1) the anti-spoof commitment bypass (a placed bid can only leave via
+settle/claim, the aged cancel, or eviction-by-a-strictly-better-bid — never a voluntary re-place that yanks
+it); and (2) the partial-exit-via-DUPLICATE-self-eviction on a FULL book — a bidder places a second
+(duplicate) bid that evicts their OWN weakest first bid, which REFUNDS the evicted escrow = a cancel/partial
+exit inside the cooldown, defeating the issue-#28 commitment.
+
+MUTATION-VERIFIED (doubly): neutered the one-active-bid check (`if false && ...`), rebuilt the real .so ->
+TWO tests caught it: e2e_bid_cannot_be_cancelled_only_evicted_by_a_better_bid (the commitment) AND
+e2e_full_book_duplicate_cannot_self_evict_to_partial_exit (the exact duplicate-self-eviction partial exit).
+Reverted -> 111/111 chain green, src clean. SHARP. No code change. VERDICT: one-active-bid-per-bidder closes
+both the spoof-commitment bypass and the duplicate-self-eviction partial exit, mutation-proven.
