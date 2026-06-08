@@ -5,7 +5,20 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 300 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 50,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (D/A, sim wash-coverage review + #28 cancel-cooldown mutation-verify, NO code change): (D) reviewed
+LATEST TICK (B, vote-lock dual-sig mutation-verify, NO code change): the set_vote_lock dual-signature is the
+keystone of the veto-exit / no-vote-outlives-capital invariant. Confirmed BOTH halves are tested: the
+vote_authority-sign (lib.rs:1331) stops an owner SELF-UNLOCKING a live ballot to exit capital
+(owner_cannot_self_unlock_a_live_vote_to_exit_capital), and the owner-sign (1341) stops a hostile vote_authority
+(front-run pool init) from FREEZING any depositor's withdrawal (hostile_vote_authority_cannot_freeze_a_depositor).
+NEW VERIFICATION: mutation-checked the owner-sign anti-freeze leg (1341) — dropping `!owner.is_signer` lets the
+attacker lock a victim's position with only the hostile authority's sig, making hostile_vote_authority_cannot_
+freeze_a_depositor FAIL; reverted, git clean, insurance_percolator 54 green. (The own-vault tag-2 forfeiture-bypass
+is separately pinned by vote_locked_insurance_position_cannot_be_drained_via_own_vault_withdraw.) Cumulative
+mutation campaign: guard-removal[33], off-by-one[3], equivalent[1], constant-magnitude[1], offset-constant[1],
+live-cap[1], snap-baseline[1], last-write-clock[1], share-pricing-source[1] + 2 defense-in-depth; NO uncaught
+mutation across all 4 surfaces.
+
+PRIOR TICK (D/A, sim wash-coverage review + #28 cancel-cooldown mutation-verify, NO code change): (D) reviewed
 the sim/ wash-farm suite (3 tests vs the REAL percolator) — comprehensive: rational_miner_farms... (delta-neutral
 long+short wash leaves spent=0, fee-taxed + allow-list-blocked), churn_raises_own_spent_and_collapses_the_net_
 reward (a churn DOES raise spent -> net collapses), genesis_market_3bps_fee_accrues_to_asset0_insurance (the 3bps
