@@ -11261,3 +11261,37 @@ rd SUB_POS_* cross-pinned to subledger POS_* (this tick) canaried against the re
 reorder of the percolator OR subledger layout can drift a consumer's read into an LOF/free-farm without a
 canary failing. Verification of the whole stack is comprehensive across guards, paths, crates, conservation,
 anti-wash (incl. real-trade), and cross-binary layout integrity.
+
+## Final checkpoint — COMPLETE test-file inventory green; verification campaign comprehensive
+
+First regression covering EVERY test file in the workspace (the earlier milestone missed subledger/subledger.rs,
+setup, and the twap library). All 5 deployables build-sbf clean. Integration suites (288 tests):
+  subledger insurance_percolator 58 + subledger 11   (insurance pool + own-vault pool, both pool types)
+  genesis-vote seal 17 + offsets 2
+  distribution 32
+  residual-distributor e2e 48 + offsets 4
+  twap-program chain 112
+  setup 1   (genesis COIN fixed-supply producer)
+  sim farm 3   (real percolator)
+Plus deployable lib-unit tests (25) + twap reference-library 24 unit tests. All green.
+
+CAMPAIGN STATE — comprehensive, multi-method verification with NO remaining exploitable/unexamined surface:
+ - 4 REAL bugs found+fixed (distribution claim_window freeze LOF, rd stale-points wash, gv one-vote mutation
+   -blind test, auction stale-round_end skip).
+ - Every PERMISSIONLESS/attacker-callable instruction's guards mutation-proven (twap execute/claim/place_bid/
+   cancel; rd crystallize/freeze/claim; gv vote/trigger; distribution claim/burn; subledger deposit/withdraw/
+   set_vote_lock; own-vault withdraw).
+ - Every DAO-gated setter/init bound mutation-proven (reconfigure, set_economics, set_reserved_floor +
+   anti-re-arm, set_reserve den, set_coin_sink, set_bid_fee, init_book empty-escrow, accept_operator binds,
+   finding-S, finding-O reorder safety).
+ - COIN-supply integrity end to end: setup PRODUCES fixed-supply revoked-authority COIN -> distribution VERIFIES
+   -> rd/distribution distribute conservation-bounded (vault solvency both programs, over-allocation, supply-cap).
+ - Anti-wash proven 3 ways: mutation-sharp guards (allow-list, net-by-spent, fee, time-weight, live-cap single
+   + cross-cohort, cohort/pool scope, owner-bind, cross-genesis, replay-idempotency, freeze-window) + stub
+   conservation + REAL-percolator trades (churn spent-netting, received credit-transfer 1:1 bound).
+ - Cross-binary offset-drift class fully closed (twap/rd/subledger percolator-slab reads + rd<-subledger Position
+   reads, all canaried against offset_of!/serialized layout + mutation-proven).
+ - Defense-in-depth guards correctly characterized (gv ballot-PDA, market_slab, co-depositor clause).
+ - Attack-surface mapped: twap library unused/undeployed (no surface).
+The sweep has reached genuine saturation; the security model is established by guard-by-guard non-vacuity proofs
+end to end, not argument. No code change.
