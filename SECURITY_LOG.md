@@ -9125,3 +9125,18 @@ monotonicity protects the value — both required, both verified.
 MUTATION CAMPAIGN — 9 load-bearing guards proven non-vacuous, all 4 surfaces: (A) finding-O execute floor + finding-O
 re-arm monotonicity; (B) vote-lock; (C) distribution entry-zeroing; (D) market allow-list + net-by-spent + anti-wash
 fee + log2(tenure) time-weight + claim recipient-binding. No code change (all mutations reverted).
+
+### [MUTATION-VERIFIED — gv trigger majority gate (winner-take-all integrity); 10 guards now proven, all 4 surfaces] tick (B)
+Mutation-tested the genesis-vote trigger's MAJORITY gate (`if support_weight*2 <= total_cast_weight { reject }`,
+lib.rs:771) — the winner-take-all integrity that a proposal must hold a STRICT majority of cast weight before it can
+seal + mint 100% of the COIN supply. Temporarily dropped it (`if false`), rebuilt, ran:
+- trigger_requires_a_strict_majority_and_quorum_not_a_tie (seal.rs:509): FAILED at 524 — a minority/tie proposal now
+  triggers + seals -> mints the entire COIN supply to a NON-majority winner (governance capture / free COIN mint).
+  Caught.
+REVERTED + rebuilt + test PASSES; git clean.
+MUTATION CAMPAIGN — 10 load-bearing guards proven non-vacuous, all 4 surfaces:
+  (A) finding-O execute floor + finding-O re-arm monotonicity;
+  (B) vote-lock [Sybil break] + trigger majority gate [minority mint];
+  (C) distribution entry-zeroing [double-claim drain];
+  (D) market allow-list + net-by-spent + anti-wash fee + log2(tenure) time-weight + claim recipient-binding.
+Every removed guard makes its test genuinely fail with the worst-case LOF/DoS/free-farm/mint regression. No code change.
