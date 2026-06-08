@@ -5,7 +5,18 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (A, FIX the stale-round_end competition-skip — round_end now re-anchored at reopen): implemented the
+LATEST TICK (A, mutation-verify last tick's round_end fix — its regression pin is SHARP + double-pins the round
+gate, NO code change): closed the loop on the stale-round_end fix. (1) Reverting the fix (disabling the reopen
+round_end reset) makes e2e_execute_on_a_settled_book...:4642 FAIL (the immediate post-reopen execute is accepted
+again off the stale round_end) -> the regression pin I added IS non-vacuous. (2) Independently, dropping the
+execute ROUND-ACTIVE gate (lib.rs:1499, `clock_slot < round_end -> reject`) also makes the SAME test FAIL -> the
+updated test now mutation-pins BOTH the round_end re-anchor AND the round-active gate (a load-bearing timer guard
+not previously isolated). Both reverted, git clean, chain 110 green. Cumulative mutation campaign: guard-removal[40]
++ 9 classes + 2 defense-in-depth; NO uncaught mutation. (Also re-confirmed the fix introduces no new weird state:
+round_length != 0 (init_book), so next_end = now + round_length > now always -> no instant-execute; saturating_add
+guards overflow; rolls (book stays OPEN) are unaffected since reopen only fires on a full claim-drain.)
+
+PRIOR TICK (A, FIX the stale-round_end competition-skip — round_end now re-anchored at reopen): implemented the
 fix proposed last tick. process_claim's reopen (lib.rs:1842) now resets round_end = now + round_length when the
 last claim flips the book back to OPEN, so a REOPENED round ages its full competition window from its ACTUAL start
 instead of inheriting the premature settle-time round_end. This closes the manipulation where a bidder delays
