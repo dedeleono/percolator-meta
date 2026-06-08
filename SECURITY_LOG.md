@@ -11777,3 +11777,20 @@ underflow_dos FAIL at "anti-wash fee > 100% must be rejected" (10001 wrongly acc
 Reverted -> 49/49 rd e2e green, src clean. SHARP. The test pins the exact inclusive boundary (10001 + u16::MAX
 rejected; 10000 + 0 accepted), so the ceil fee fix is proven underflow-safe: no config that would underflow the
 new arithmetic can be initialized. No code change.
+
+## Tick — twap set_economics joint surplus-pull cap (auction+savings <= 100% -> over-pull BELOW reserved floor LOF) MUTATION-VERIFIED (surface A)
+
+Rotated off surface D. The twap has TWO permissionless-execute surplus pulls: the auction (surplus_buy_burn_bps)
+and the savings sink (base_unit_savings_bps), each = surplus * bps / 10000. execute computes retained = surplus
+- burnable - savings (checked_sub). If buy_burn_bps + savings_bps > 10000 the two pulls together EXCEED the
+surplus: retained underflows -> execute reverts (buy/burn DoS) AND, more seriously, the combined pull reaches
+BELOW reserved_floor into protected depositor principal = LOF. Both DAO setters must enforce the joint cap:
+set_economics (lib.rs:572, sets savings, checks vs existing buy_burn) and reconfigure (lib.rs:530, sets buy_burn,
+checks vs existing savings) -- symmetric so neither field can be raised past the joint 100%.
+
+MUTATION-VERIFIED the set_economics direction (572): neutered `> BPS_DENOMINATOR` to `> u32::MAX` (never fires)
+-> auction 8000 + savings 2001 = 10001 is ACCEPTED, so set_economics_rejects_an_over_allocation_that_would_
+overpull_the_floor FAILS at "must reject auction+savings > 10000 (would overpull below the floor)". Reverted ->
+112/112 chain green, src clean. SHARP. (The reconfigure direction 530 is separately pinned by
+reconfigure_must_hold_the_auction_plus_savings_invariant + reconfigure_rejects_a_bps_above_the_denominator.)
+The principal-protection joint cap is load-bearing + mutation-pinned on the savings-setting path. No code change.
