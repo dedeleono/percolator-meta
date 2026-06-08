@@ -9399,3 +9399,22 @@ MUTATION CAMPAIGN — 21 sole-defense guards proven non-vacuous + 2 defense-in-d
 The prompt's (D) anti-wash + substitution defenses are now ALL mutation-proven (allow-list, net-by-spent, fee,
 time-weight, self-referential-spend==churn, cross-cohort/cross-genesis/substituted-ledger binds). NO uncaught
 mutation across 21 guards. No code change.
+
+### [MUTATION-VERIFIED — twap execute holding key-binding (anti-fragmentation); 22 sole-defense guards] tick (A)
+Mutation-tested the twap execute holding key-binding (`if *holding.key != book.holding || ... { reject }`,
+lib.rs:1484) — the surplus budget is the holding's balance, so the execute must read the book's CANONICAL holding;
+without the key bind, an attacker substitutes ANY twap_authority-owned collateral account (same owner+mint, different
+key) -> the rolled-over budget fragments / misdirects across accounts. Temporarily dropped the key half (kept the
+owner+mint checks), rebuilt, ran:
+- e2e_execute_rejects_a_substituted_holding_no_budget_fragmentation (6943): FAILED at 6964 — a substituted holding is
+  now accepted = budget fragmentation. Caught.
+REVERTED + rebuilt + test PASSES; git clean.
+MUTATION CAMPAIGN — 22 sole-defense guards proven non-vacuous + 2 defense-in-depth, all 4 surfaces:
+  (A) finding-O execute floor + re-arm monotonicity + auction eviction-refund + require_squads_vault + execute holding
+      key-binding [5];
+  (B) vote-lock + trigger majority + trigger quorum + anti-bait-and-switch [4];
+  (C) entry-zeroing + append supply-cap + vault-funding solvency [3];
+  (D) allow-list + net-by-spent + anti-wash fee + time-weight + recipient-binding + freeze fixed-supply + claimed-flag
+      + share-value owner-gate + register default-recipient + substituted-ledger [10].
+All substituted-account/binding guards now mutation-proven (execute holding, claim recipient, eviction refund,
+backing_ledger, accept_operator market/vault). NO uncaught mutation across 22 guards. No code change.
