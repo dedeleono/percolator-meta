@@ -11585,3 +11585,24 @@ Every deployed program builds clean (build-sbf) and its whole suite passes again
 the honest saturation state: the standalone scope is comprehensively secured; future ticks warrant a NEW
 substantive find only on a real change (dependency rev bump our pin tracks, a new instruction, or a novel
 attack class) -- otherwise meta-audit/regression-confirm rather than manufacture marginal finds. No code change.
+
+## Tick — probed seal-authority / cancel-cooldown / timelock-premature-execute: all 3 already covered+mutated (no new vector, no change)
+
+No external change since 7fcd133 (percolator-prog ff75a08 unchanged + already verified non-breaking; our pins
+unmoved). Probed three surface-A/C guards for a gap; each is already tested AND mutation-verified -- recording
+here so future ticks don't re-probe:
+- (C) distribution seal_winner authority (confused-deputy: only the bound gv config PDA may seal) -- both the
+  key-bind and the SIGNATURE requirement are mutation-SHARP (log:48-49 + the anti-mask sweep FP at log:1291);
+  reachable only via gv trigger's invoke_signed.
+- (A) auction cancel cooldown (anti-spoof: a bid cancels ONLY after now >= place_slot + 2*round_length, never
+  yanked just before execute) -- EP mutation-sharp via the #28 fix (log:312); cancel deliberately ignores the
+  stale SL_PLACE_ROUND_END so a no-op roll can't shortcut it.
+- (A) 1-week handoff timelock ENFORCEMENT (depositor-protection window) -- reconfigure_only_via_squads_vault_
+  execute_after_timelock (chain.rs:752) asserts a PREMATURE Squads execute is REJECTED before the week elapses
+  (config unchanged) and succeeds only after the warp; the MIN_TIMELOCK bind (config can't accept a <1wk
+  multisig) is separately mutation-sharp at the exact 604800-1 boundary. accept_operator inherits the identical
+  Squads-enforced timelock (same vault_transaction_execute path; imposter/non-vault rejection also pinned).
+
+Saturation holds: every load-bearing guard across A/B/C/D is tested + mutation-verified; full stack was 312/312
+green last tick. No code change, no new test (a premature-handoff variant would be redundant with the
+reconfigure timelock test -- identical Squads mechanism -- per the delete-marginal rule).
