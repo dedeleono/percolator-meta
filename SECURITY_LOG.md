@@ -10651,3 +10651,25 @@ by trader_cohort_claim_also_pays_the_anti_wash_fee:452, and the retained-fee-not
 no-sweep-instruction audit earlier.) VERDICT: with the spent-netting unable to catch a delta-neutral wash, the
 claim fee is the proven economic bound (manufactured residual costs a fee fraction of what it earns), and it is
 mutation-proven applied + retained.
+
+## Tick — rd market allow-list (finding IL, the FOUNDATIONAL anti-wash defense) MUTATION-VERIFIED (surface D)
+
+The market allow-list is the FIRST anti-wash layer and the one without which every other defense is moot: the
+LP/trader residual counters (crystallized/received) are admin-mark-manipulable on a market whose oracle the
+registrant CONTROLS, so a portfolio is only countable if its provenance market_group is on the config's
+orchestrator-vetted allow-list of trusted-Pyth markets — register rejects any other
+(`!config.market_allowed(OFF_PORTFOLIO_MARKET_GROUP) -> IllegalOwner`, lib.rs:749, finding IL+). Without it an
+attacker stands up their OWN percolator market with an auth-mark oracle they push, self-trades to manufacture
+UNBOUNDED crystallized_loss/received at zero real cost, and farms 100% of the LP+trader cohorts — the
+net-by-spent, fee, and time-weight all assume the residual reflects a REAL loss on a market the farmer cannot
+move.
+
+MUTATION-VERIFIED: neutered the allow-list check (`if false && !market_allowed`), rebuilt the real .so ->
+register_rejects_portfolio_from_a_foreign_market FAILED (a portfolio from an attacker-controlled market
+registered). Reverted -> 48/48 rd green, src clean. SHARP. No code change. (The multi-market allow-list +
+the real-percolator sim that a NEUTRAL oracle the miner cannot push bounds the farm to the fee are pinned by
+rational_miner_farms_the_deterministic_distributor_across_uncontrolled_markets in sim/.)
+
+COMPLETION: the full rd anti-wash suite is now individually mutation-proven — market allow-list (this tick) +
+net-by-spent + claim fee + log2 time-weight + live-cap (single + cross-cohort) + offset canary + LP `received`
+conservation. Every wash-farm defense the sweep enumerates is verified non-vacuous against the real binaries.
