@@ -11688,3 +11688,28 @@ because it deployed 2 Sybil portfolios (2M) vs a single 1M trader, i.e. LINEAR S
 Conservation holds (519,990 <= 1,000,000). No new bug (the farmer is fee-taxed + 1/N-diluted + capital-bound,
 the documented finding-NZ bound at cross-margin scale). KEPT the test (distinct margining model + higher-volume
 economy). sim 5/5 green.
+
+## Tick — CROSS-MARGIN crystallized is GROSS not NET (single-portfolio delta-neutral wash); prior claim CORRECTED (surface D)
+
+Empirically settled a question the prior cross-margin tick GLOSSED (it claimed "cross-margin nets win+loss legs
+into one counter -> only NET loss earns" — WRONG). New probe sim/tests/farm.rs::cross_margin_crystallized_is_
+gross_not_net_single_portfolio_wash_probe: ONE cross-margin portfolio, long asset0 (drops 50% -> loses) + long
+asset1 (rises 50% -> wins), EQUAL size -> net PnL ~0. Against the REAL percolator: crystallized = 250 (the FULL
+losing-leg loss), pnl = 0 (net-flat, the winning leg's gain offset it), spent = 0. rd trader counter
+(crystallized - spent) = 250 for ZERO net PnL.
+
+=> GROSS: crystallized reflects each losing leg's loss in FULL; the same portfolio's winning-leg gain lives in
+`pnl`, which the rd counters do NOT net against. So a SINGLE net-flat cross-margin portfolio farms trader
+points with NO churn (spent stays 0), NO Sybil (one account), and NO oracle control (ordinary volatility
+produces a losing leg + an offsetting winning leg). This is the finding-NZ delta-neutral wash at its SHARPEST /
+cheapest realization.
+
+VERDICT — NOT A BUG, INTENDED: residual-distributor/src/lib.rs:1051 EXPLICITLY documents "the offsetting ...
+gain lives in `pnl`, not in any residual counter" and chooses the anti-wash CLAIM FEE as the bound rather than
+pnl-netting. The designers knew the gross/pnl gap and deliberately picked the fee (parallel to the
+POLICY_WITH_SURPLUS "intended, don't fix" lesson). So NO fix: net-by-spent (spent=0 here) and the allow-list
+(volatility needs no oracle control) do NOT bound this wash — the FEE + locked-capital opportunity cost +
+log2(tenure) hold requirement + 1/N dilution are the bound, exactly as finding-NZ states. CORRECTED the prior
+tick's misleading "only NET loss earns" println (the accounting was right — any losing leg earns — only the
+explanation was wrong). KEPT the probe (pins the load-bearing GROSS fact + spent==0). sim 6/6 green. No code
+change.

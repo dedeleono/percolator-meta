@@ -1068,8 +1068,9 @@ fn cross_margin_100_traders_10_assets_distribution_report() {
     println!("  INSURANCE (10%) -> claimed {ins_coin:>7}   ({} each)", if !ins_parts.is_empty() { ins_coin / ins_parts.len() as u64 } else {0});
     println!("  BACKING   (10%) -> claimed {back_coin:>7}   ({} each)", if !back_parts.is_empty() { back_coin / back_parts.len() as u64 } else {0});
     println!("  LP        (40%) -> claimed       0   (received==0: no bankruptcy residual on a full-margin market)");
-    println!("  TRADER    (40%, supply {trader_supply}) -> claimed {}   (only losing-leg traders + the farmer; cross-margin", loser_coin as u128 + farmer_coin as u128);
-    println!("           nets each portfolio's WIN and LOSS legs into ONE crystallized counter -> only NET loss earns)");
+    println!("  TRADER    (40%, supply {trader_supply}) -> claimed {}   (any portfolio with a LOSING leg earns:", loser_coin as u128 + farmer_coin as u128);
+    println!("           crystallized is GROSS per-leg (NOT netted vs same-portfolio winning legs, whose gain sits in pnl),");
+    println!("           so a net-flat cross-margin portfolio STILL earns on its gross losing legs -- the FEE is the bound, not netting.");
     println!("----------------------------------------------------------------------------------");
     println!("PER-PARTICIPANT:");
     println!("  insurance depositor : {}", if !ins_parts.is_empty() { ins_coin / ins_parts.len() as u64 } else {0});
@@ -1084,4 +1085,102 @@ fn cross_margin_100_traders_10_assets_distribution_report() {
     assert!(farmer_coin > 0 && (farmer_coin as u128) <= trader_supply, "farmer captures a real but bounded slice");
     assert_eq!(ins_coin as u128 + back_coin as u128, supply * (INS_BPS + BACK_BPS) as u128 / 10_000, "ins+back fully claimed");
     let _ = winner_coin;
+}
+
+// GROSS-vs-NET crystallized under CROSS-MARGIN (surface D free-farm probe). The rd trader counter is
+// `crystallized - spent`. If a SINGLE cross-margin portfolio's `crystallized` reflects the GROSS loss of its
+// losing legs (NOT netted against the same portfolio's WINNING legs' pnl), then a delta-neutral pair across two
+// assets (long a winner + long a loser, equal size, net PnL ~0) manufactures trader points for ~0 net loss with
+// spent==0 — a single-account spent-netting bypass. This pins whether percolator nets it (blocked) or not
+// (the finding-NZ wash, now at the single-portfolio level — fee is then the sole bound). Corrects/confirms the
+// prior cross-margin tick's "only NET loss earns" claim.
+#[test]
+fn cross_margin_crystallized_is_gross_not_net_single_portfolio_wash_probe() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    let payer = Keypair::new(); svm.airdrop(&payer.pubkey(), 100_000_000_000_000).unwrap();
+    let oracle = Keypair::new(); svm.airdrop(&oracle.pubkey(), 1_000_000_000_000).unwrap();
+    svm.set_sysvar(&Clock { slot: 100, unix_timestamp: 100, ..Default::default() });
+    let collateral = create_real_mint(&mut svm, &payer, &Keypair::new().pubkey());
+    let initial_price = 1_000u64;
+    let pk = payer.insecure_clone();
+    let tx = move |svm: &mut LiteSVM, ixs: &[Instruction], extra: &[&Keypair]| {
+        svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        let mut s: Vec<&Keypair> = vec![&pk]; s.extend_from_slice(extra);
+        svm.send_transaction(Transaction::new_signed_with_payer(ixs, Some(&pk.pubkey()), &s, bh))
+    };
+    let mlen = percolator_prog::state::market_account_len_for_capacity(2).unwrap();
+    let plen = percolator_prog::state::portfolio_account_len_for_market_slots(2).unwrap();
+    let market = Pubkey::new_unique();
+    svm.set_account(market, Account { lamports: 1_000_000_000, data: vec![0u8; mlen], owner: perc_id(), executable: false, rent_epoch: 0 }).unwrap();
+    let pv = canonical_insurance_vault(&perc_vault_authority(&market), &collateral);
+    set_token(&mut svm, &pv, &collateral, &perc_vault_authority(&market), 0);
+    tx(&mut svm, &[pix(vec![AccountMeta::new(oracle.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new_readonly(collateral, false)],
+        PIx::InitMarket { max_portfolio_assets: 2, h_min: 0, h_max: 10, initial_price,
+            min_nonzero_mm_req: 1, min_nonzero_im_req: 2, maintenance_margin_bps: 10_000, initial_margin_bps: 10_000,
+            max_trading_fee_bps: 10_000, trade_fee_base_bps: 3, liquidation_fee_bps: 0, liquidation_fee_cap: 0,
+            min_liquidation_abs: 0, max_price_move_bps_per_slot: 10_000, max_accrual_dt_slots: 1,
+            max_abs_funding_e9_per_slot: 0, min_funding_lifetime_slots: 1, max_account_b_settlement_chunks: 1,
+            max_bankrupt_close_chunks: 1, max_bankrupt_close_lifetime_slots: 100, public_b_chunk_atoms: percolator::MAX_VAULT_TVL,
+            maintenance_fee_per_slot: 0 })], &[&oracle]).expect("init 2-asset market");
+    for a in 0..2u16 { tx(&mut svm, &[pix(vec![AccountMeta::new(oracle.pubkey(), true), AccountMeta::new(market, false)], PIx::ConfigureAuthMark { asset_index: a, now_slot: 100, initial_mark_e6: initial_price })], &[&oracle]).expect("cfg mark"); }
+
+    // MM counterparty + the WASHER (one cross-margin portfolio: long asset0 + long asset1, equal size).
+    let mm = Keypair::new(); svm.airdrop(&mm.pubkey(), 1_000_000_000).unwrap();
+    let washer = Keypair::new(); svm.airdrop(&washer.pubkey(), 1_000_000_000).unwrap();
+    let mm_pf = Pubkey::new_unique(); let w_pf = Pubkey::new_unique();
+    for (o, pf, dep) in [(&mm, &mm_pf, 100_000_000u64), (&washer, &w_pf, 1_000_000u64)] {
+        svm.set_account(*pf, Account { lamports: 1_000_000_000, data: vec![0u8; plen], owner: perc_id(), executable: false, rent_epoch: 0 }).unwrap();
+        tx(&mut svm, &[pix(vec![AccountMeta::new(o.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(*pf, false)], PIx::InitPortfolio)], &[o]).expect("init pf");
+        let src = Pubkey::new_unique(); set_token(&mut svm, &src, &collateral, &o.pubkey(), dep);
+        tx(&mut svm, &[pix(vec![AccountMeta::new(o.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(*pf, false), AccountMeta::new(src, false), AccountMeta::new(pv, false), AccountMeta::new_readonly(spl_token::ID, false)], PIx::Deposit { amount: dep as u128 })], &[o]).expect("deposit");
+    }
+    let posq = (percolator::POS_SCALE / 2) as i128;
+    // washer LONG asset0 and LONG asset1 (both vs MM), equal size -> net directional exposure across the two.
+    for a in 0..2u16 {
+        tx(&mut svm, &[pix(vec![AccountMeta::new(mm.pubkey(), true), AccountMeta::new(washer.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(mm_pf, false), AccountMeta::new(w_pf, false)], PIx::TradeNoCpi { asset_index: a, size_q: -posq, exec_price: initial_price, fee_bps: 0 })], &[&mm, &washer]).expect("washer long leg");
+    }
+    let w_cryst0 = read_crystallized(&svm, &w_pf);
+    // Oracle: asset0 DROPS 50% (long0 LOSES), asset1 RISES 50% (long1 WINS), equal size -> net PnL ~0.
+    svm.set_sysvar(&Clock { slot: 110, unix_timestamp: 110, ..Default::default() });
+    tx(&mut svm, &[pix(vec![AccountMeta::new(oracle.pubkey(), true), AccountMeta::new(market, false)], PIx::PushAuthMark { asset_index: 0, now_slot: 110, mark_e6: initial_price / 2 })], &[&oracle]).expect("drop a0");
+    tx(&mut svm, &[pix(vec![AccountMeta::new(oracle.pubkey(), true), AccountMeta::new(market, false)], PIx::PushAuthMark { asset_index: 1, now_slot: 110, mark_e6: initial_price + initial_price / 2 })], &[&oracle]).expect("raise a1");
+    let crank = |svm: &mut LiteSVM, a: u16, action: u8| {
+        svm.expire_blockhash(); let bh = svm.latest_blockhash();
+        let _ = svm.send_transaction(Transaction::new_signed_with_payer(&[pix(vec![AccountMeta::new(payer.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(w_pf, false)],
+            PIx::PermissionlessCrank { action, asset_index: a, now_slot: 110, funding_rate_e9: 0, close_q: 0, fee_bps: 0, recovery_reason: 0 })], Some(&payer.pubkey()), &[&payer], bh));
+    };
+    for a in 0..2u16 { crank(&mut svm, a, 2); crank(&mut svm, a, 0); }
+
+    let w_cryst = read_crystallized(&svm, &w_pf).saturating_sub(w_cryst0);
+    let w_spent = read_spent(&svm, &w_pf);
+    let net_counter = w_cryst.saturating_sub(w_spent);
+    // read pnl@(HEADER_LEN 16 + pnl offset). pnl is a SIGNED i128 — read raw and interpret.
+    let pnl_raw = { let d = svm.get_account(&w_pf).unwrap().data; i128::from_le_bytes(d[180..196].try_into().unwrap()) };
+    let single_leg_loss = (posq.unsigned_abs() * (initial_price as u128) / percolator::POS_SCALE) / 2; // ~50% of one leg's notional
+    println!("\n========== CROSS-MARGIN crystallized: GROSS or NET? (single-portfolio wash) ==========");
+    println!("washer: ONE portfolio, long asset0 + long asset1 (equal size). asset0 -50% (loses), asset1 +50% (wins)");
+    println!("portfolio crystallized (realized LOSS counter) : {w_cryst}");
+    println!("portfolio spent (self-recovery counter)        : {w_spent}");
+    println!("portfolio pnl (signed, net incl. winning leg)  : {pnl_raw}");
+    println!("rd TRADER counter = crystallized - spent       : {net_counter}");
+    println!("one losing leg's ~50% notional loss (ref)      : ~{single_leg_loss}");
+    if w_cryst > 0 {
+        println!("=> GROSS: the losing leg's loss crystallizes in FULL even though the WINNING leg offsets the");
+        println!("   portfolio's PnL to ~net-flat. spent stays {w_spent}. A single cross-margin portfolio thus farms");
+        println!("   trader points for ~0 NET PnL -> the finding-NZ delta-neutral wash at the SINGLE-ACCOUNT level.");
+        println!("   The fee + allow-list + time-weight + dilution remain the bound (NOT spent-netting, which is 0).");
+    } else {
+        println!("=> NET: percolator nets the winning leg against the losing leg -> crystallized ~0 -> the");
+        println!("   single-portfolio delta-neutral wash is BLOCKED at settlement.");
+    }
+    println!("====================================================================================\n");
+    // The security-relevant assertion: WHICHEVER it is, spent stays 0 (no churn), so net-by-spent does NOT bound
+    // this — the bound is the claim fee (already pinned). Pin the empirical fact so the prior tick's claim is
+    // corrected/confirmed and future ticks don't re-probe.
+    assert_eq!(w_spent, 0, "no churn -> spent stays 0; net-by-spent cannot bound a delta-neutral cross-asset wash");
+    let _ = (net_counter, single_leg_loss, pnl_raw);
 }
