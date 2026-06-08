@@ -1189,6 +1189,55 @@ fn policy_with_surplus_late_depositor_cannot_capture_pre_existing_surplus() {
     assert_eq!(env.token_amount(&env.perc_vault.clone()), 1, "only 1 atom of virtual-offset dust remains; the surplus went to the early backer, never the late joiner");
 }
 
+// POLICY_WITH_SURPLUS under a DOWNSIDE impairment — share-redemption haircut is ORDER-INDEPENDENT + CONSERVES
+// (sweep tick B). impaired_insurance_exit_is_pro_rata (above) pins the order-independent haircut for
+// POLICY_PRINCIPAL (the `owed = insurance*amount/outstanding` payout path). POLICY_WITH_SURPLUS takes the OTHER
+// path — redeem_shares(shares, balance, total_shares) with the VIRTUAL_SHARES + (balance+1) ERC4626 offsets —
+// where the FIRST exiter's redemption shifts both `balance` and `total_shares` for the SECOND. So
+// order-independence is NOT obvious here: a rounding bias could over-pay the early exiter and STRAND the late
+// one (an order-dependent LOF), or the two redemptions could collectively OVER-DRAW the impaired insurance.
+// This pins that the share path also gives both depositors the SAME ~50% haircut and never pays out more than
+// the impaired balance. Real percolator slab + subledger .so.
+#[test]
+fn policy_with_surplus_impaired_exit_is_order_independent_and_conserves() {
+    let mut env = Env::new();
+    env.init_insurance_pool_policy(1); // POLICY_WITH_SURPLUS (share redemption)
+
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let (bob, bob_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let a_hold = create_holding(&mut env, &pool);
+    let b_hold = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &a_hold, amount).expect("alice deposit");
+    env.insurance_deposit(&bob, &bob_ata, &b_hold, amount).expect("bob deposit");
+    assert_eq!(env.pool_outstanding(), 2 * amount, "outstanding = both deposits (2M)");
+
+    // 50% venue loss: insurance 2M -> 1M (impaired: balance 1M < outstanding 2M), mirrored on the SPL vault.
+    impair_market(&mut env, amount as u128);
+    env.svm.set_account(env.perc_vault, Account {
+        lamports: 1_000_000, data: token_account_data(&env.mint, &env.vault_authority, amount),
+        owner: spl_token::ID, executable: false, rent_epoch: 0,
+    }).unwrap();
+
+    // Alice (early) redeems her shares at the live impaired balance: ~50% haircut.
+    env.insurance_withdraw(&alice, &alice_ata, &a_hold, &alice, amount).expect("alice exits");
+    let alice_got = env.token_amount(&alice_ata);
+    // Bob (late) redeems at the NOW-lower balance/total_shares — must get the SAME haircut, never stranded.
+    env.insurance_withdraw(&bob, &bob_ata, &b_hold, &bob, amount).expect("bob exits with the same haircut");
+    let bob_got = env.token_amount(&bob_ata);
+
+    // ORDER-INDEPENDENCE: both take the ~50% haircut (within 1 atom of rounding); the first exit did NOT
+    // drain the share pool and strand bob, and did NOT over-pay alice at bob's expense.
+    assert!((499_999..=500_000).contains(&alice_got), "early exiter takes the ~50% share haircut, got {alice_got}");
+    assert!((499_999..=500_000).contains(&bob_got), "late exiter takes the SAME ~50% share haircut (not stranded), got {bob_got}");
+    assert!(alice_got.abs_diff(bob_got) <= 1, "the two exits differ by at most 1 atom of rounding — order-independent");
+    // CONSERVATION: the two share redemptions together never pay out more than the impaired insurance (1M);
+    // rounding favors the protocol (a tiny virtual-offset dust may remain), never over-draws.
+    assert!(alice_got as u128 + bob_got as u128 <= amount as u128, "total paid <= impaired insurance — no over-draw");
+    assert_eq!(env.pool_outstanding(), 0, "all principal retired");
+}
+
 // CO-DEPOSITOR DRAIN (no-drain property, DEFENSE-IN-DEPTH): insurance_withdraw caps `amount` by BOTH
 // `position.principal` AND `pool.outstanding_principal`. Because outstanding is the SUM of every position's
 // principal, the per-position clause is the tighter one: without it a depositor in a multi-party pool could

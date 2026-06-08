@@ -10216,3 +10216,23 @@ and is now explained at the mechanism level. No code change. The full backstop-i
 backing-provider portfolio + adverse-oracle impairment + recovery, driven by the neutral oracle to show
 received only ever reflects real absorbed loss) is the remaining EMPIRICAL step — scoped as a future tick;
 the source mechanics already resolve the security question.
+
+## Tick — POLICY_WITH_SURPLUS downside-impairment exit: order-independent + conserves (surface B; test-gap closed)
+
+Surveyed the impaired-redemption coverage. The order-independent pro-rata haircut (no first-come race that
+strands a late exiter — a real LOF property, finding L) was pinned ONLY for POLICY_PRINCIPAL
+(impaired_insurance_exit_is_pro_rata, :988, the `owed = insurance*amount/outstanding` payout path).
+POLICY_WITH_SURPLUS takes the OTHER path — redeem_shares(shares, balance, total_shares) with the
+VIRTUAL_SHARES + (balance+1) ERC4626 offsets — and was tested only on the UPSIDE (surplus distribution
+:1104, late-depositor-can't-capture-surplus :1152), NEVER under a genuine DOWNSIDE impairment with multiple
+exiters. That path is non-obvious: the FIRST exiter's share redemption shifts both `balance` and
+`total_shares` for the SECOND, so a rounding bias could over-pay the early exiter and strand the late one
+(order-dependent LOF) or the two redemptions could collectively over-draw the impaired insurance.
+
+Built policy_with_surplus_impaired_exit_is_order_independent_and_conserves against the real percolator slab +
+subledger .so: two equal 1M depositors, insurance impaired 2M->1M (50% loss), both exit. RESULT: BLOCKED
+(correct) — alice (early) and bob (late) BOTH redeem exactly 500_000 (the same 50% haircut; differ by <=1
+atom), bob is NOT stranded by alice's prior exit, and alice+bob <= 1M (the share redemptions never over-draw
+the impaired insurance; rounding favors the protocol). So the share path matches POLICY_PRINCIPAL's
+order-independence + conservation. KEEP (pins a real, previously-untested LOF boundary). subledger 54->55
+green. No code change (behavior correct).
