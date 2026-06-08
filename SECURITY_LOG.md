@@ -11380,3 +11380,37 @@ Both verification layers are now established: (1) UNIT -- every instruction/guar
 (the full inventory, prior ticks); (2) INTEGRATION -- the complete 5-binary genesis->DAO->buy/burn composition
 produces the correct, principal-protected, conservation-respecting end state (this tick). The security model is
 verified at both the guard granularity and the end-to-end composition. No code change.
+
+## Tick — verification campaign saturation assessment (honest closing state)
+
+Quick green confirmation: all 5 deployables build-sbf clean; representative suites green (rd e2e 48, twap chain
+112, subledger insurance 58, sim farm 3); git clean. The adversarial sweep has reached genuine SATURATION.
+Honest state, so future ticks don't redo proven work:
+
+WHAT IS DONE (comprehensive, multi-method, all against the real binaries):
+ - 4 REAL bugs found + fixed early (distribution claim_window permanent-freeze LOF; rd stale-points wash ->
+   live-cap; gv one-vote-one-proposal mutation-blind test; auction stale-round_end competition skip).
+ - FULL instruction inventory examined: every instruction in every deployed program (subledger 0-7, distribution
+   0-5, gv vote/trigger/init, rd init/register/crystallize/freeze/claim, twap all 15, setup COIN init).
+ - Every SOLE-DEFENSE attacker-facing + DAO-gated + init/setup guard MUTATION-VERIFIED non-vacuous.
+ - Conservation/solvency proven on both COIN programs; COIN-supply fixed-supply chain (produce->verify->
+   distribute) mutation-proven.
+ - Anti-wash proven 3 WAYS: mutation-sharp guards + stub conservation + REAL-percolator trades (churn
+   spent-netting, received credit-transfer 1:1-bounded).
+ - Cross-binary offset-drift class fully closed (twap/rd/subledger slab reads + rd<-subledger Position, all
+   canaried vs offset_of!/serialized + mutation-proven).
+ - INTEGRATION level: grand-unified E2E (5 binaries + Squads) drives genesis->DAO->buy/burn + asserts the
+   principal-protected, conservation-respecting end state.
+ - Defense-in-depth guards CHARACTERIZED (gv ballot-PDA, insurance_withdraw market_slab, co-depositor clause);
+   unused attack surface MAPPED (twap library, undeployed).
+
+WHAT REMAINS (deliberately not re-verified -- redundant/moot):
+ - Init-squat PDA binds (findings P/Q/R: gv/twap/subledger config<->pool/market binds). Defense-in-depth that
+   the project's own guidance (memory: atomic-init-resolves-init-squats) deems MOOT under the one-atomic-tx
+   genesis -- mutation-verifying them is the marginal/redundant work the sweep is told to avoid.
+ - Re-mutation of already-proven guards.
+
+A NEW tick is only warranted by a real CHANGE: a code edit, a percolator/Squads dependency rev bump (re-run the
+offset canaries + sim/chain behavioral tests), a new instruction/cohort, or a genuinely novel attack class not
+in the A-D enumeration. Absent that, the security model is established by guard-by-guard non-vacuity proofs +
+the end-to-end composition, with no remaining exploitable or unexamined surface. No code change.
