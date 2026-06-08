@@ -11633,3 +11633,35 @@ To capture more it must add more 1M-funded delta-neutral legs (linear Sybil cost
 the known finding-NZ fee-bounded wash, now confirmed at population scale against the real percolator. Conservation
 holds: distributed 520,006 <= supply 1,000,000. KEPT the test (a real economic boundary + the LP-unclaimed
 finding). sim 4/4 green.
+
+## Tick — LP-cohort `received` via REAL BANKRUPTCY (social-loss path): traced + bound established; leveraged-market build BLOCKED by percolator full-margin config (surface D)
+
+Follow-up to last tick's finding (LP cohort claimed 0 — `received` never accrues in a healthy economy). The LP
+cohort rewards Δ `received`, which has TWO sources in the real percolator:
+ (1) CREDIT-TRANSFER on a position INCREASE — transfer_account_residual_reward_credit (v16.rs:8312/8367): received
+     rises 1:1 with the counterparty's TRANSFERRED crystallized loss, capped at min(crystallized-spent, principal).
+     ALREADY proven empirically (sim churn_raises_own_spent: c_short_received == c_spent, bounded by crystallized).
+     Conservation-bounded — NOT a free-farm.
+ (2) SOCIAL-LOSS on BANKRUPTCY — apply_bankruptcy_residual_chunk_to_loss_side (v16.rs:11631): when an account is
+     bankrupt (pnl<0 BEYOND its margin), the uncollectible residual is socialized to the OPPOSITE side's
+     b_long/short_num via loss_weight_sum, surfacing as `received` on settle. This is the path the existing sim
+     never exercised (received stayed 0).
+
+ATTEMPTED an end-to-end empirical test (lp_received_via_real_bankruptcy): a LEVERAGED long (IM/MM < 100%, low
+margin) bankrupted by a 70% neutral-oracle crash, with a self-owned opposite-side LP absorbing the residual, to
+measure received vs the bankrupt margin (the real cost). RESULT: could NOT stand up a leveraged market — the real
+percolator REJECTS InitMarket with maintenance/initial_margin_bps < 100% in the public_user_fund path
+(InstructionError InvalidAccountData), the same market type our genesis + working tests use at IM=MM=10000.
+DELETED the non-running test (stay-green/no-broken-tests discipline; standing up a leveraged percolator market
+needs sibling-repo config reverse-engineering, outside our authorship).
+
+BOUND / VERDICT (no new bug): on a FULL-MARGIN market (IM=MM=100%, the config our harness + genesis use) a
+position's loss is CAPPED at its margin, so it can never go bankrupt via a price move -> the social-loss
+`received` path is UNREACHABLE there, and the only reachable `received` is the credit-transfer (proven 1:1
+conservation-bounded). On a hypothetical LEVERAGED allow-listed market the social-loss path could fire, but it
+is defense-in-depth bounded: the residual is INSURANCE-backed (percolator's fund absorbs the uncollectible
+loss), the adverse move is UN-MANUFACTURABLE on a trusted-Pyth allow-listed market (finding IL), the attacker
+must LOSE the bankrupt account's real margin, and the LP claim is FEE-TAXED 20% (finding NZ). So the LP cohort
+is HARDER to farm than the trader cohort, consistent with last tick's "LP claims 0" inertia. No code change;
+sim 4/4 green. FUTURE: a dedicated leveraged-percolator harness would let the social-loss received/cost ratio be
+measured empirically (deferred — needs sibling config work).
