@@ -8112,3 +8112,12 @@ So no account can be passed where a different type is expected (same-owner same-
 the discriminator separates them — even though `owner == program_id` passes for any same-program account. The rd test
 pins the representative same-program pattern; the others are byte-for-byte the same guard (deserialize rejects on
 disc mismatch). VERDICT: the type-confusion defense is complete + uniform stack-wide. No change.
+
+### [CERT — deployment-readiness: all 5 standalone programs build-sbf clean from current source] tick (A-D)
+After this session's source edits (finding-O fix + .so rebuild; the 3 early SPL-owner/prefund DoS fixes; the 3
+doc-drift fixes; the vestigial-field/overflow doc additions), certified the source -> deployable SBF artifact
+pipeline is clean: `cargo build-sbf` Finished (release, no errors) for subledger, genesis-vote, distribution,
+residual-distributor, twap-program. Deployed .so artifacts present + non-empty: distribution_program.so 110k,
+genesis_vote_program.so 106k, residual_distributor.so 128k, subledger_program.so 150k, twap_program.so 184k. The
+.so's the litesvm tests load (290 green) are byte-current with the audited source. VERDICT: standalone stack is
+build-clean + test-green + deployment-ready. No change.
