@@ -18,11 +18,16 @@
 //! which spends its OWN budget → spent rises → net ≈ 0) and `received` for the LP cohort.
 //! ANTI-WASH = (1) the net-by-spent counter above + (2) the claim-fee `fee_support_bps`
 //! retained in the vault on every LP/trader claim (the LP `received` has no symmetric net,
-//! so the claim-fee taxes it). The tenure weight (registration age) is computed here, so
-//! JIT capture is damped with no percolator start-slot field. NOTE: an earlier design used
-//! a per-window `eligible = min(Δresidual, Δfee*10000/bps)` fee-cap (the `earnings_snap` /
-//! `eligible_accum` fields); that was SUPERSEDED by net-by-spent + the claim-fee and those
-//! two fields are now VESTIGIAL (held at 0, retained only for serialized-layout stability).
+//! so the claim-fee taxes it) + (3) the claim LIVE-CAP: claim re-reads the bound portfolio
+//! and scales the frozen points by `min(1, live_net/frozen_net)`, so a loss crystallized at
+//! peak then recovered (net drops) pays proportionally less — closing the stale-points
+//! bypass of net-by-spent. The tenure weight (registration age) is computed here, so JIT
+//! capture is damped with no percolator start-slot field. NOTE: an earlier design used a
+//! per-window `eligible = min(Δresidual, Δfee*10000/bps)` fee-cap (the `earnings_snap` /
+//! `eligible_accum` fields); it was SUPERSEDED by net-by-spent + the claim-fee. `eligible_accum`
+//! is now VESTIGIAL (held at 0, kept for serialized-layout stability); `earnings_snap` was
+//! REPURPOSED to store the crystallize-time `net_delta` that the claim live-cap (3) reads —
+//! it is LOAD-BEARING, not vestigial.
 //!
 //! ## Distribution = self-service deterministic claim (the seal path was RETIRED)
 //! Each backer's COIN share is paid DIRECTLY from this program's own `vault` by IX_CLAIM:
@@ -414,7 +419,11 @@ struct Stake {
     backing_ledger: Pubkey,
     recipient: Pubkey,
     residual_snap: u128,
-    earnings_snap: u128, // VESTIGIAL (held at 0): see eligible_accum — part of the superseded fee-cap design.
+    // LOAD-BEARING (anti-wash live-cap): crystallize stores the realized `net_delta` here; claim reads it
+    // as `frozen_net` and scales the payout by min(1, live_net/frozen_net) so a recovered loss (live_net <
+    // frozen_net) pays proportionally less — closing the stale-points bypass of net-by-spent. Repurposed
+    // from the superseded fee-cap design (see eligible_accum). MUST be preserved across crystallize/freeze.
+    earnings_snap: u128,
     start_slot: u64,
     points: u128,
     bump: u8,

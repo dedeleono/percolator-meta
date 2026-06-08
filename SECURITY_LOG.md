@@ -10282,3 +10282,25 @@ cap so the victim's TopUpInsurance CPI is VALID under the mutation — making HB
 lib.rs:994 (`if false && shares_minted == 0`) lets the 0-share deposit through (got Ok(())) -> test FAILS;
 reverted -> 56/56 green. KEEP. No code change. VERDICT: the inflation theft is closed by percolator's
 insurance cap for meaningful victims and by HB for the residual sub-cap regime; both now evidenced.
+
+## Tick — fix stale "VESTIGIAL" doc on the load-bearing earnings_snap field (surface D; regression-prevention)
+
+Auditing the rd Stake fields, found a STALE + MISLEADING doc-bug on a security-critical field. The module
+header (lib.rs:22-25) and the field comment (lib.rs:417) both described `earnings_snap` as "VESTIGIAL (held
+at 0), retained only for serialized-layout stability" — left over from the superseded per-window fee-cap
+design. But last session's claim LIVE-CAP fix REPURPOSED earnings_snap: crystallize writes the realized
+`net_delta` to it (lib.rs:848) and claim reads it as `frozen_net` to scale the payout by min(1,
+live_net/frozen_net) (lib.rs:1018) — the defense that closes the stale-points wash bypass of net-by-spent
+(a recovered loss must pay proportionally less). It is LOAD-BEARING, not vestigial.
+
+Risk: a maintainer trusting "VESTIGIAL (held at 0)" could drop the field, drop its serialization (offset
+152..168), or repurpose it again — silently re-opening the stale-points FREE-FARM. (The behavior IS
+test-protected: trader_recovered_loss_without_recrystallize... and live_cap_never_pays_above... would fail
+if earnings_snap stopped round-tripping, since frozen_net would read 0 and the cap would no-op. So the field
+was test-correct but doc-wrong.)
+
+FIX: corrected both comments — `eligible_accum` remains genuinely vestigial (held at 0); `earnings_snap` is
+documented as the load-bearing frozen-net store for the live-cap, "MUST be preserved across
+crystallize/freeze", and the module-header anti-wash list now includes the live-cap as defense (3). Doc-only
+change; no behavior change. rd 47/47 green, build-sbf clean. VERDICT: aligns the docs with the live anti-wash
+design so the free-farm defense can't be regressed by a maintainer trusting a stale comment.
