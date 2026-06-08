@@ -8889,3 +8889,21 @@ MILESTONE — every fund-bearing / authority instruction across ALL programs is 
 VERDICT: the standalone scope is exhaustively audited instruction-by-instruction + class-by-class. 1 real bug found +
 fixed (claim_window permanent freeze); everything else sound + adversarially pinned against the real binaries.
 Outstanding: only the deferred #11. No code change.
+
+### [VERIFIED — own-vault process_deposit sound; instruction audit now 100% LITERAL (every ix in every program read)] tick (B)
+Read the last un-read instruction: subledger process_deposit (own-vault, lib.rs:518). Sound + correctly parallel
+to insurance_deposit:
+- MUTUAL TYPE-GUARD: is_insurance() -> reject (552), the mirror of insurance_deposit's !is_insurance() (953) and the
+  withdraw guards (683/1150). So the own-vault and percolator-backed fund-routing paths are mutually exclusive — an
+  own-vault deposit can NEVER push funds into a percolator-owned insurance vault (which would strand them, no TopUp
+  CPI). Pinned: own_vault_deposit_is_rejected_on_an_insurance_pool (2779) + ..._withdraw... (3223).
+- vault == pool.vault (555); position PDA per (owner,pool) (561) + owner-bound + not-withdrawn; create_pda_robust;
+  share pricing identical to insurance (mint_shares off balance_before + zero-share guard 604, virtual-offset
+  inflation defense); checked accounting; start_slot reset on top-up. POLICY_PRINCIPAL mints 0 shares (payout path).
+MILESTONE COMPLETE — every instruction in all 5 standalone programs is now DIRECTLY read + sound + pinned (twap 14,
+rd 5, gv 3, distribution 6, subledger 8). Combined with the cross-cutting class sweeps (bumps, deadline-overflow,
+config-validation, type-confusion, share-math, authority anchors, wash-farm), the standalone scope is exhaustively
+audited at both the instruction and the class level.
+VERDICT: no new bug. Session total: 1 REAL bug found+fixed (distribution claim_window permanent-freeze overflow);
+all else sound + adversarially pinned vs the real binaries; 293 green, build-sbf clean. Outstanding: only deferred #11.
+No code change.
