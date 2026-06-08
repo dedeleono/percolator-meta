@@ -2263,6 +2263,39 @@ fn a_too_recent_position_cannot_vote_or_pump_the_quorum() {
     assert_eq!(w2, 10 * amount, "weight = floor(log2(1024)) * principal");
 }
 
+// AGE THRESHOLD EXACTNESS (sweep): vote_weight is 0 for age < 2 and floor(log2(age)) * principal for age >= 2
+// (gv lib.rs). The flash-deposit test covers age 0 (rejected) then jumps to age 1024 (accepted) — it does NOT
+// pin the exact threshold. This pins the off-by-one: age 1 is STILL zero-weight (rejected), and age 2 is the
+// FIRST votable age, with the minimum non-zero weight floor(log2(2)) * principal = 1 * principal. A threshold of
+// 1 instead of 2 would let a 1-slot-old position vote (weakening the Sybil-timing guard); a threshold of 3 would
+// needlessly delay honest voters.
+#[test]
+fn vote_weight_first_becomes_nonzero_at_exactly_age_2() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    env.warp_slot(100); // deterministic start_slot = 100 for the deposit below
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("deposit");
+    let dest = Pubkey::new_unique();
+    let (_dp, gv_proposal) = create_and_register_proposal(&mut env, &ve, 1, &dest);
+
+    // age 1 (start_slot 100, now 101): still below the age<2 cutoff -> weight 0 -> rejected.
+    env.warp_slot(101);
+    assert!(gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).is_err(), "age 1 (< 2) still has zero weight -> rejected");
+    assert_eq!(gv_proposal_support(&env, &gv_proposal), (0, 0), "no weight/principal credited at age 1");
+
+    // age 2 (now 102): floor(log2(2)) = 1 -> the FIRST non-zero weight = 1 * principal -> accepted.
+    env.warp_slot(102);
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("age 2 is the first votable age");
+    let (w, p) = gv_proposal_support(&env, &gv_proposal);
+    assert_eq!(w, amount, "weight = floor(log2(2)) * principal = 1 * principal at the exact threshold");
+    assert_eq!(p, amount, "principal credited once the position is old enough to vote");
+}
+
 // Cross-config binding (finalize-DOS): a vote may only be registered against a
 // distribution proposal that belongs to THIS genesis's distribution config. A
 // proposal owned by the distribution program but under a DIFFERENT config, if it

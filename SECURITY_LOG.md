@@ -7359,3 +7359,16 @@ RESULT: no OOB and no type-confusion in any cross-program raw read. MINOR non-ex
 read_subledger_shares enforces type-safety at the CALLERS (owner-field + key-bind) rather than an INLINE disc
 check like gv's read_sub_position — sound but structurally less defense-in-depth; left as-is (not a bug; the
 caller checks fully block it). Standalone sweep surfaces remain GREEN.
+
+### [VERIFIED — vote-weight age threshold is exactly 2 (off-by-one guard on the Sybil-timing cutoff)] tick (B)
+SURFACE (gv vote_weight age cutoff). vote_weight = 0 for age < 2, floor(log2(age)) * principal for age >= 2.
+a_too_recent_position_cannot_vote covers age 0 (rejected) then jumps to age 1024 (accepted) — the exact threshold
+was unpinned. TEST: vote_weight_first_becomes_nonzero_at_exactly_age_2 (real subledger+gv .so): deposit dated to
+slot 100; at age 1 (slot 101) the vote is still rejected with 0 weight/principal credited; at age 2 (slot 102) the
+vote is accepted with the FIRST non-zero weight = floor(log2(2)) * principal = 1 * principal. A cutoff of 1 would
+let a 1-slot-old position vote (weakening the flash-deposit / Sybil-timing guard); a cutoff of 3 would needlessly
+delay honest voters. VERDICT: BLOCKED/correct (cutoff exactly 2). KEEP. subledger insurance suite green.
+Also confirmed this tick: register_rejects_foreign_distribution_proposal (insurance_percolator:2272) already pins
+the gv<->distribution cross-config bind at REGISTRATION (a foreign-config proposal can't be registered -> can't
+win -> can't seal), so the trigger's pv.config==config_account check is defense-in-depth (the harm is blocked +
+tested upstream) — no separate cross-config trigger test needed.
