@@ -11295,3 +11295,22 @@ CAMPAIGN STATE — comprehensive, multi-method verification with NO remaining ex
  - Attack-surface mapped: twap library unused/undeployed (no surface).
 The sweep has reached genuine saturation; the security model is established by guard-by-guard non-vacuity proofs
 end to end, not argument. No code change.
+
+## Tick — init_insurance_pool canonical-vault pin (F-VAULT-FRAG: inert-pool fund-freeze DoS) MUTATION-VERIFIED (surface B)
+
+The genesis vote-bond pool is created by process_init_insurance_pool (tag 3) — the one init path not yet
+explicitly verified. Beyond the broad vault checks (SPL-owned, mint == coin, owner == the market's
+vault_authority PDA, lib.rs:870-876), it PINS the vault to the SINGLE canonical insurance vault address
+percolator enforces: `percolator_vault.key != canonical_vault_address(vault_authority, mint) -> reject`
+(lib.rs:882, F-VAULT-FRAG / issue #24). This is stronger than "some vault_authority-owned token account":
+percolator's deposit/withdraw CPIs only accept the ONE canonical vault, so a pool bound to a non-canonical
+(but vault_authority-owned) vault would be INERT -- every insurance_deposit/insurance_withdraw CPI reverts with
+InvalidVaultAccount -> depositors can NEVER fund or EXIT = a permanent brick / fund-freeze DoS baked in at init.
+
+MUTATION-VERIFIED: neutered the canonical-vault pin (`if false && ...`), rebuilt the real .so ->
+init_insurance_pool_rejects_non_canonical_vault FAILED (a non-canonical vault was bound). It is a dedicated
+sole-defense test (the broad owner check at 874 does NOT catch a non-canonical-but-authority-owned vault).
+Reverted -> 58/58 subledger green, src clean. SHARP. No code change. VERDICT: the genesis insurance pool can
+only bind the canonical percolator vault (no inert-pool fund-freeze), mutation-proven -- completing the init/
+setup verification across the whole stack (insurance pool [this tick] + own-vault pool + distribution init +
+rd init + twap init_book + the lamport-prefund robust-create on every PDA).
