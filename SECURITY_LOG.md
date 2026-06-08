@@ -7661,3 +7661,22 @@ change): replaced all four `pull_surplus` references with `execute`, preserving 
 VERDICT: not a runtime bug — a doc/code drift corrected. twap chain 102 green. This is the THIRD such drift this
 session (fee-cap, IX_SEAL, pull_surplus); the other programs' module docs were checked and match their dispatch
 (the subledger/twap "REPLACED the removed asset-0 tag-23" comments are explanatory, not stale).
+
+### [AUDIT — arithmetic-safety: the two cross-program multiply spots are overflow-safe + pinned] tick (A/D)
+Swept the stack's two highest-risk arithmetic operations (a multiply-then-divide and a cross-multiply, both on
+attacker-influenced magnitudes) for overflow that could brick (panic) or drain (wrap). Both safe + pinned:
+- rd points_to_amount(total_supply:u64, points_i:u128, total_points:u128) = total_supply*points_i/total_points:
+  saturating_mul (no panic), result always <= total_supply (points_i <= total_points -> never over-allocates), and
+  saturation is unreachable for realistic net_delta. Pinned: points_to_amount_is_overflow_safe_never_panics_and_
+  never_over_allocates + documented this session.
+- twap cmp_bid(coin_a,usdc_a,coin_b,usdc_b) = (coin_a*usdc_b).cmp(coin_b*usdc_a), an UNCHECKED u128 cross-multiply
+  used for O(N^2) bid-vs-bid ranking (constant-time, chosen over the continued-fraction cmp_rate to avoid the
+  finding-AC compute-budget DOS). Safe ONLY because place_bid bounds BOTH legs to u64 (as_u64(coin_atoms)? +
+  as_u64(usdc_atoms)?, so u64*u64 < 2^128); usdc_atoms is attacker-controlled + NOT escrow-backed, so the bound is
+  the whole defense. Pinned mutation-sharp by e2e_place_bid_rejects_a_leg_above_u64 (BOTH legs at 2^64 rejected
+  pre-transfer; the comment shows a truncating `as u64` regression -> phantom 2^64-COIN escrow -> settle cmp_bid
+  overflow -> wins the whole budget for 0 COIN = LOF). The bound holds end-to-end: the book legs are only ever
+  written by place_bid, so the settle's cmp_bid (lines 1306/1317/1630) reads u64-bounded legs. cmp_rate
+  (continued-fraction, overflow-safe) handles the bid-vs-RESERVE check where the DAO reserve may be a large u128.
+VERDICT: both BLOCKED/safe + pinned. Also this session: doc-drift sweep across all 5 programs complete (3 real
+drifts fixed: rd fee-cap, rd IX_SEAL, twap pull_surplus; others' module docs match their dispatch). No change.
