@@ -10458,3 +10458,20 @@ wash (live-cap), gv one-vote-one-proposal mutation-blind test, auction stale-rou
 The one out-of-meta-scope item: a full backstop-impairment SIM (received accrual lives in the percolator
 LIBRARY crate behind backing-ledger/bucket/bankruptcy machinery) — resolved by source + the credit-transfer
 trace, not a meta-stack gap. No code change this tick.
+
+## Tick — distribution claim recipient-binding (anti-theft LOF) MUTATION-VERIFIED; create_proposal capacity bound checked (surface C)
+
+Two surface-C checks. (1) create_proposal capacity: bounded by `capacity == 0 || capacity > MAX_ENTRIES ->
+reject` (lib.rs:393) and size = PROPOSAL_HEADER + capacity*ENTRY_SIZE, so no huge-capacity over-allocation /
+rent-griefing DoS; it is permissionless but self-funded (the creator pays rent via create_pda_robust) and
+binds header.creator (only the creator may append), so squatting a proposal_id can't block the legit creator
+(different id) or inject foreign entries into the canonical flow. No gap.
+
+(2) MUTATION-VERIFIED the keystone claim anti-theft guard: claim binds the entry's named recipient to the
+signer — `if pk != *recipient.key -> IllegalOwner` (lib.rs:578). This is the SOLE guard preventing an outsider
+from claiming someone else's entry: the recipient-must-sign check (544) alone does not help (an outsider signs
+as THEMSELVES, recipient=outsider, and without the pk bind the COIN for entry i would transfer to the
+outsider's ATA = direct theft / LOF). Neutered it (`if false && ...`), rebuilt the real .so ->
+claim_index_is_bound_to_its_named_recipient_no_cross_or_outsider_claim FAILED (the outsider claimed another
+recipient's entry). Reverted -> 32/32 distribution green, src clean. SHARP. No code change. VERDICT: the
+pull-model recipient binding (no cross/outsider claim) is the load-bearing anti-theft guard and is mutation-proven.
