@@ -10029,3 +10029,33 @@ twap->percolator, gv->distribution.)
 MUTATION CAMPAIGN — 5 mutation CLASSES, all non-vacuous: (1) guard-removal [23], (2) off-by-one boundary [3],
 (3) equivalent-mutant [floor_log2], (4) constant-magnitude [VIRTUAL_SHARES], (5) offset-constant [SPENT canary];
 + 2 defense-in-depth (borrow-position triple, overflow-checks). All 4 surfaces; no uncaught mutation. No code change.
+
+## Tick — residual-claim live-cap bypass via substituted portfolio (surface D; SHARP guard now pinned)
+
+Probed the claim-side account binding that protects this session's residual live-cap fix
+(`points * min(1, live_net/frozen_net)`, the stale-points wash close). The cap re-reads the
+portfolio at claim to detect a post-crystallize net DROP (loss recovered → net falls) — so its
+strength rests entirely on the claim binding the SAME portfolio registered:
+`*portfolio.key != stake.backing_ledger → reject` (lib.rs:1013).
+
+Audited the cohort plumbing while here and confirmed it sound (no code change): the
+crystallize denominator map (`cohort_points_mut`) and the claim denominator map
+(`frozen_cohort_points`) are symmetric — each cohort accumulates into and divides by the SAME
+counter (insurance↔insurance, backing↔total, lp↔lp, trader↔trader); the `_` wildcard only ever
+catches TRADER(3) because register rejects `cohort > COHORT_TRADER` (lib.rs:665). The live-cap is
+conservation-safe: every capped `pts ≤ frozen points`, so `Σ payouts ≤ cohort_supply` — it only
+ever UNDER-distributes (the "saved" COIN stays unminted, accruing to the DAO), never over-mints.
+
+The binding itself is correct and was already correct — but it was UNPINNED: the residual claim only
+started taking a portfolio account when the live-cap landed this session, and no residual-claim test
+substituted it (they pass the bound one or None=bound). The only substitution test was for the
+share-value (insurance/backing) position. So a future refactor dropping the key-bind would silently
+re-open the exact free-farm the cap closes (recover the loss → bound portfolio net 0, but append a
+DECOY high-net percolator-owned portfolio → live_net ≥ frozen_net → cap becomes a no-op → claim the
+full stale-high points).
+
+FIX: none needed (guard correct). Added `residual_claim_rejects_a_substituted_portfolio_no_live_cap_bypass`
+— A crystallizes a real 6_000 loss (frozen 60_000 pts), recovers it to net 0, then at claim appends a
+decoy net-99_999 portfolio; the claim is rejected (is_err) and pays 0, and the control bound-claim caps
+to 0. Mutation-SHARP: dropping the `portfolio.key` clause makes the decoy claim succeed and pay the full
+400_000 cohort → test fails (verified, then reverted). KEEP. rd suite 45→46 green, build-sbf clean.

@@ -1501,6 +1501,53 @@ fn live_cap_never_pays_above_the_frozen_points_when_live_net_grew_without_recrys
     assert_eq!(token_amount(&svm, &h_ata), 200_000, "the honest co-staker keeps its full 50% — T's grown live net did not steal from H");
 }
 
+// ATTACK PROBE (residual claim live-cap bypass via a SUBSTITUTED portfolio). The claim live-cap (src:1011)
+// re-reads the BOUND portfolio to scale a trader's frozen points down by min(1, live_net/frozen_net) — that is
+// what closes the stale-points wash (a loss crystallized at peak then recovered to net 0). The cap is only as
+// strong as the account bind: claim requires `portfolio.key == stake.backing_ledger` (src:1013). If that bind
+// regressed, a farmer who recovered their loss (bound portfolio now net 0) could append a DECOY percolator-owned
+// portfolio carrying a high net and read live_net >= frozen_net, making the cap a no-op and claiming the FULL
+// stale-high points — the exact free-farm the cap exists to stop. None of the residual claim tests substitute
+// the portfolio (they pass the bound one or None=bound); this pins the SHARP guard. Real rd .so.
+#[test]
+fn residual_claim_rejects_a_substituted_portfolio_no_live_cap_bypass() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let env = setup(&mut svm, &payer, 1_000_000); // trader cohort = 400_000, fee = 0
+    set_slot(&mut svm, 100);
+
+    // Attacker A: a real 6_000 loss crystallized at tenure 1024 (floor_log2 = 10 -> frozen points 60_000)...
+    let a = Keypair::new(); let a_pf = Pubkey::new_unique();
+    set_portfolio_full(&mut svm, &a_pf, &env.stub_perc, &env.market, &a.pubkey(), 0, 0, 0);
+    register(&mut svm, &payer, &env, &a, &a.pubkey(), &a_pf, COHORT_TRADER).expect("reg A");
+    set_slot(&mut svm, 100 + 1024);
+    set_portfolio_full(&mut svm, &a_pf, &env.stub_perc, &env.market, &a.pubkey(), 0, 6_000, 0);
+    crystallize(&mut svm, &payer, &env, &a, &a_pf).expect("cry A (net 6_000)");
+    // ...then RECOVERED to net 0 (crystallized 6_000, spent 6_000) without re-crystallizing — the live-cap
+    // would scale A's bound claim to 0.
+    set_slot(&mut svm, 100 + 2048);
+    set_portfolio_full(&mut svm, &a_pf, &env.stub_perc, &env.market, &a.pubkey(), 0, 6_000, 6_000);
+    // A DECOY portfolio (percolator-owned so it passes the program-owner check) carrying a high live net that A
+    // will try to substitute to read live_net >= frozen_net and defeat the cap.
+    let decoy_pf = Pubkey::new_unique();
+    set_portfolio_full(&mut svm, &decoy_pf, &env.stub_perc, &env.market, &a.pubkey(), 0, 99_999, 0);
+
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    freeze(&mut svm, &payer, &env).expect("freeze");
+
+    let a_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &a.pubkey());
+    // ATTACK: A claims but appends the DECOY portfolio (net 99_999) instead of its own (now net 0) bound one.
+    assert!(claim(&mut svm, &payer, &env, &a, &a_ata, Some(&decoy_pf)).is_err(),
+        "a substituted portfolio is rejected (portfolio.key != stake.backing_ledger) — no live-cap bypass");
+    assert_eq!(token_amount(&svm, &a_ata), 0, "the substituted-portfolio claim paid nothing");
+
+    // (control) claiming with the CORRECT bound (now-recovered) portfolio caps to 0, as the live-cap designs.
+    claim(&mut svm, &payer, &env, &a, &a_ata, Some(&a_pf)).expect("claim with the bound portfolio");
+    assert_eq!(token_amount(&svm, &a_ata), 0, "A recovered its loss (live net 0) -> live-cap pays 0 COIN");
+}
+
 // ATTACK PROBE (crystallize replay / denominator inflation): an LP/trader stake's points are the Δ of a
 // MONOTONIC percolator counter since the register-time snapshot — `new_pts = counter - residual_snap`, and
 // the cohort denominator is updated subtract-old/add-new (`slot = slot - stake.points + new_pts`,
