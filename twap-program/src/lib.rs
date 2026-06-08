@@ -1003,6 +1003,16 @@ fn process_init_book(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
     if *book_escrow.key != expected_escrow {
         return Err(ProgramError::InvalidSeeds);
     }
+    // Require SPL Token ownership BEFORE unpacking each token account init_book PERSISTS into the book
+    // (coin_escrow, settlement_usd, holding, coin_sink). Account::unpack verifies bytes, NOT the owning program,
+    // so a non-SPL token-shaped account would pass the field checks. init_book is squads-vault-gated (unlike the
+    // permissionless rd freeze / subledger init_pool where this same gap was an exploitable front-run brick), so
+    // here it is fail-fast hardening: it stops a DAO mistake from binding a non-SPL account and permanently
+    // bricking the auction (every place_bid/execute would then fail on the bound fake). Parity with
+    // distribution:342 + the rd freeze + subledger init_pool fixes.
+    if coin_escrow.owner != &spl_token::ID || settlement_usd.owner != &spl_token::ID {
+        return Err(ProgramError::IllegalOwner);
+    }
     let ce = spl_token::state::Account::unpack(&coin_escrow.try_borrow_data()?)?;
     if ce.owner != expected_escrow || ce.mint != *coin_mint.key || ce.amount != 0 {
         return Err(ProgramError::InvalidAccountData);
@@ -1021,6 +1031,9 @@ fn process_init_book(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
     ];
     let twap_authority =
         Pubkey::create_program_address(&auth_seeds, program_id).map_err(|_| ProgramError::InvalidSeeds)?;
+    if holding.owner != &spl_token::ID {
+        return Err(ProgramError::IllegalOwner);
+    }
     let hs = spl_token::state::Account::unpack(&holding.try_borrow_data()?)?;
     if hs.owner != twap_authority || hs.mint != *collateral_mint.key {
         return Err(ProgramError::InvalidAccountData);
@@ -1033,6 +1046,9 @@ fn process_init_book(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8])
         // COIN forever. (finding AS)
         if *coin_sink.key == *coin_escrow.key {
             return Err(ProgramError::InvalidAccountData);
+        }
+        if coin_sink.owner != &spl_token::ID {
+            return Err(ProgramError::IllegalOwner);
         }
         let s = spl_token::state::Account::unpack(&coin_sink.try_borrow_data()?)?;
         if s.mint != *coin_mint.key {

@@ -7204,3 +7204,20 @@ init_insurance_pool (parity with distribution:342 + the rd freeze fix). Rebuilt 
 REAL DoS, FIXED. KEEP. subledger 48 + insurance 48 + 10 green; gv 21, twap 101, sim 3 green (no breakage).
 This closes the "unpack-without-SPL-owner-check on a PERSISTED vault binding" class stack-wide: distribution,
 rd freeze, subledger init_pool/init_insurance_pool all guard it now.
+
+### [HARDENED — twap init_book SPL-owner guard on persisted escrows (DAO-gated; fail-fast, completes the class)] tick (A)
+SURFACE (twap-program init_book). Completing the cross-program audit of the "unpack-without-SPL-owner-check on a
+PERSISTED token binding" class (3 exploitable instances already FIXED: rd create_pda, rd freeze, subledger
+init_pool). init_book PERSISTS book.coin_escrow/settlement_usd/holding/coin_sink, validating their token FIELDS
+via Account::unpack but NOT vault.owner == spl_token::ID. UNLIKE the rd freeze / subledger init_pool, init_book is
+SQUADS-VAULT-GATED (require_squads_vault) — so this is NOT a front-run attacker vuln; it is fail-fast hardening
+that stops a DAO mistake (or a message-wrapper bug) from binding a non-SPL account into the book and permanently
+bricking the auction (every place_bid/execute would then fail on the bound fake).
+AUDIT of the other twap unpacks: place_bid's bidder_coin_src/usd_dest are self-scoped (the bidder's own accounts;
+a fake is self-DoS, not exploitable); execute re-reads holding/settlement/escrow already bound at init_book.
+FIX (our authorship, consistency): require coin_escrow/settlement_usd/holding/coin_sink .owner == spl_token::ID
+before unpacking in init_book. Rebuilt twap_program.so (non-breaking: 101 prior chain tests still green).
+TEST: init_book_rejects_a_non_spl_owned_coin_escrow_fail_fast (real twap+squads .so) — a DAO init_book with a
+non-SPL token-shaped coin_escrow is rejected; the book PDA stays uninitialized. twap chain 102 green.
+CLASS NOW CLOSED stack-wide: distribution (init_config), rd (freeze), subledger (init_pool/init_insurance_pool)
+all GUARD it; twap (init_book) hardened for fail-fast; gv has no token-account bindings.

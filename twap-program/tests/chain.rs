@@ -317,6 +317,53 @@ fn init_config_is_not_bricked_by_a_lamport_prefund_of_the_config_pda() {
     assert_eq!(cfg.owner, twap_id(), "config PDA adopted + program-owned despite the dust");
 }
 
+// FAIL-FAST GUARD (non-SPL token-shaped escrow at init_book, sweep tick A): init_book PERSISTS the book's
+// coin_escrow/settlement_usd/holding/coin_sink, validating their token FIELDS via Account::unpack. Account::unpack
+// does NOT verify the owning program, so a non-SPL token-shaped account would pass the field checks. Unlike the
+// permissionless rd freeze / subledger init_pool (where this exact gap was an exploitable front-run brick),
+// init_book is squads-vault-gated — so this is fail-fast hardening: it stops a DAO mistake (or a wrapper bug)
+// from binding a non-SPL account into the book and permanently bricking the auction. init_book must reject it.
+#[test]
+fn init_book_rejects_a_non_spl_owned_coin_escrow_fail_fast() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+
+    let book = book_pda(&env.twap_cfg);
+    let book_escrow = book_escrow_pda(&env.twap_cfg);
+    // FAKE coin_escrow: valid token-shaped bytes (mint = coin_mint, owner field = book_escrow) but SYSTEM-owned.
+    let fake_escrow = Pubkey::new_unique();
+    svm.set_account(fake_escrow, Account { lamports: 2_000_000, data: token_acct_bytes(&env.coin_mint, &book_escrow, 0), owner: system_program::ID, executable: false, rent_epoch: 0 }).unwrap();
+    let settlement_usd = Pubkey::new_unique(); set_token(&mut svm, &settlement_usd, &env.collateral_mint, &book_escrow, 0);
+    let holding = Pubkey::new_unique(); set_token(&mut svm, &holding, &env.collateral_mint, &env.twap_authority, 0);
+    svm.airdrop(&env.squads_vault, 1_000_000_000).unwrap();
+
+    let msg = build_init_book_message(&env.squads_vault, &book, &env.twap_cfg, &book_escrow, &fake_escrow,
+        &settlement_usd, &holding, &env.coin_mint, &env.collateral_mint, 0, 1, 10, 0, 0, None);
+    let rem = vec![
+        AccountMeta::new(env.squads_vault, false), AccountMeta::new(book, false),
+        AccountMeta::new_readonly(env.twap_cfg, false), AccountMeta::new_readonly(book_escrow, false),
+        AccountMeta::new_readonly(fake_escrow, false), AccountMeta::new_readonly(settlement_usd, false),
+        AccountMeta::new_readonly(env.coin_mint, false), AccountMeta::new_readonly(env.collateral_mint, false),
+        AccountMeta::new_readonly(system_program::ID, false), AccountMeta::new_readonly(holding, false),
+        AccountMeta::new_readonly(twap_id(), false),
+    ];
+    assert!(
+        squads_execute(&mut svm, &env.squads, &env.multisig, &env.dao, &payer, 5, &msg, &rem).is_err(),
+        "init_book must reject a non-SPL coin_escrow (fail-fast — the bound fake would brick the auction)"
+    );
+    // The escrow check fails before the book PDA is created, so the book stays uninitialized (free to retry
+    // with a real escrow). (The happy path — a real SPL escrow accepted — is exercised by setup_auction in the
+    // ~100 other chain tests; we don't re-run it here because reusing the same Squads tx index would collide.)
+    assert!(svm.get_account(&book).map_or(true, |a| a.data.is_empty()), "the rejected init_book left the book PDA uninitialized");
+}
+
 // TIMELOCK MINIMUM (depositor-protection window enforced on-chain): the whole model is
 // DAO -> Squads (1-week timelock) -> TWAP -> percolator insurance. The 1-week delay is the window in
 // which depositors can react/exit before any insurance-affecting DAO action lands. init_config binds a
