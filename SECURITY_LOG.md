@@ -5,7 +5,19 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 300 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 50,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (B, vote-lock dual-sig mutation-verify, NO code change): the set_vote_lock dual-signature is the
+LATEST TICK (D, rd claim recipient-bind mutation-verify, NO code change): mutation-checked the rd claim
+recipient-owner binding (lib.rs:975, `ra.owner != stake.recipient`, finding GY) — the LOF guard stopping a
+PERMISSIONLESS cranker (claim is permissionless for LP/trader) from redirecting a victim's COIN payout into an
+account the cranker controls. Dropping the clause (keeping only the mint check) makes claim_cannot_be_redirected_
+or_paid_from_a_decoy_vault FAIL; reverted, git clean, rd e2e 43 green. Cumulative mutation campaign: guard-
+removal[34], off-by-one[3], equivalent[1], constant-magnitude[1], offset-constant[1], live-cap[1], snap-baseline[1],
+last-write-clock[1], share-pricing-source[1] + 2 defense-in-depth; NO uncaught mutation across all 4 surfaces.
+NOTE: the standalone scope is exhaustively secured — every load-bearing guard across A/B/C/D is now tested AND
+mutation-verified, the wash-farm is covered in sim/ vs the REAL percolator, the surplus economics are fully pinned,
+and the one historically-exploited regression (#28) is mutation-confirmed. Future ticks: keep probing for genuinely
+NEW vectors; default to mutation-verifying an as-yet-unmutated guard when no new vector surfaces.
+
+PRIOR TICK (B, vote-lock dual-sig mutation-verify, NO code change): the set_vote_lock dual-signature is the
 keystone of the veto-exit / no-vote-outlives-capital invariant. Confirmed BOTH halves are tested: the
 vote_authority-sign (lib.rs:1331) stops an owner SELF-UNLOCKING a live ballot to exit capital
 (owner_cannot_self_unlock_a_live_vote_to_exit_capital), and the owner-sign (1341) stops a hostile vote_authority
