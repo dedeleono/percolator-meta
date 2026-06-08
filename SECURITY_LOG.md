@@ -7090,3 +7090,28 @@ isolating the KEY check) is rejected; the WHOLE execute reverts (insurance stays
 back too); the pinned sink then receives exactly 50k and the decoy stays 0. VERDICT: BLOCKED. KEEP (closes the
 last execute destination in the redirect-guard set: holding + savings_dest + coin_sink + claim usd/coin). No
 behavior change. twap chain 100 green.
+
+### [SATURATION + HEALTH — full-stack regression pass; every probed vector already pinned] sweep tick
+This tick deep-re-audited all four surfaces for a fresh LOF/DoS/free-farm and found every candidate ALREADY
+pinned; recorded a stack-wide green regression pass instead of forcing a marginal test.
+RE-VERIFIED SATURATED this tick (each traced to its guard + test):
+ - A: execute binds EVERY account to book/config (coin_escrow/settlement_usd/market_slab/holding/PDAs); reserve_den
+   ==0 + round_length==0 bricks pinned at BOTH set_reserve and init_book doors; place_bid zero-leg + u64 bound;
+   cancel anti-spoof aging gate + no-op-roll shortcut (issue #28); zero-budget roll with a committed bid
+   (settles next round, pre-settle claim rejected); set_economics buyback/savings/auction bounds (10001 rejected,
+   10000 boundary); shutdown squads-vault-signed + settlement-USD non-confiscation; the redirect-guard set is now
+   COMPLETE (holding + savings_dest + coin_sink + claim usd/coin all bound).
+ - B: vote needs at-risk capital (exited->0); no self-unlock; no third-party lock; top-up doesn't inflate the
+   tally NOR bank early tenure (start_slot reset); partial vote-locked withdraw blocked; clean proposal SWITCH
+   (retract A -> back B: A->0, B gains, cast conserved); share-pool zero-share LOF + inflation skim + surplus
+   exclusion + impaired pro-rata; GG u128 tallies.
+ - C: claim recipient-signer + index-bounds + SPL-mint; re-seal/burn-sealed/window guards; append supply-cap +
+   entry-count capacity + atomic partial-batch; init vetting COMPLETE (owner-hijack + wrong-mint + underfunded +
+   non-SPL + mintable + freezable + zero-window).
+ - D: market allow-list (single + multi-market extras + init bounds); cohort/cross-genesis/substituted-ledger
+   binds; crystallize owner-gate + snap (pre-existing not credited) + freeze closure + double-freeze; conservation;
+   anti-wash fee (LP+trader) + fee-bps DoS guard; time-weight (registration-tenure, characterized); net-by-spent
+   asymmetry (churn zeroes trader, fee bounds LP); register GY owner-sign + IK default-recipient.
+HEALTH: subledger 67 + distribution 34 + rd 37 + genesis-vote 21 + twap 104 + sim 3 + program 6/integration — all
+green, zero regressions across 19 prior sweep ticks. Cross-program redirect invariant (caller-supplied money
+destination must bind to a recorded/PDA key) is now uniform across distribution, rd, and twap.
