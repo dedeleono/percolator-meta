@@ -7810,3 +7810,16 @@ that is ALSO a reachable valid value. Findings:
   is over-pay, but it cannot be reached.) The twap execute reads insurance as full u128 (no clamp).
 VERDICT: the finding-O reserved_floor MAX was the SOLE reachable instance of the sentinel-overloading class; all
 other sentinels are either collision-free (default pubkey), unreachable (slot 0, u64-clamp), or conservative. No change.
+
+### [VERIFIED — execute holding is triple-bound; substituted-holding rejection pinned (anti-fragmentation)] tick (A)
+SURFACE (twap execute account binding). Adversarially re-examined the execute's HOLDING account (the surplus
+destination + the settle budget source) — the one execute account whose substitution was NOT explicitly tested
+(market/vault, percolator_vault, savings-sink were). The holding is TRIPLE-bound (lib.rs:1484): holding.key ==
+book.holding AND h.owner == twap_authority AND h.mint == collateral_mint. The KEY bind is the anti-fragmentation
+defense — without it a cranker could pass a DIFFERENT twap_authority-owned token account (anyone can create a
+PDA-owned account) and the pulled burn-share would land there, STRANDED (only execute, which uses book.holding,
+moves it) = a stuck-surplus fund-freeze; and a pre-funded decoy could also inflate the read budget. TEST:
+e2e_execute_rejects_a_substituted_holding_no_budget_fragmentation (real twap+perc .so) — a decoy holding correctly
+owned by the twap_authority with the right mint (only the KEY differs) is rejected, no surplus is redirected to it,
+and the honest execute with the canonical holding still pulls the burn-share. VERDICT: BLOCKED/correct — the holding
+is exactly bound. With this, ALL execute account substitutions are pinned. KEEP. twap chain 104 green.

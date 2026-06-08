@@ -6839,6 +6839,47 @@ fn e2e_execute_rejects_substituted_percolator_vault() {
     assert!(token_amount(&svm, &env.perc_vault) < real_before, "honest execute pulled the burn-share");
 }
 
+// SUBSTITUTED HOLDING (budget fragmentation / surplus redirect): execute pulls the burn-share INTO the holding and
+// reads its balance as the settle budget. The holding is TRIPLE-bound (lib.rs: key == book.holding, owner ==
+// twap_authority, mint == collateral). The KEY bind specifically prevents fragmentation — without it a cranker
+// could pass a DIFFERENT twap_authority-owned account (anyone can create a PDA-owned token account) and the pulled
+// surplus would land there, STRANDED, since only execute (which uses book.holding) ever moves it: a stuck-surplus
+// fund-freeze. The OTHER execute account substitutions are pinned (market/vault 5971, percolator_vault 6812,
+// savings-sink 4782); the holding (the surplus destination + budget source) was not. This pins the key bind: a
+// non-canonical holding — even one correctly owned by the twap_authority with the right mint — is rejected, and no
+// surplus is redirected into it.
+#[test]
+fn e2e_execute_rejects_a_substituted_holding_no_budget_fragmentation() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer);
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+
+    // A non-canonical holding owned by the REAL twap_authority with the REAL collateral mint — only the KEY differs
+    // from bk.holding (so it passes the owner+mint checks and isolates the anti-fragmentation key bind).
+    let decoy_holding = Pubkey::new_unique();
+    set_token(&mut svm, &decoy_holding, &env.collateral_mint, &env.twap_authority, 0);
+
+    warp_to(&mut svm, 111);
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    let mut ix = execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None);
+    ix.accounts[8] = AccountMeta::new(decoy_holding, false); // swap the holding (surplus dest + budget source)
+    assert!(send(&mut svm, &[&cranker], ix).is_err(),
+        "execute must reject a non-canonical holding (even a twap_authority-owned one) — the anti-fragmentation key bind");
+    assert_eq!(token_amount(&svm, &decoy_holding), 0, "no surplus redirected into the decoy holding");
+
+    // The honest execute (canonical holding) pulls the burn-share — proving the reject above was the holding bind.
+    let real_before = token_amount(&svm, &env.perc_vault);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("honest execute with the canonical holding");
+    assert!(token_amount(&svm, &env.perc_vault) < real_before, "honest execute pulled the burn-share into the canonical holding");
+}
+
 // UNCENSORABILITY survives a closed-ATA poison bid on the EVICTION path (distinct from finding V's
 // CLAIM-path e2e_closing_refund_ata_...). In a FULL 32-slot book, a strictly-better bid evicts the
 // weakest and refunds it to the weakest's CANONICAL coin ATA. If that bidder closed their ATA, the
