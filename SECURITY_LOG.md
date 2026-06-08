@@ -9241,3 +9241,18 @@ MUTATION CAMPAIGN — 16 load-bearing guards proven non-vacuous, all 4 surfaces:
       rd claimed-flag.
 The stack's load-bearing LOF/DoS/free-farm/mint/theft/capture guards are comprehensively mutation-proven across every
 program and threat class. No code change (all mutations reverted).
+
+### [MUTATION-REVEALED — gv vote borrow-position protection is TRIPLE defense-in-depth (not a single guard)] tick (B)
+Attempted to mutation-isolate the gv vote "borrow another voter's position to steal weight" guard. The mutation
+campaign REVEALED redundant triple-layer defense (a positive finding):
+- (1) gv PDA-address check (lib.rs:592): sub_position.key == canonical PDA(subledger_pool, voter).
+- (2) gv owner-field check (read_sub_position:232): position.owner field == voter AND position.pool == config pool.
+- (3) subledger SetVoteLock CPI owner-sign: the gv vote CPIs SetVoteLock, which the subledger gates on the position
+  OWNER signing (position.owner == owner-signer + dual-sig); a borrowed whale position (owner=whale, signer=voter)
+  is rejected at the CPI.
+Dropping (1) alone -> test still passes (caught by (2)). Dropping (1)+(2) -> test STILL passes (caught by (3), the
+subledger CPI backstop across the program boundary). gv_vote_cannot_borrow_another_voters_position_to_steal_weight
+(insurance_percolator:372) is non-vacuous AND the protection survives removing BOTH gv-side guards — any single layer
+blocks the borrow. REVERTED + rebuilt + test passes; git clean.
+This complements the 16 single-guard mutation-verified invariants by showing the borrow-weight-theft (the Sybil
+weight-theft vector) is the most robustly defended (3 independent layers, 2 programs). No code change.
