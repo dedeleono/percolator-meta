@@ -813,6 +813,8 @@ fn full_economy_100_traders_10_assets_distribution_report() {
 const XM_N_RATIONAL: usize = 99;
 const XM_N_ASSETS: usize = 10;
 const XM_DEPOSIT: u64 = 1_000_000;
+const XM_DEPLOY: u64 = 500_000;       // each portfolio deploys 50% of its 1M as notional (buffer vs liquidation)
+const XM_COIN_FDV: u128 = 100_000_000; // each trader prices the whole COIN supply at 100M -> value/atom = FDV/supply
 
 #[test]
 fn cross_margin_100_traders_10_assets_distribution_report() {
@@ -856,8 +858,8 @@ fn cross_margin_100_traders_10_assets_distribution_report() {
     let mm_pf = Pubkey::new_unique();
     svm.set_account(mm_pf, Account { lamports: 1_000_000_000, data: vec![0u8; plen], owner: perc_id(), executable: false, rent_epoch: 0 }).unwrap();
     tx(&mut svm, &[pix(vec![AccountMeta::new(mm.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(mm_pf, false)], PIx::InitPortfolio)], &[&mm]).expect("init mm");
-    let mm_src = Pubkey::new_unique(); set_token(&mut svm, &mm_src, &collateral, &mm.pubkey(), 500_000_000);
-    tx(&mut svm, &[pix(vec![AccountMeta::new(mm.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(mm_pf, false), AccountMeta::new(mm_src, false), AccountMeta::new(pv, false), AccountMeta::new_readonly(spl_token::ID, false)], PIx::Deposit { amount: 500_000_000u128 })], &[&mm]).expect("mm deposit");
+    let mm_src = Pubkey::new_unique(); set_token(&mut svm, &mm_src, &collateral, &mm.pubkey(), 3_000_000_000);
+    tx(&mut svm, &[pix(vec![AccountMeta::new(mm.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(mm_pf, false), AccountMeta::new(mm_src, false), AccountMeta::new(pv, false), AccountMeta::new_readonly(spl_token::ID, false)], PIx::Deposit { amount: 3_000_000_000u128 })], &[&mm]).expect("mm deposit");
 
     // ---- rd config: cohorts 10/10/40/40, allow-list = the single market, 20% fee ----
     let sub_pool = Pubkey::new_unique(); let back_pool = Pubkey::new_unique();
@@ -907,7 +909,6 @@ fn cross_margin_100_traders_10_assets_distribution_report() {
     }
 
     // ---- 99 rational traders: each a CROSS-MARGIN portfolio over a random subset (1..=10) of the 10 assets ----
-    let posq = (percolator::POS_SCALE / 2) as i128;
     let mut rng = 0xDEAD_BEEF_1234_5678u64;
     let nxt = |r: &mut u64| { *r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (*r >> 33) as usize };
     // per trader: (owner, pf, ata, Vec<(asset, is_long)>)
@@ -923,17 +924,18 @@ fn cross_margin_100_traders_10_assets_distribution_report() {
         tx(&mut svm, &[pix(vec![AccountMeta::new(owner.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(pf, false), AccountMeta::new(src, false), AccountMeta::new(pv, false), AccountMeta::new_readonly(spl_token::ID, false)], PIx::Deposit { amount: XM_DEPOSIT as u128 })], &[&owner]).expect("deposit");
         // random subset of assets (k = 1..=10), each a random direction, cross-margined in this one portfolio.
         let k = 1 + nxt(&mut rng) % XM_N_ASSETS;
+        let leg_posq = ((XM_DEPLOY / k as u64) as i128) * (percolator::POS_SCALE as i128) / (initial_price as i128);
         let mut chosen: Vec<u16> = (0..XM_N_ASSETS as u16).collect();
         for i in (1..chosen.len()).rev() { let j = nxt(&mut rng) % (i + 1); chosen.swap(i, j); } // shuffle
         let mut legs: Vec<(u16, bool)> = Vec::new();
         for &a in chosen.iter().take(k) {
             let is_long = nxt(&mut rng) % 2 == 0;
             if is_long {
-                tx(&mut svm, &[pix(vec![AccountMeta::new(mm.pubkey(), true), AccountMeta::new(owner.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(mm_pf, false), AccountMeta::new(pf, false)], PIx::TradeNoCpi { asset_index: a, size_q: -posq, exec_price: initial_price, fee_bps: 0 })], &[&mm, &owner]).expect("open long leg");
+                tx(&mut svm, &[pix(vec![AccountMeta::new(mm.pubkey(), true), AccountMeta::new(owner.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(mm_pf, false), AccountMeta::new(pf, false)], PIx::TradeNoCpi { asset_index: a, size_q: -leg_posq, exec_price: initial_price, fee_bps: 0 })], &[&mm, &owner]).expect("open long leg");
             } else {
-                tx(&mut svm, &[pix(vec![AccountMeta::new(owner.pubkey(), true), AccountMeta::new(mm.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(pf, false), AccountMeta::new(mm_pf, false)], PIx::TradeNoCpi { asset_index: a, size_q: -posq, exec_price: initial_price, fee_bps: 0 })], &[&owner, &mm]).expect("open short leg");
+                tx(&mut svm, &[pix(vec![AccountMeta::new(owner.pubkey(), true), AccountMeta::new(mm.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(pf, false), AccountMeta::new(mm_pf, false)], PIx::TradeNoCpi { asset_index: a, size_q: -leg_posq, exec_price: initial_price, fee_bps: 0 })], &[&owner, &mm]).expect("open short leg");
             }
-            total_notional += posq.unsigned_abs() * initial_price as u128 / percolator::POS_SCALE;
+            total_notional += leg_posq.unsigned_abs() * initial_price as u128 / percolator::POS_SCALE;
             total_positions += 1;
             legs.push((a, is_long));
         }
@@ -956,14 +958,15 @@ fn cross_margin_100_traders_10_assets_distribution_report() {
         tx(&mut svm, &[pix(vec![AccountMeta::new(owner.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(pf, false)], PIx::InitPortfolio)], &[&owner]).expect("init farmer pf");
         let src = Pubkey::new_unique(); set_token(&mut svm, &src, &collateral, &owner.pubkey(), XM_DEPOSIT);
         tx(&mut svm, &[pix(vec![AccountMeta::new(owner.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(pf, false), AccountMeta::new(src, false), AccountMeta::new(pv, false), AccountMeta::new_readonly(spl_token::ID, false)], PIx::Deposit { amount: XM_DEPOSIT as u128 })], &[&owner]).expect("farmer deposit");
+        let leg_posq = ((XM_DEPLOY / XM_N_ASSETS as u64) as i128) * (percolator::POS_SCALE as i128) / (initial_price as i128);
         let mut assets: Vec<u16> = Vec::new();
         for a in 0..XM_N_ASSETS as u16 {
             if leg_is_long {
-                tx(&mut svm, &[pix(vec![AccountMeta::new(mm.pubkey(), true), AccountMeta::new(owner.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(mm_pf, false), AccountMeta::new(pf, false)], PIx::TradeNoCpi { asset_index: a, size_q: -posq, exec_price: initial_price, fee_bps: 0 })], &[&mm, &owner]).expect("farmer long leg");
+                tx(&mut svm, &[pix(vec![AccountMeta::new(mm.pubkey(), true), AccountMeta::new(owner.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(mm_pf, false), AccountMeta::new(pf, false)], PIx::TradeNoCpi { asset_index: a, size_q: -leg_posq, exec_price: initial_price, fee_bps: 0 })], &[&mm, &owner]).expect("farmer long leg");
             } else {
-                tx(&mut svm, &[pix(vec![AccountMeta::new(owner.pubkey(), true), AccountMeta::new(mm.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(pf, false), AccountMeta::new(mm_pf, false)], PIx::TradeNoCpi { asset_index: a, size_q: -posq, exec_price: initial_price, fee_bps: 0 })], &[&owner, &mm]).expect("farmer short leg");
+                tx(&mut svm, &[pix(vec![AccountMeta::new(owner.pubkey(), true), AccountMeta::new(mm.pubkey(), true), AccountMeta::new(market, false), AccountMeta::new(pf, false), AccountMeta::new(mm_pf, false)], PIx::TradeNoCpi { asset_index: a, size_q: -leg_posq, exec_price: initial_price, fee_bps: 0 })], &[&owner, &mm]).expect("farmer short leg");
             }
-            total_notional += posq.unsigned_abs() * initial_price as u128 / percolator::POS_SCALE;
+            total_notional += leg_posq.unsigned_abs() * initial_price as u128 / percolator::POS_SCALE;
             total_positions += 1;
             assets.push(a);
         }
@@ -1031,6 +1034,7 @@ fn cross_margin_100_traders_10_assets_distribution_report() {
         ], data: vec![5u8] }], &[o]); back_coin += token_amount(&svm, ata);
     }
     let mut winner_coin = 0u64; let mut loser_coin = 0u64; let mut n_pure_winners = 0usize; let mut n_any_loss = 0usize;
+    let mut loser_real_loss: u128 = 0; // Sigma crystallized over the rational losers (their REAL directional loss)
     for (o, pf, ata, legs) in &rational {
         let stake = Pubkey::find_program_address(&[b"rd_stake", rd_config.as_ref(), o.pubkey().as_ref()], &rd_id()).0;
         let _ = tx(&mut svm, &[Instruction { program_id: rd_id(), accounts: vec![
@@ -1040,9 +1044,10 @@ fn cross_margin_100_traders_10_assets_distribution_report() {
         let got = token_amount(&svm, ata);
         // a leg loses if (even asset & long) or (odd asset & short).
         let has_loss = legs.iter().any(|(a, l)| if a % 2 == 0 { *l } else { !*l });
-        if has_loss { n_any_loss += 1; loser_coin += got; } else { n_pure_winners += 1; winner_coin += got; }
+        if has_loss { n_any_loss += 1; loser_coin += got; loser_real_loss += read_crystallized(&svm, pf); } else { n_pure_winners += 1; winner_coin += got; }
     }
     let mut farmer_coin = 0u64;
+    let mut farmer_gross_loss: u128 = 0; // farmer's GROSS crystallized (its COIN basis); its NET real cost ~0 (delta-neutral)
     for (o, pf, ata, _as) in &farmer {
         let stake = Pubkey::find_program_address(&[b"rd_stake", rd_config.as_ref(), o.pubkey().as_ref()], &rd_id()).0;
         let _ = tx(&mut svm, &[Instruction { program_id: rd_id(), accounts: vec![
@@ -1050,6 +1055,7 @@ fn cross_margin_100_traders_10_assets_distribution_report() {
             AccountMeta::new(rd_vault, false), AccountMeta::new(*ata, false), AccountMeta::new_readonly(spl_token::ID, false), AccountMeta::new_readonly(*pf, false),
         ], data: vec![5u8] }], &[]);
         farmer_coin += token_amount(&svm, ata);
+        farmer_gross_loss += read_crystallized(&svm, pf);
     }
 
     let trader_bps = 10_000 - INS_BPS - BACK_BPS - LP_BPS;
@@ -1078,7 +1084,31 @@ fn cross_margin_100_traders_10_assets_distribution_report() {
     println!("  rational w/ net loss: {} avg ({n_any_loss} of them shared {loser_coin})", if n_any_loss>0 { loser_coin / n_any_loss as u64 } else {0});
     println!("  the MAX-FARMER      : {farmer_coin}  ({:.1}% of trader cohort, ~0 net market risk)", farmer_coin as f64 * 100.0 / trader_supply as f64);
     println!("conservation: distributed {distributed} <= supply {SUPPLY}");
+    println!("----------------------------------------------------------------------------------");
+    // ---- VALUE: each trader prices the whole COIN supply at XM_COIN_FDV; deploy more cash while earn > loss ----
+    let vpc = XM_COIN_FDV / supply; // value per COIN atom (collateral-equivalent units)
+    let total_deployed = (XM_DEPLOY as u128) * ((XM_N_RATIONAL + 2) as u128);
+    let farmer_earn_val = farmer_coin as u128 * vpc;
+    let loser_earn_val = loser_coin as u128 * vpc;
+    let avg_loser_loss = if n_any_loss > 0 { loser_real_loss / n_any_loss as u128 } else { 0 };
+    let avg_loser_earn_val = if n_any_loss > 0 { loser_earn_val / n_any_loss as u128 } else { 0 };
+    println!("VALUE @ COIN FDV {XM_COIN_FDV} (= {vpc}/atom).  capital deployed as notional: {total_deployed} (50% of each 1M)");
+    println!("  notional volume / OI : {total_notional}");
+    println!("  honest losers' TOTAL real loss : {loser_real_loss}  -> earned COIN value {loser_earn_val}  (reward/loss {:.0}x)",
+        if loser_real_loss>0 { loser_earn_val as f64 / loser_real_loss as f64 } else {0.0});
+    println!("  avg honest loser     : lost {avg_loser_loss}, earned COIN value {avg_loser_earn_val}  -> NET +{}",
+        avg_loser_earn_val as i128 - avg_loser_loss as i128);
+    println!("  MAX-FARMER           : gross-loss {farmer_gross_loss} but ~0 NET cost (delta-neutral), earned COIN value {farmer_earn_val}  -> NET ~+{farmer_earn_val}");
+    println!("  => RATIONAL TO DEPLOY: at this FDV the fixed trader cohort is worth {} >> the total real loss {loser_real_loss}", trader_supply * vpc);
+    println!("     that earns it, so every participant nets positive and KEEPS scaling capital until total real");
+    println!("     loss approaches the cohort value (break-even). The farmer (~0 net cost) always profits most.");
     println!("==================================================================================\n");
+
+    // Rational-deployment condition (the user's ask): at this COIN valuation, earning > losing for losers AND
+    // the farmer, so deploying this much capital is rational. (Holds while total real loss < the cohort value.)
+    assert!(loser_earn_val > loser_real_loss, "honest losers earn more COIN value than they lost (rational to deploy)");
+    assert!(farmer_earn_val > 0, "the delta-neutral farmer earns COIN value for ~0 net cost");
+    assert!((trader_supply * vpc) > loser_real_loss, "the fixed trader cohort value exceeds the real loss that earns it");
 
     assert!(distributed <= supply, "distributed never exceeds supply");
     assert!(total_positions > XM_N_RATIONAL, "cross-margin: many traders hold multiple asset legs");
