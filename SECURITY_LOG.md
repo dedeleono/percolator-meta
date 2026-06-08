@@ -10835,3 +10835,21 @@ MUTATION-VERIFIED: removed the `|| v.amount < config.total_supply` clause (kept 
 Reverted -> 48/48 rd green, src clean. SHARP. No code change. VERDICT: the rd's claim vault is solvency-bound
 at freeze (no FCFS strand), mutation-proven — completing the COIN-distribution conservation proof on BOTH
 programs (distribution init solvency + rd freeze solvency + both over-allocation/supply-cap guards).
+
+## Tick — rd freeze finalize-window (freeze/claim-ordering griefing DoS) MUTATION-VERIFIED (surface D)
+
+freeze is the one-shot, PERMISSIONLESS transition from the accrual phase (register/crystallize) to the
+self-service claim phase: it snapshots the cohort denominators and stamps freeze_slot, after which
+register/crystallize are CLOSED (denominators final). Because anyone can call it, the timing guard `now <
+emission_end_slot + finalize_window -> reject` (lib.rs:880) is the freeze/claim-ordering defense: it forces a
+FINALIZE WINDOW after emission_end during which slow crystallizers (and the permissionless cranks that
+re-crystallize residual stakes to their final monotonic Δ) can still finish. Without it, a griefer freezes the
+instant emission ends, snapshotting a denominator that EXCLUDES every not-yet-crystallized stake -> those
+stakers' points stay 0 (or stale-low) and their COIN share is permanently stranded (a griefing DoS on honest
+participants).
+
+MUTATION-VERIFIED: neutered the finalize-window check (`if false && now < emission_end + finalize_window`),
+rebuilt the real .so -> self_service_lifecycle_guards_freeze_window_and_post_freeze_closure FAILED (freeze
+succeeded inside the window, before slow crystallizers could finalize). Reverted -> 48/48 rd green, src clean.
+SHARP. No code change. VERDICT: the freeze/claim lifecycle ordering (no premature freeze that strands
+un-crystallized stakers; register/crystallize closed post-freeze) is mutation-proven.
