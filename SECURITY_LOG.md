@@ -7729,3 +7729,24 @@ offsets, so the stub tests are LAYOUT-EQUIVALENT to the real subledger; a real-s
 be purely confirmatory (the rd's robust share_value_points(shares, withdrawn) handles both withdrawn=true and
 shares=0 forfeit representations). The TRADER cohort IS already tested against the real percolator
 (e2e_organic_pnl_loss_real_trade_feeds_trader_cohort). VERDICT: no gap — the share-value read is canary-complete. No change.
+
+### [AUDIT — cross-program offset-canary chain is COMPLETE stack-wide (GT/HF drift defense)] tick (A-D)
+Verified that EVERY consumer's raw-offset read of EVERY dependency field is canary-pinned against the real
+dependency struct (offset_of! source-of-truth, not a re-declared copy) — the defense against the GT/HF stale-offset
+drift class (a rebuilt dependency reorders a field -> a consumer silently reads the wrong bytes -> LOF/DoS/free-farm).
+All five consumer->dependency relationships are complete:
+- rd -> subledger (share-value cohort): POOL@8, OWNER@40, WITHDRAWN@88, SHARES@104 — all 4 vs subledger POS_*_OFF
+  exports (subledger_position_offsets_match_the_real_subledger_layout).
+- rd -> percolator (LP/trader cohort): MARKET_GROUP, OWNER, CRYSTALLIZED_LOSS, RECEIVED, SPENT — all 5 vs
+  offset_of!(PortfolioAccountV16Account, ..) incl. the load-bearing SPENT (net-by-spent)
+  (portfolio_residual_counter_offsets_match_the_real_percolator_struct).
+- gv -> subledger (vote weight + quorum): POOL, OWNER, PRINCIPAL, START_SLOT, POOL_OUTSTANDING — all 5 vs subledger
+  exports (the offsets.rs canary).
+- twap -> percolator (surplus): INSURANCE_OFFSET == 448 + offset_of!(MarketGroupV16HeaderAccount, insurance), PLUS
+  assert_ne! vs the adjacent `vault` offset (finding-T: read insurance, not the larger vault), PLUS a TopUp value
+  round-trip (insurance_offset_matches_real_percolator_slab).
+- gv -> distribution (winner snapshot): entry_count@84 + total_amount@88 via a real-proposal round-trip
+  (gv_distribution_snapshot_offsets_match_the_real_distribution_proposal_layout).
+And the subledger/rd EXPORTED consts are themselves offset_of!-pinned against their own structs, so the chain is
+real struct -> offset_of! export -> consumer const (canary) -> raw read. VERDICT: complete — no dependency reorder
+can silently shift any consumer's read. No change.
