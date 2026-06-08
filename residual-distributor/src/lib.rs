@@ -98,6 +98,16 @@ const IX_CLAIM: u8 = 5;
 // ===========================================================================
 
 /// Deterministic pro-rata split; floor rounding never over-allocates the fixed pool.
+///
+/// Overflow defense: `total_supply` (u64) * `points_i` (u128) can exceed u128 when `points_i` is large
+/// (`points_i = floor_log2(tenure) * net_delta`), so we `saturating_mul` rather than use an unchecked `*`
+/// (which would PANIC = brick every claim in the cohort) or a wrapping `*` (which would DRAIN). Because
+/// `points_i <= total_points` for any real stake, the result is ALWAYS `<= total_supply`, so this never
+/// overpays/over-allocates the fixed pool regardless of saturation. Saturation is itself unreachable for
+/// realistic inputs (`net_delta` is the crystallized residual, bounded by the market's collateral, far below
+/// the u64*u128 product limit); were it ever reached the claimant would UNDERpay and the remainder stays
+/// LOCKED in the vault (conservation holds — never a drain). Do NOT replace the saturating_mul with `*`;
+/// switch to u256 only if exactness past the (unreachable) saturation point is ever required.
 pub fn points_to_amount(total_supply: u64, points_i: u128, total_points: u128) -> u64 {
     if total_points == 0 {
         return 0;

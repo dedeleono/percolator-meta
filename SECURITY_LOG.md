@@ -7518,3 +7518,17 @@ Every field in subledger (Pool/Position), distribution (Config/Proposal/...), an
 real computation — NO dead fields. The accidental-dead-code/stale-doc class is contained to the two cases above,
 both documented. No hidden cruft that could mislead a maintainer into trusting an unimplemented invariant. No code
 change. Confirms the integrity of the serialized layouts the offset canaries pin.
+
+### [VERIFIED — rd points_to_amount pro-rata split is overflow-safe (no brick / no drain)] tick (D)
+SURFACE (rd claim arithmetic). points_to_amount(total_supply:u64, points_i:u128, total_points:u128) = total_supply
+* points_i / total_points — a multiply-THEN-divide. The intermediate total_supply*points_i can exceed u128 when
+points_i is large (points_i = floor_log2(tenure) * net_delta). The code uses SATURATING_mul (lib.rs:105), so: (a)
+no PANIC (an unchecked `*` would panic in debug / brick every claim in the cohort), (b) no WRAP-drain (a wrapping
+`*` could yield a huge quotient and over-allocate the fixed pool), (c) because points_i <= total_points for any real
+stake, the result is ALWAYS <= total_supply -> never over-allocates/drains. Saturation is itself UNREACHABLE for
+realistic inputs (net_delta is bounded by the market collateral, far below the u64*u128 product limit); were it
+ever reached, the claimant UNDERpays and the remainder stays LOCKED in the vault (conservation holds). FIX: added a
+doc block to points_to_amount explaining the overflow-defense + the "do NOT replace saturating_mul with `*`"
+warning. TEST: points_to_amount_is_overflow_safe_never_panics_and_never_over_allocates (offsets.rs) pins no-panic +
+result <= total_supply at u64::MAX/u128::MAX/saturation magnitudes, the zero-denominator -> 0 guard, and an exact
+ordinary split. VERDICT: BLOCKED/correct (defensively safe). KEEP. rd offsets (4) + e2e (38) green.
