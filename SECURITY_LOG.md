@@ -9140,3 +9140,18 @@ MUTATION CAMPAIGN — 10 load-bearing guards proven non-vacuous, all 4 surfaces:
   (C) distribution entry-zeroing [double-claim drain];
   (D) market allow-list + net-by-spent + anti-wash fee + log2(tenure) time-weight + claim recipient-binding.
 Every removed guard makes its test genuinely fail with the worst-case LOF/DoS/free-farm/mint regression. No code change.
+
+### [MUTATION-VERIFIED — gv trigger quorum gate (live-pool, anti stale-minority capture); BOTH trigger gates now proven] tick (B)
+Mutation-tested the genesis-vote trigger's QUORUM gate (`if total_voted_principal*2 <= live_outstanding { reject }`,
+lib.rs:766) — requires > half the LIVE outstanding insurance principal to have voted (re-read live at trigger, not the
+stale cache, so a minority that voted early can't capture after honest deposits grow the pool). Temporarily dropped it
+(`if false`), rebuilt, ran:
+- trigger_requires_a_strict_majority_and_quorum_not_a_tie (509): FAILED — a sub-quorum vote now triggers.
+- trigger_uses_live_pool_outstanding_not_stale_cache (816): FAILED — the live-quorum re-read defense is bypassed; a
+  stale-low / minority turnout seals + mints the supply (governance capture).
+REVERTED + rebuilt + tests PASS; git clean.
+BOTH gv winner-take-all trigger gates are now mutation-proven: (1) QUORUM (>half live principal voted) + (2) MAJORITY
+(>half cast weight on this proposal). Need both to seal + mint 100% supply; each removal = minority/no-quorum capture.
+MUTATION CAMPAIGN — 11 load-bearing guards proven non-vacuous, all 4 surfaces: (A) finding-O execute floor + re-arm
+monotonicity; (B) vote-lock + trigger majority + trigger quorum; (C) distribution entry-zeroing; (D) market allow-list
++ net-by-spent + anti-wash fee + time-weight + claim recipient-binding. No code change (all mutations reverted).
