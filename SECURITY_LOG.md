@@ -11314,3 +11314,23 @@ Reverted -> 58/58 subledger green, src clean. SHARP. No code change. VERDICT: th
 only bind the canonical percolator vault (no inert-pool fund-freeze), mutation-proven -- completing the init/
 setup verification across the whole stack (insurance pool [this tick] + own-vault pool + distribution init +
 rd init + twap init_book + the lamport-prefund robust-create on every PDA).
+
+## Tick — own-vault init_pool vault-owner bind (inert-pool brick) MUTATION-VERIFIED; both pool-type inits symmetric (surface B)
+
+Completed the init-path coverage symmetrically. process_init_pool (tag 0, the OWN-VAULT pool) binds its vault to
+the pool PDA: vault_state.mint != mint || vault_state.owner != expected_pool -> reject (lib.rs:483), after the
+SPL-Token-ownership prereq. The owner clause is the no-inert-pool guard: the own-vault pool signs its own
+deposit/withdraw transfers as the pool PDA, so the vault MUST be owned by expected_pool; a vault owned by anyone
+else can never be debited by the pool -> every withdraw fails = a permanent brick / fund-freeze (the own-vault
+parallel to the insurance pool's F-VAULT-FRAG canonical-vault pin verified last tick).
+
+MUTATION-VERIFIED: neutered the vault.owner != expected_pool clause (kept the mint check) ->
+init_pool_rejects_a_vault_not_owned_by_the_pool FAILED (a foreign-owned vault was bound). Reverted -> own-vault
+11/11 green, src clean. SHARP. No code change.
+
+INIT-PATH COVERAGE COMPLETE + symmetric across both subledger pool types: insurance pool (tag 3) binds the
+CANONICAL percolator insurance vault (F-VAULT-FRAG, last tick); own-vault pool (tag 0) binds a pool-PDA-OWNED
+vault (this tick); both reject the non-SPL token-shaped account (front-run/type-cosplay) and use the robust
+prefunded-PDA create (lamport-prefund brick). Together with distribution init_config, rd init, gv config init,
+and twap init_book/init_config -- every init/create across the stack is mutation-proven against its
+inert-pool/hijack/squat/leak failure mode.
