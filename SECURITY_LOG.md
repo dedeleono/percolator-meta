@@ -5,7 +5,26 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 300 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 50,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (B, weird-state hunt: insurance_withdraw stb-rounds-to-0 — UNREACHABLE + non-lossy, NO code change):
+LATEST TICK (A, weird-state audit of process_execute — the richest state machine — SOUND, 1 low-sev footgun
+noted, NO code change): drove the auction settlement state machine through its weird-state branches:
+(1) 4-way split rounding (burnable+savings floored) — retained = surplus-burnable-savings absorbs the floor, so
+burnable+savings<=surplus and retained>=0: neither pull reaches reserved principal (tested, finding O / splits).
+(2) Budget CARRY across rounds — unspent holding accumulates as the next round's budget; it is the twap_authority's
+(DAO shutdown-sweepable), no LOF. (3) NON-CLAIMING WINNER bricking the book — BLOCKED + fully tested: claim is
+PERMISSIONLESS (process_claim:1782 any cranker), pays ONLY the bid's bound canonical ATAs (1820), frees the slot
+(1832) and reopens at the last drain (1842-1843); e2e_execute_on_a_settled_book_is_frozen_until_claims_drain_it
+proves a 3rd-party crank resolves a stuck winner, the book reopens, AND a new execute runs (4640) — and the
+SETTLED freeze can't be bypassed past the round window (no double-burn, 4626). (4) coin_refund underflow — coin_i
+= floor(usd_i*cm/um) <= c_i since the bid ranks >= marginal; checked_sub guards anyway. (5) settlement/escrow
+conservation — total_usd<=budget moved to settlement; escrow after burn == Σcoin_refund: holds. VERDICT: no
+exploitable weird state in execute. ONE LOW-SEV FOOTGUN (noted, NOT fixed — DAO-gated + timelock-reviewed, per the
+atomic-init don't-over-engineer philosophy): init_book bounds round_length != 0 (lib.rs:997) but has NO UPPER
+bound; a huge round_length makes round_end = clock+round_length a far-future slot the round never reaches ->
+execute never runs -> permanent auction freeze (cancel needs 2*round_length aging, also never). Reachable only by
+the trusted DAO via a Squads-timelock'd init_book (a fat-finger the 1-week review window would catch), and
+init_book's checked_add (1087) catches the literal-overflow case. Surfaced to the user for a possible sanity bound.
+
+PRIOR TICK (B, weird-state hunt: insurance_withdraw stb-rounds-to-0 — UNREACHABLE + non-lossy, NO code change):
 new strategy (per user) — drive complex branchy code into a weird state, then check for LOF/DoS/farm. TARGET: the
 POLICY_WITH_SURPLUS insurance_withdraw share-math (lib.rs:1211-1294, the most branchy fund path). HYPOTHESIS: a
 LATE depositor (shares<principal under surplus) doing a TINY `amount` makes shares_to_burn=floor(shares*amount/
