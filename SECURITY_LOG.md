@@ -8095,3 +8095,20 @@ claim_rejects_same_program_type_confusion_config_and_stake_discriminators (real 
 and a config in the stake slot are BOTH rejected (no payout), and the correctly-typed claim still pays the LP its
 share. VERDICT: BLOCKED/correct, now pinned. The discriminator defense is verified for both cross- and same-program
 confusion. rd e2e green.
+
+### [AUDIT — discriminator (type-confusion) defense is COMPLETE stack-wide; same-program parity verified] tick (A-D)
+Follow-up to the rd same-program type-confusion pin. Audited every account type's deserialize across all 5 programs:
+EACH checks its 8-byte discriminator before reading fields (so a wrong-type, same-owner account is rejected, not
+read as garbage of the expected type):
+- subledger: POOL_DISC(SUBPOOL1)@200, POSITION_DISC(SUBPOS01)@266.
+- genesis-vote: CONFIG(GVCONFG1)@153, BALLOT(GVBALOT1)@197, PROPOSAL(GVPROPV1)@266 — AND its CROSS-program reads
+  check the dep disc too: SUB_POSITION_DISC@228, SUB_POOL_DISC@244/417, DIST_CONFIG_DISC@401, DIST_PROPOSAL_DISC@479.
+- distribution: CONFIG(DISTCFG1)@109, PROPOSAL(DISTPRP1)@158.
+- residual-distributor: CONFIG(RDCONFG1)@286, STAKE(RDSTAKE1)@434 (same-program config<->stake confusion PINNED:
+  claim_rejects_same_program_type_confusion_config_and_stake_discriminators).
+- twap-program: CONFIG(TWAPCFG1)@322, BOOK(TWAPBOK1)@829 — AND the cross-program Squads read checks
+  SQUADS_MULTISIG_DISC@435.
+So no account can be passed where a different type is expected (same-owner same-program OR cross-program), because
+the discriminator separates them — even though `owner == program_id` passes for any same-program account. The rd test
+pins the representative same-program pattern; the others are byte-for-byte the same guard (deserialize rejects on
+disc mismatch). VERDICT: the type-confusion defense is complete + uniform stack-wide. No change.
