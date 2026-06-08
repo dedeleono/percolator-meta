@@ -5,7 +5,19 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 300 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 50,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (A/C, gv trigger->seal binding sweep + mutation-verify, NO code change): swept the genesis-vote
+LATEST TICK (C/D, claim-index bounds analyzed + rd freeze finalize-window mutation-verify, NO code change):
+(C) distribution claim has an index>=entry_count bounds guard (lib.rs:572); analyzed as DEFENSE-IN-DEPTH not
+load-bearing — an index in [entry_count,capacity) reads a zeroed entry already rejected by the pk/amount checks,
+and index>=capacity panic-reverts safely regardless, so a dedicated test would be marginal (NOT added, per the
+delete-marginal rule). (D) NEW VERIFICATION: mutation-checked the rd freeze FINALIZE-WINDOW guard (lib.rs:876,
+`now < emission_end + finalize_window -> reject`) — the anti-grief DoS guard that stops a permissionless caller
+freezing EARLY (before slow backers crystallize), which would snapshot the denominators prematurely and forfeit
+the un-crystallized cohorts' points. Disabling it makes self_service_lifecycle_guards_freeze_window_and_post_
+freeze_closure FAIL; reverted, git clean, rd e2e 43 green. Cumulative mutation campaign: guard-removal[31], off-by-
+one[3], equivalent[1], constant-magnitude[1], offset-constant[1], live-cap[1], snap-baseline[1], last-write-
+clock[1], share-pricing-source[1] + 2 defense-in-depth; NO uncaught mutation across all 4 surfaces.
+
+PRIOR TICK (A/C, gv trigger->seal binding sweep + mutation-verify, NO code change): swept the genesis-vote
 trigger->distribution-seal cross-program seam (the whole-COIN-supply capture surface) and found it exhaustively
 covered: the trigger binds distribution_program/config/PROPOSAL to config + pv.distribution_proposal (lib.rs:737-
 742) and snapshots (entry_count,total_amount) against bait-and-switch (750-751); tested by trigger_cannot_redirect_
