@@ -10940,3 +10940,23 @@ REAL bugs found+fixed earlier in the campaign: distribution claim_window permane
 stale-points wash (live-cap), gv one-vote-one-proposal mutation-blind test, auction stale-round_end
 competition-skip. No new exploitable surface remains; the security model is established by guard-by-guard
 non-vacuity proofs end to end, not by argument. No code change this tick.
+
+## Tick — finding-L impaired pro-rata haircut (first-exiter drains co-depositors LOF) MUTATION-VERIFIED (surface B)
+
+The insurance-pool exit payout (lib.rs payout()) is the order-independence/anti-drain core: under a venue loss
+(balance = live asset-0 insurance < outstanding), a POLICY_PRINCIPAL exit pays `pro_rata = balance * principal
+/ outstanding` (every exiter takes the SAME haircut), NOT the full principal. Without the haircut (paying full
+`principal` while impaired), the FIRST exiter drains the depleted insurance at 1:1 and STRANDS the rest — the
+first-come race finding L fixed (a co-depositor LOF). Healthy (balance >= outstanding) still pays principal-only
+(surplus retained); POLICY_WITH_SURPLUS always pro-rata.
+
+MUTATION-VERIFIED (the most heavily-pinned subledger guard): changed the impaired branch `Ok(pro_rata)` ->
+`Ok(principal)`, rebuilt the real .so -> FOUR tests caught it:
+  - impaired_insurance_exit_is_pro_rata
+  - splitting_an_impaired_exit_cannot_beat_the_pro_rata_or_drain_a_codepositor
+  - a_fully_impaired_exit_still_retires_the_position_without_a_zero_amount_cpi
+  - foreign_market_slab_cannot_inflate_the_haircut
+Reverted -> 58/58 subledger green, src clean. SHARP. No code change. VERDICT: the impaired-exit pro-rata
+haircut (order-independent, no first-come drain) is mutation-proven — completing the subledger insurance-pool
+LOF/economics verification (haircut + live-insurance share-pricing + vote-lock dual-sign + finding HB +
+co-depositor bound + veto-exit).
