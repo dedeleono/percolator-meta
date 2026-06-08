@@ -10133,3 +10133,28 @@ FIX: none needed (guard correct). Added init_rejects_cohort_bps_summing_above_on
 neutering lib.rs:579 (`if false && ...`) lets the 150% init succeed -> test fails (verified, reverted).
 KEEP. rd suite 46->47 green, build-sbf clean. VERDICT: rd vault conservation is airtight on BOTH sides
 (supply allocation bounded at init, vault funding bound at freeze) — no over-allocation drain.
+
+## Tick — execute-brick DoS via the cross-instruction surplus-split cap (surface A; finding-KN guard MUTATION-VERIFIED)
+
+Probed process_execute (the ~350-line auction settlement) for a weird-state brick. The head computes
+`retained = surplus - burnable - savings` with checked_sub (lib.rs:1518-1522), so if the two surplus pulls
+(burnable = surplus*surplus_buy_burn_bps, savings = surplus*base_unit_savings_bps) could collectively exceed
+the surplus, EVERY execute would underflow-revert => the surplus auction is permanently bricked (a DoS until
+a corrective reconfigure). Principal is never at risk (execute reverts pre-pull), but the config could be
+driven into an un-executable state. Confirmed the rest of execute conserves: ratchet uses checked_add
+(1599), budget = holding.amount so total_usd <= budget (no over-draw), and a holding donation only funds
+extra COIN burn (self-griefing, not exploitable).
+
+The brick is prevented by the same `buy_burn_bps + savings_bps <= 10000` invariant enforced at BOTH setters,
+since they write the two halves INDEPENDENTLY:
+- set_economics (lib.rs:572): caps savings_bps against the LIVE surplus_buy_burn_bps (pinned:
+  set_economics_rejects_an_over_allocation_that_would_overpull_the_floor, chain:861).
+- reconfigure (lib.rs:530, finding KN): caps surplus_buy_burn_bps against the LIVE base_unit_savings_bps —
+  the SUBTLE cross-instruction half (a reconfigure that ignored the savings set by a prior set_economics
+  could raise burn above 10000-savings and brick execute).
+
+MUTATION-VERIFIED the finding-KN reconfigure-side cap (lib.rs:530): neutered it (`if false && ...`), rebuilt
+the real .so -> reconfigure_must_hold_the_auction_plus_savings_invariant FAILED (a reconfigure now drives
+buy_burn+savings > 100%, the un-executable state). Reverted -> 110/110 chain green. SHARP. No code change,
+no new test (both caps pinned: 861 + 932). VERDICT: the surplus-split is brick-proof from BOTH setters; the
+cross-instruction DoS is closed.
