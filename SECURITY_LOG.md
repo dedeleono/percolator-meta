@@ -7186,3 +7186,21 @@ vault and freezes with it — FAILED against the old .so (freeze accepted the fa
 rejects it; the real vault then freezes and the LP backer claims its full 400k).
 FIX (our authorship): require coin_mint.owner == spl_token::ID AND vault.owner == spl_token::ID BEFORE unpacking,
 parity with distribution:342. Rebuilt residual_distributor.so. VERDICT: REAL DoS, FIXED. KEEP. rd e2e 35, sim 3 green.
+
+### [FIXED — DoS: subledger init_pool missing SPL-owner guard on the persisted vault (front-run brick)] tick (D)
+SURFACE (subledger init_pool + init_insurance_pool). REAL BUG, same class as the rd freeze fix: both PERSIST
+pool.vault (lib.rs:493 / :887) after validating its token FIELDS via Account::unpack, but init_pool did NOT
+check vault.owner == spl_token::ID. unpack verifies bytes, NOT the owning program. init_pool is permissionless
+(PDA = mint+asset_id), so a front-runner can craft a NON-SPL account with token-shaped bytes (mint = mint, owner
+field = pool PDA), squat the canonical pool PDA, and bind a fake vault: the pool can never be re-inited
+(AlreadyInitialized) and every deposit's token_balance(vault) then rejects the fake -> the reusable own-vault
+pool is permanently bricked. (The genesis INSURANCE pool path is genesis-atomic, so its front-run is moot + the
+percolator CPI would also reject a non-SPL vault — but it was hardened for consistency too.)
+REPRO + TEST: init_pool_rejects_a_non_spl_owned_token_shaped_vault_no_front_run_brick (real subledger .so) crafts
+the fake vault and inits with it — FAILED against the old .so (init accepted the fake), PASSES after the fix
+(rejected; the real SPL vault still inits).
+FIX (our authorship): require vault.owner == spl_token::ID BEFORE unpacking in BOTH init_pool and
+init_insurance_pool (parity with distribution:342 + the rd freeze fix). Rebuilt subledger_program.so. VERDICT:
+REAL DoS, FIXED. KEEP. subledger 48 + insurance 48 + 10 green; gv 21, twap 101, sim 3 green (no breakage).
+This closes the "unpack-without-SPL-owner-check on a PERSISTED vault binding" class stack-wide: distribution,
+rd freeze, subledger init_pool/init_insurance_pool all guard it now.

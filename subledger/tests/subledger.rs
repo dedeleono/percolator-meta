@@ -5,6 +5,7 @@
 use litesvm::LiteSVM;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
+    program_option::COption,
     program_pack::Pack,
     pubkey::Pubkey,
     signature::{Keypair, Signer},
@@ -216,6 +217,41 @@ fn new_depositor(env: &mut Env, amount: u64) -> (Keypair, Pubkey) {
 
 fn clone_kp(kp: &Keypair) -> Keypair {
     Keypair::from_bytes(&kp.to_bytes()).unwrap()
+}
+
+// DoS PROBE (non-SPL token-shaped vault at init_pool, sweep tick D): init_pool PERSISTS pool.vault
+// (lib.rs:493) after validating its token FIELDS via Account::unpack — but, like the rd freeze just fixed, it
+// did NOT check vault.owner == spl_token::ID. unpack verifies bytes, not the owning program. init_pool is
+// permissionless (PDA = mint+asset_id), so a front-runner can craft a NON-SPL account with token-shaped bytes
+// (mint = mint, owner field = pool PDA) and squat the canonical pool PDA, binding a fake vault — the pool can
+// never be re-inited (AlreadyInitialized) and every deposit's token_balance(vault) then rejects the fake, so the
+// pool is permanently bricked. init_pool must reject a vault not owned by the SPL Token program.
+#[test]
+fn init_pool_rejects_a_non_spl_owned_token_shaped_vault_no_front_run_brick() {
+    let mut env = Env::new();
+    let asset_id = 13;
+    let pool = pool_pda(&env.mint, asset_id);
+
+    // SYSTEM-owned account with token-shaped data: mint = env.mint, owner field = the pool PDA. Passes the
+    // field checks, fails only on the owning program.
+    let fake = spl_token::state::Account {
+        mint: env.mint, owner: pool, amount: 0, delegate: COption::None,
+        state: spl_token::state::AccountState::Initialized, is_native: COption::None,
+        delegated_amount: 0, close_authority: COption::None,
+    };
+    let mut fake_data = vec![0u8; spl_token::state::Account::LEN];
+    spl_token::state::Account::pack(fake, &mut fake_data).unwrap();
+    let fake_vault = Pubkey::new_unique();
+    env.svm.set_account(fake_vault, solana_sdk::account::Account { lamports: 10_000_000, data: fake_data, owner: solana_sdk::system_program::ID, executable: false, rent_epoch: 0 }).unwrap();
+
+    assert!(
+        env.send(&[init_pool_ix(&env, &pool, &fake_vault, asset_id, 1)], &[]).is_err(),
+        "init_pool must reject a token-shaped vault not owned by the SPL Token program (else a front-run binds a fake vault and bricks the pool)"
+    );
+
+    // The real SPL vault inits fine (the rejected attempt did not squat the pool PDA).
+    let real_vault = create_token_account(&mut env.svm, &clone_kp(&env.payer), &env.mint, &pool);
+    env.send(&[init_pool_ix(&env, &pool, &real_vault, asset_id, 1)], &[]).expect("real SPL vault accepted");
 }
 
 #[test]
