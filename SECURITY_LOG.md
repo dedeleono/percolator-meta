@@ -10673,3 +10673,22 @@ rational_miner_farms_the_deterministic_distributor_across_uncontrolled_markets i
 COMPLETION: the full rd anti-wash suite is now individually mutation-proven — market allow-list (this tick) +
 net-by-spent + claim fee + log2 time-weight + live-cap (single + cross-cohort) + offset canary + LP `received`
 conservation. Every wash-farm defense the sweep enumerates is verified non-vacuous against the real binaries.
+
+## Tick — rd cohort-to-pool scoping (finding HG, cross-cohort/cross-genesis pool bind) MUTATION-VERIFIED (surface D)
+
+The share-value (insurance/backing) cohorts read points from a subledger Position; the residual cohorts read a
+percolator Portfolio. Cohort GATING is enforced at register by the ledger-owner check (insurance/backing must
+be subledger_program-owned; LP/trader must be percolator_program-owned) PLUS the finding-HG pool scope: a
+share-value registration's position must belong to THIS cohort's concrete pool — insurance -> config.subledger_pool,
+backing -> config.backing_pool (lib.rs:739). Without it, a position from ANY subledger-program pool would count:
+(a) a DIFFERENT genesis's insurance pool position farming this genesis's cohort (cross-genesis at the pool
+level), or (b) a BACKING-pool position registered as the INSURANCE cohort (or vice versa) — cross-cohort
+capture, since the cohorts have separate COIN supplies (insurance_bps vs backing_bps).
+
+MUTATION-VERIFIED (doubly): neutered the scope_pool check (`if false && SUB_POS_POOL != scope_pool`), rebuilt
+the real .so -> TWO tests caught it: register_rejects_foreign_owner_and_foreign_pool (a foreign-pool position
+registered) AND register_rejects_cross_cohort_pool_scope_insurance_vs_backing (an insurance-pool position
+registered as backing / vice versa). Reverted -> 48/48 rd green, src clean. SHARP. No code change. VERDICT:
+cohort gating + cross-cohort + cross-genesis pool binding (finding HG) is doubly mutation-proven; combined with
+the residual portfolio owner-bind, the cross-genesis config bind, and the substituted-ledger binds (all earlier
+ticks), every rd account-binding the sweep enumerates is verified non-vacuous.
