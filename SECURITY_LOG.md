@@ -8295,3 +8295,24 @@ sound + comprehensively pinned, the in/out symmetry complete:
 VERDICT: no over-pull (the principal floor is unreachable by either pull), no execute brick (bps capped so no
 underflow), no redirect (both optional sink destinations are config/book-bound with decoy-rejection tests). The
 symmetry lens is satisfied — every fund-OUT destination in execute is key-bound AND has a decoy test. No code change.
+
+### [VERIFIED — gv tally integrity: snapshot-at-vote + exact retract back-out + vote-lock blocks PARTIAL withdraw] tick (B)
+Traced whether the genesis-vote quorum/majority tallies can desync from live position state between vote and
+trigger (a capital-less ballot inflating quorum); SOUND + comprehensively pinned:
+- SNAPSHOT-AT-VOTE: vote_weight = floor(log2(age)) * principal is captured at VOTE time into the ballot
+  (voted_weight@72, voted_principal@88) and summed into the config tallies (total_voted_principal,
+  total_cast_weight). Retract backs out the SAME stored values -> exact add/remove, no recompute drift. Early
+  voting under-counts (age only grows), so a snapshot is always <= the true current weight: no stale-HIGH inflation.
+  Quorum compares the snapshot sum vs LIVE pool outstanding (read at trigger) = "stayers decide" by design.
+- VOTE-LOCK BLOCKS PARTIAL EXIT (the key probe): insurance_withdraw DOES allow partial amounts
+  (amount <= principal, lib.rs:1194, partial share burn 1217) — BUT the position.vote_locked check (1189) sits
+  BEFORE the amount check, so it rejects the ENTIRE withdraw, partial or full, while a ballot is live. So a voter
+  can NEVER reduce capital-at-risk below their voted_principal while the tally still counts it. The owner must
+  retract first (clears the lock AND removes the ballot's weight/principal). ALREADY PINNED:
+  vote_locked_principal_cannot_exit_until_retracted (insurance_percolator:2142) — line 2183 explicitly asserts a
+  PARTIAL vote-locked withdraw is rejected; 2190-2197 retract clears lock + zeroes support + then exit works.
+- COMPLEMENTS pinned: double_retract_is_rejected...no double-release (1977), topping_up_a_voted_position_does_not
+  _inflate_or_unlock (2019/2047), forged-position can't fabricate weight (1750), borrow-another-voter's-position
+  rejected (372), GG u128-widened tallies (no overflow DOS).
+VERDICT: no capital-less / stale-weight ballot — every tally term is backed by still-locked capital, snapshots are
+conservative, retract is exact, and the vote-lock has no partial-leak. No LOF/DoS/quorum-forge. No code change.
