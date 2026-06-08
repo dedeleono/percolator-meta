@@ -10596,3 +10596,22 @@ MUTATION-VERIFIED: dropped the `&& coin_i > 0` clause (treat a 0-COIN fill as fi
 e2e_settle_with_a_zero_coin_marginal_pays_no_usd_for_zero_coin FAILED (bob was paid USD for his zero-COIN
 marginal fill). Reverted -> 111/111 chain green, src clean. SHARP. No code change. VERDICT: the marginal-clearing
 math conserves (coin_i <= escrow, reserve-bounded P*) and the "no USD for zero COIN" guard is mutation-proven.
+
+## Tick — veto-exit [retract, withdraw] in ONE atomic tx pinned end-to-end (surface B; previously untested)
+
+Surface B's "veto-exit [retract, withdraw] one-tx" was only tested as SEPARATE transactions
+(winning_voter_can_retract_and_exit_after_finalize :2728 retracts in one tx, withdraws in another). The ATOMIC
+single-tx veto — a depositor exits the genesis by retracting their vote AND withdrawing principal in one
+transaction [retract_ix, withdraw_ix] — was unpinned. It is a distinct, stronger property: the retract (gv vote
+action 2) CPIs subledger SetVoteLock(0) to clear position.vote_locked in instruction 1, and the withdraw
+(subledger tag 5) reads vote_locked == false in instruction 2 — so the test exercises INTRA-tx account-state
+propagation (the CPI write in ix1 visible to ix2's read), which a two-tx test cannot.
+
+Built veto_exit_retract_and_withdraw_in_one_atomic_tx: alice deposits + votes (locked); a CONTROL bare
+withdraw is rejected (vote-locked); then [retract, withdraw] in ONE env.send() SUCCEEDS — alice recovers her
+full 1M principal AND her vote is gone (gv total_voted_principal 1M -> 0, so quorum recomputes as she leaves)
+AND pool outstanding -> 0, all atomically. This pins: (1) the veto is atomic (no two-step window where she is
+locked-but-not-exited or exited-but-still-voting), (2) the lock is never a trap (the retract's CPI unlock lands
+in the same tx), (3) "those who stay decide" — the quorum numerator drops the instant a voter vetoes. Real gv +
+subledger + percolator .so. KEEP (pins a real, previously-untested boundary; the control + the cross-program
+intra-tx propagation make it non-tautological). subledger 56->57 green. No code change (behavior correct).

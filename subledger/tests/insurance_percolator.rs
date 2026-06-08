@@ -911,6 +911,12 @@ fn gv_proposal_support(env: &Env, gv_proposal: &Pubkey) -> (u64, u64) {
     (support_weight, support_principal)
 }
 
+// gv Config.total_voted_principal (the quorum numerator) @ 200..208.
+fn gv_total_voted_principal(env: &Env, ve: &VoteEnv) -> u64 {
+    let acc = env.svm.get_account(&ve.gv_config).unwrap();
+    u64::from_le_bytes(acc.data[200..208].try_into().unwrap())
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -2756,6 +2762,79 @@ fn winning_voter_can_retract_and_exit_after_finalize() {
     // ...and then recover their principal. No permanent freeze.
     env.insurance_withdraw(&alice, &alice_ata, &holding, &alice, amount).expect("exit after finalize+retract");
     assert_eq!(env.token_amount(&alice_ata), amount, "principal recovered after finalize");
+}
+
+// VETO-EXIT in ONE ATOMIC TRANSACTION (surface B): a depositor vetoes the genesis by RETRACTING their vote
+// and WITHDRAWING their principal in a SINGLE tx [retract_ix, withdraw_ix]. The retract (gv vote action 2)
+// CPIs the subledger SetVoteLock(0) to clear position.vote_locked; the withdraw (subledger tag 5) then checks
+// position.vote_locked == false. For the one-tx veto to work, the lock-clear written by instruction 1 MUST be
+// visible to instruction 2 within the same transaction (intra-tx account-state propagation), AND the gv tally
+// must drop so quorum recomputes as the voter leaves. This pins that the veto is atomic — there is no two-step
+// window where the voter is exposed (locked-but-not-yet-exited or exited-but-still-voting), and the lock is
+// never a trap. Real gv + subledger + percolator .so.
+#[test]
+fn veto_exit_retract_and_withdraw_in_one_atomic_tx() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+    let ve = setup_vote(&mut env);
+
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let holding = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &holding, amount).expect("deposit");
+    let dest = Pubkey::new_unique();
+    let (_dist_proposal, gv_proposal) = create_and_register_proposal(&mut env, &ve, 1, &dest);
+    env.warp_slot(1124);
+    gv_vote(&mut env, &ve, &alice, &gv_proposal, 1).expect("alice votes (locks her position)");
+    let voted_principal_before = gv_total_voted_principal(&env, &ve);
+    assert_eq!(voted_principal_before, amount, "alice's principal is counted toward quorum while she votes");
+
+    // CONTROL: a bare withdraw (no retract) is rejected — the position is vote-locked.
+    assert!(env.insurance_withdraw(&alice, &alice_ata, &holding, &alice, amount).is_err(),
+        "a vote-locked position cannot exit without retracting first");
+
+    // THE VETO-EXIT: retract + withdraw in ONE transaction.
+    let gv_ballot = Pubkey::find_program_address(
+        &[b"gv_ballot", ve.gv_config.as_ref(), alice.pubkey().as_ref()], &gv_id()).0;
+    let retract_ix = Instruction {
+        program_id: gv_id(),
+        accounts: vec![
+            AccountMeta::new(alice.pubkey(), true),
+            AccountMeta::new(ve.gv_config, false),
+            AccountMeta::new(gv_ballot, false),
+            AccountMeta::new(gv_proposal, false),
+            AccountMeta::new(env.position_pda(&alice.pubkey()), false),
+            AccountMeta::new_readonly(env.pool, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(sub_id(), false),
+        ],
+        data: vec![3u8, 2u8], // vote, action=retract
+    };
+    let mut wdata = vec![5u8]; wdata.extend_from_slice(&amount.to_le_bytes());
+    let withdraw_ix = Instruction {
+        program_id: sub_id(),
+        accounts: vec![
+            AccountMeta::new(alice.pubkey(), true),
+            AccountMeta::new(env.pool, false),
+            AccountMeta::new(env.position_pda(&alice.pubkey()), false),
+            AccountMeta::new(alice_ata, false),
+            AccountMeta::new(holding, false),
+            AccountMeta::new(env.slab, false),
+            AccountMeta::new(env.perc_vault, false),
+            AccountMeta::new_readonly(env.vault_authority, false),
+            AccountMeta::new_readonly(perc_id(), false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+        ],
+        data: wdata,
+    };
+    env.send(&[retract_ix, withdraw_ix], &[&alice]).expect("atomic retract+withdraw veto-exit succeeds");
+
+    // The lock-clear in ix 1 was visible to ix 2 -> principal recovered, AND alice's vote is gone (quorum
+    // recomputes as she leaves): both halves of the veto landed atomically.
+    assert_eq!(env.token_amount(&alice_ata), amount, "alice recovered her full principal in the same tx as the retract");
+    assert_eq!(gv_total_voted_principal(&env, &ve), 0, "alice's vote was retracted — her principal no longer counts toward quorum");
+    assert_eq!(env.pool_outstanding(), 0, "alice's principal left the pool outstanding accounting");
 }
 
 // Griefing-freeze: init_insurance_pool is permissionless and records vote_authority
