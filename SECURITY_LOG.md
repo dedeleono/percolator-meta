@@ -10997,3 +10997,25 @@ Reverted -> 58/58 subledger green, src clean. SHARP. No code change. VERDICT: th
 JIT-quorum-pumping and unfunded/withdrawn voting (the hold-time-commitment prerequisite), mutation-proven --
 completing the gv vote/trigger verification (zero-weight + quorum key-bind + live-outstanding + majority +
 one-vote-one-proposal + double-retract + anti-double-vote + capital-less-ballot vote-lock).
+
+## Tick — insurance_withdraw market_slab bind is DEFENSE-IN-DEPTH (foreign-slab haircut-inflation backstopped by the percolator CPI) (surface B)
+
+Probed the insurance_withdraw foreign-slab guard `*market_slab.key != pool.market_slab -> reject` (lib.rs:1162,
+finding AF), which guards the pro-rata HAIRCUT BASIS — payout() reads the live asset-0 insurance from the
+passed market_slab, so a depositor in an IMPAIRED pool passing a DIFFERENT, HEALTHY market's slab would read
+that market's full insurance and over-pay (a co-depositor LOF). MUTATION-BLIND: removing the market_slab clause
+(keeping percolator_vault + percolator_program) fails NO test — so 1162 is DEFENSE-IN-DEPTH, not a sole guard.
+
+The foreign-slab attack is structurally blocked by two backstops that remain: (1) percolator_vault == pool.vault
+(1163) forces the CPI to pull from the REAL pool vault; and (2) percolator's WithdrawInsuranceLimited requires
+the vault to belong to the passed market_slab AND caps the pull to that market's real insurance — so a foreign
+slab + the real pool vault is INCONSISTENT and the CPI rejects (confirmed: foreign_market_slab_cannot_inflate_
+the_haircut still passes is_err with 1162 removed). Even absent the reject, the payout is bounded by the real
+vault's (impaired) insurance + the per-position principal cap, so no over-pay is reachable. 1162 is a redundant
+EARLY-reject (cleaner error); the load-bearing guards are the vault-bind + the percolator CPI's slab/vault
+consistency.
+
+No code change (property holds via the backstops). 58/58 subledger green, src clean. (Parallels the earlier
+defense-in-depth characterizations: gv ballot PDA bind, the co-depositor per-position clause masked by
+overflow-checks, the gv borrow-position triple-layer.) VERDICT: foreign-slab haircut-inflation is closed by the
+vault-bind + percolator CPI; 1162 is belt-and-suspenders, correctly documented as such.
