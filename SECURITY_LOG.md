@@ -7984,3 +7984,19 @@ VERDICT: the twap's Squads reliance is sound; it inherits Squads' approval/timel
 vault so they can't be sidestepped. This completes the adversarial re-examination of ALL surfaces (A finding-O +
 captured-DAO + Squads, B governance/share math, C distribution, D anti-wash) — the finding-O lens found 1 real bug
 (the principal-drain monotonicity bypass, FIXED) and confirmed every other defense correct, not merely tested. No change.
+
+### [AUDIT — genesis MARKET fee config (3bps + 20% redirect): not bypassable / over-pullable / brickable] tick (A)
+Re-examined the prompt's fee-config vector. The fee is the buy/burn FUEL (fees -> asset-0 insurance -> surplus ->
+execute -> buy/burn). All three failure modes blocked:
+- BYPASS: the 3bps fee is charged by the PERCOLATOR at trade time (construction-time trade_fee_base_bps=3 in
+  WrapperConfigV16) — a meta program / trader cannot dodge it. Pinned BOTH as config (readback:
+  genesis_market_initialized... cfg.trade_fee_base_bps==3) AND as live behavior on a REAL trade
+  (sim genesis_market_3bps_fee_accrues_to_asset0_insurance_on_a_real_trade_redirect_inert_for_asset0, farm.rs:408).
+- OVER-PULL: the fee-grown insurance is pulled only as surplus = insurance - reserved_floor; the finding-O floor
+  (now drain-proof both ways) bars any pull below the depositor principal.
+- BRICK: the fee config is pinned at 3bps by the readback (a 0-fee / extreme misconfig is caught); the 20% redirect
+  (fee_redirect_to_market_0_bps=2000, backing_trade_fee_insurance_share=2000) is INERT on the single-asset genesis
+  (credit_fee_to_domain_budget_view keeps asset-0's own fee in asset-0, sim:408) so it can't strand/misroute.
+VERDICT: the genesis fee config is sound — the fee correctly fuels the surplus, can't be dodged, and can't reach the
+principal. This + the Squads, captured-DAO, governance, anti-wash, and finding-O re-examinations complete the
+adversarial-correctness sweep of every prompt-named surface. No change.
