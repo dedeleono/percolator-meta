@@ -9256,3 +9256,20 @@ subledger CPI backstop across the program boundary). gv_vote_cannot_borrow_anoth
 blocks the borrow. REVERTED + rebuilt + test passes; git clean.
 This complements the 16 single-guard mutation-verified invariants by showing the borrow-weight-theft (the Sybil
 weight-theft vector) is the most robustly defended (3 independent layers, 2 programs). No code change.
+
+### [MUTATION-VERIFIED — distribution vault-funding solvency (EZ); 17 sole-defense guards proven, all 4 surfaces] tick (C)
+Mutation-tested the distribution init_config solvency guard (`if vault_state.amount < total_supply { reject }`,
+lib.rs:354) — the vault must already hold the FULL promised supply, else a config could promise more than the vault
+holds and early claimers drain it, stranding honest late claimers (claim-race LOF; seal only enforces total_amount
+<= total_supply, not vault solvency). Temporarily dropped it (`if false`), rebuilt, ran:
+- init_config_rejects_a_vault_underfunded_below_a_fully_minted_supply (1048): FAILED at 1084 — an underfunded-vault
+  config is now created = a promise the vault can't back. Caught.
+REVERTED + rebuilt + test PASSES; git clean.
+MUTATION CAMPAIGN — 17 sole-defense guards proven non-vacuous + 1 triple-defense (borrow-position), all 4 surfaces:
+  (A) finding-O execute floor + re-arm monotonicity + auction eviction-refund + require_squads_vault DAO gate;
+  (B) vote-lock + trigger majority + trigger quorum [+ borrow-position triple-layer];
+  (C) entry-zeroing + append supply-cap + vault-funding solvency;
+  (D) allow-list + net-by-spent + anti-wash fee + time-weight + recipient-binding + freeze fixed-supply + rd claimed-flag.
+Threat classes covered: principal-protection (x2), Sybil (vote-lock + borrow triple), winner-take-all (quorum+majority),
+conservation + solvency + over-allocation, double-claim (x2), redirect-theft (x2), full anti-wash suite,
+COIN-mint-inflation, keystone DAO authority gate. No code change (all mutations reverted).
