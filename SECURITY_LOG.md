@@ -5,7 +5,22 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (A, auction claim canonical-bind is SHARP — and the sharp-vs-masked criterion): mutation-checked the
+LATEST TICK (D, share-value crystallize owner-gate (finding KM) is SHARP — forced-timing anti-grief class):
+mutation-checked the rd share-value crystallize owner-gate (lib.rs:813, `cranker.key != stake.owner -> reject`),
+a DIFFERENT guard class than the redirect/bind ones — it stops a THIRD PARTY force-crystallizing a victim's
+insurance/backing stake at a transient low-share moment (mid partial-withdraw), which freeze would then lock as
+the frozen denominator term, permanently capping the victim's COIN share low. Dropping it makes share_value_
+crystallize_cannot_be_forced_by_a_third_party_at_a_low_share_moment FAIL -> genuinely SHARP (the forced low-share
+crystallize is the sole harm path; LP/trader stay permissionless because their counters are monotonic per-field so
+a forced crystallize can only RAISE the delta, plus my live-cap caps a later recovery). Reverted, git clean, rd
+e2e 45 green. Cumulative mutation campaign: guard-removal[39] + 9 classes + 2 defense-in-depth; NO uncaught
+mutation. HONEST SATURATION NOTE: the standalone scope's load-bearing guards are now comprehensively mutation-
+verified across redirect/bind, value-bound, owner-gate/forced-timing, anti-wash, and economic-cap classes; recent
+ticks are confirmations (sharp) or characterizations (defense-in-depth) rather than new bugs. The genuine finds
+this session: 1 real LOF fix (distribution claim_window), 1 real free-farm fix (rd stale-points live-cap), 1 real
+mutation-blind test gap (gv binding), + 3 mischaracterized defense-in-depth guards corrected.
+
+PRIOR TICK (A, auction claim canonical-bind is SHARP — and the sharp-vs-masked criterion): mutation-checked the
 auction claim canonical-ATA bind (process_claim lib.rs:1820, `usd_dest == SL_USD_DEST && coin_ata == SL_COIN_ATA`),
 the anti-redirect LOF guard that pins a winner's USD/COIN payout to their OWN bound ATAs so a permissionless cranker
 can't redirect it. Dropping it makes 3 tests FAIL (e2e_claim_payout_cannot_be_redirected_to_a_cranker_account,
