@@ -327,6 +327,49 @@ fn lp_trader_claim_pays_the_anti_wash_fee_share_value_cohorts_dont() {
     assert_eq!(token_amount(&svm, &env.vault), supply - 320_000 - 100_000, "the 80_000 fee + unclaimed cohorts stay locked in the vault");
 }
 
+// LIVENESS/NO-DILUTION PROBE (registered-but-never-crystallized stake, sweep tick D): a backer can register and
+// then never crystallize (forgot, or ran out of finalize window) — its stake.points stay 0. Two properties must
+// hold: (1) its own claim pays 0 GRACEFULLY (points_to_amount guards total_points==0, lib.rs:97 — no div-by-zero
+// brick), and (2) its 0 points do NOT enter the frozen denominator, so a co-cohort staker that DID crystallize
+// still takes the full cohort (the idle stake neither strands supply nor dilutes the honest claimant). All claim
+// tests above crystallize first, so the zero-points path was unexercised.
+#[test]
+fn a_registered_but_never_crystallized_stake_claims_zero_and_does_not_dilute_the_cohort() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let supply = 1_000_000u64; // lp cohort = 40% = 400_000 ; no anti-wash fee (setup)
+    let env = setup(&mut svm, &payer, supply);
+    set_slot(&mut svm, 100);
+
+    // Staker A: registers AND crystallizes a real residual (points > 0).
+    let a = Keypair::new(); let a_pf = Pubkey::new_unique();
+    set_portfolio(&mut svm, &a_pf, &env.stub_perc, &env.market, &a.pubkey(), 0, 0);
+    register(&mut svm, &payer, &env, &a, &a.pubkey(), &a_pf, COHORT_LP).expect("reg A");
+    set_portfolio(&mut svm, &a_pf, &env.stub_perc, &env.market, &a.pubkey(), 9_000, 0);
+    set_slot(&mut svm, 1_000);
+    crystallize(&mut svm, &payer, &env, &a, &a_pf).expect("cry A");
+
+    // Staker B: registers in the SAME cohort but NEVER crystallizes — points stay 0.
+    let b = Keypair::new(); let b_pf = Pubkey::new_unique();
+    set_portfolio(&mut svm, &b_pf, &env.stub_perc, &env.market, &b.pubkey(), 0, 0);
+    register(&mut svm, &payer, &env, &b, &b.pubkey(), &b_pf, COHORT_LP).expect("reg B (never crystallizes)");
+
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    freeze(&mut svm, &payer, &env).expect("freeze");
+
+    // A takes the FULL lp cohort — B's 0 points never entered the frozen denominator (no dilution).
+    let a_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &a.pubkey());
+    claim(&mut svm, &payer, &env, &a, &a_ata, None).expect("A claim");
+    assert_eq!(token_amount(&svm, &a_ata), 400_000, "the sole crystallized LP staker takes the full cohort — the idle stake did not dilute");
+
+    // B's claim pays 0 gracefully — no panic, no div-by-zero, no brick of its own slot.
+    let b_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &b.pubkey());
+    claim(&mut svm, &payer, &env, &b, &b_ata, None).expect("B claim succeeds (pays 0)");
+    assert_eq!(token_amount(&svm, &b_ata), 0, "a registered-but-never-crystallized stake claims 0, gracefully");
+}
+
 // FREE-FARM PROBE (finding NZ, sweep): the TRADER cohort is the PRIMARY delta-neutral wash surface, so the
 // anti-wash fee MUST apply to it too (the LP test above only covers COHORT_LP). claim taxes both PnL-flow
 // cohorts (matches!(cohort, COHORT_LP | COHORT_TRADER)); if the trader branch dodged the fee, a wash-farmer

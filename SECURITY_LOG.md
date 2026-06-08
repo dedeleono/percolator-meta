@@ -7115,3 +7115,15 @@ RE-VERIFIED SATURATED this tick (each traced to its guard + test):
 HEALTH: subledger 67 + distribution 34 + rd 37 + genesis-vote 21 + twap 104 + sim 3 + program 6/integration — all
 green, zero regressions across 19 prior sweep ticks. Cross-program redirect invariant (caller-supplied money
 destination must bind to a recorded/PDA key) is now uniform across distribution, rd, and twap.
+
+### [VERIFIED — liveness/no-dilution: a registered-but-never-crystallized stake claims 0 gracefully] tick (D)
+SURFACE (rd claim, zero-points path). A backer can register and then never crystallize (forgot, or missed the
+finalize window) -> stake.points stay 0. Every prior claim test crystallizes first, so the zero-points path was
+unexercised. Two properties pinned: (1) its own claim pays 0 GRACEFULLY — points_to_amount guards total_points==0
+(lib.rs:97), no div-by-zero brick of its slot; (2) its 0 points never entered the frozen denominator, so a
+co-cohort staker that DID crystallize still takes the FULL cohort (the idle stake neither strands supply nor
+dilutes the honest claimant).
+TEST: a_registered_but_never_crystallized_stake_claims_zero_and_does_not_dilute_the_cohort (real rd .so): LP
+staker A crystallizes 9_000; LP staker B registers but never crystallizes; after freeze, A claims the FULL 400_000
+LP cohort and B claims 0 (clean Ok, no panic). VERDICT: BLOCKED (graceful). KEEP (pins the idle-stake liveness +
+no-dilution edge, distinct from the crystallize-first tests). No behavior change. rd e2e 32 green.
