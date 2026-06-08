@@ -901,6 +901,59 @@ fn impaired_insurance_exit_is_pro_rata() {
     assert_eq!(env.token_amount(&env.perc_vault.clone()), 0, "impaired insurance fully and fairly distributed");
 }
 
+// LOF PROBE (surplus exclusion, sweep tick B): the impaired test above pins the DOWNSIDE (pro-rata haircut).
+// The untested UPSIDE is the "SURPLUS correctly EXCLUDED" property (comment above): when the insurance grows
+// ABOVE outstanding (the market earns a surplus — e.g. the 3 bps fees that accrue to asset-0 insurance, verified
+// in sim/), a depositor must recover ONLY their principal — never a pro-rata slice of the surplus. percolator's
+// WithdrawInsuranceLimited caps each exit to the deposited principal (deposits_only=1), so the surplus is NOT
+// the depositors' to take: it stays in insurance to back the market and fund the buy/burn. If a depositor could
+// pull insurance*amount/outstanding here (> principal), that would be a direct LOF draining the buy/burn fuel,
+// and it would turn the Sybil-check deposit into a yield-bearing investment (against the whole design).
+#[test]
+fn surplus_above_outstanding_is_excluded_a_depositor_recovers_principal_only_not_yield() {
+    let mut env = Env::new();
+    env.init_insurance_pool();
+
+    let amount = 1_000_000u64;
+    let (alice, alice_ata) = new_depositor(&mut env, amount);
+    let (bob, bob_ata) = new_depositor(&mut env, amount);
+    let pool = env.pool;
+    let a_hold = create_holding(&mut env, &pool);
+    let b_hold = create_holding(&mut env, &pool);
+    env.insurance_deposit(&alice, &alice_ata, &a_hold, amount).expect("alice deposit");
+    env.insurance_deposit(&bob, &bob_ata, &b_hold, amount).expect("bob deposit");
+    assert_eq!(env.pool_outstanding(), 2 * amount, "outstanding = both deposits (2M)");
+
+    // The market EARNS a 1M surplus: insurance grows 2M -> 3M (1M ABOVE the 2M outstanding). Mirror it
+    // consistently on the slab (insurance/vault/budgets) and on the SPL vault token account.
+    impair_market(&mut env, 3_000_000);
+    env.svm
+        .set_account(
+            env.perc_vault,
+            Account {
+                lamports: 1_000_000,
+                data: token_account_data(&env.mint, &env.vault_authority, 3_000_000),
+                owner: spl_token::ID,
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
+
+    // Alice withdraws her principal. With insurance(3M) >= outstanding(2M) the deposits_only cap pays her
+    // EXACTLY her 1M principal — NOT 1M * 3M/2M = 1.5M. The surplus is excluded.
+    env.insurance_withdraw(&alice, &alice_ata, &a_hold, &alice, amount).expect("alice exits");
+    assert_eq!(env.token_amount(&alice_ata), 1_000_000, "depositor recovers principal ONLY — never a slice of the market surplus");
+    assert_eq!(env.token_amount(&env.perc_vault.clone()), 2_000_000, "the 1M surplus + bob's 1M principal stay in insurance (buy/burn fuel untouched)");
+    assert_eq!(env.pool_outstanding(), amount, "alice's full principal left the outstanding accounting");
+
+    // Bob likewise recovers his principal only — the surplus is still not distributable to him.
+    env.insurance_withdraw(&bob, &bob_ata, &b_hold, &bob, amount).expect("bob exits");
+    assert_eq!(env.token_amount(&bob_ata), 1_000_000, "second depositor also recovers principal only");
+    assert_eq!(env.token_amount(&env.perc_vault.clone()), 1_000_000, "the 1M surplus REMAINS in insurance after all principals are returned");
+    assert_eq!(env.pool_outstanding(), 0, "all principal retired; the surviving 1M is pure surplus, not a depositor's");
+}
+
 // CO-DEPOSITOR DRAIN (the per-position withdraw bound): insurance_withdraw caps `amount` by BOTH
 // `position.principal` AND `pool.outstanding_principal` (lib.rs:1054). Because outstanding is the SUM of
 // every position's principal, the per-position bound is always the tighter one and is the LOF-critical

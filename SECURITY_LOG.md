@@ -6953,3 +6953,18 @@ is rejected too — UNCONDITIONALLY (alice fully filled so refund=0, yet the key
 the guard runs before the >0 transfer branches). Attacker gets 0; alice's parked USD intact; her legit claim to
 the recorded dest still pays 200k. VERDICT: BLOCKED (parity with the distribution claim-theft guard). KEEP. No
 behavior change. twap-program chain 98 green.
+
+### [VERIFIED — LOF: insurance SURPLUS is excluded; a depositor recovers principal only, not yield] tick (B)
+SURFACE (subledger insurance_withdraw on the real percolator slab, POLICY_PRINCIPAL deposits_only). The
+impaired_insurance_exit_is_pro_rata test pins the DOWNSIDE (pro-rata haircut). The untested UPSIDE is the
+"SURPLUS correctly EXCLUDED" property: when insurance grows ABOVE outstanding (the market earns a surplus — e.g.
+the 3bps fees that accrue to asset-0 insurance, verified in sim/ two ticks ago), a depositor must recover ONLY
+principal, never a pro-rata slice of the surplus. percolator's WithdrawInsuranceLimited caps each exit to the
+deposited principal (deposits_only=1), so the surplus stays in insurance to back the market + fund the buy/burn.
+A leak here would be a direct LOF draining the buy/burn fuel AND would turn the Sybil-check deposit into a
+yield-bearing investment (against the whole design).
+TEST: surplus_above_outstanding_is_excluded_a_depositor_recovers_principal_only_not_yield (real subledger+perc
+.so): alice+bob deposit 1M each (outstanding 2M); insurance grown to 3M; each withdraw returns EXACTLY 1M (NOT
+1M*3M/2M=1.5M); the 1M surplus REMAINS in insurance after all principals are retired (outstanding 0).
+VERDICT: BLOCKED. KEEP (the upside counterpart to the haircut test; pins the buy/burn-fuel LOF guard + the
+"deposit is a Sybil check, not an investment" property). No behavior change. subledger 46 + 10 + 10 green.
