@@ -11522,3 +11522,20 @@ So VIRTUAL_SHARES is NOT mere defense-in-depth — its magnitude is load-bearing
 legitimate above-dust deposits mintable rather than rejected. Reverted -> 11/11 subledger own-vault green, src
 clean. SHARP (constant-magnitude). No code change. Mutation class coverage extends to a second constant
 (joins the points_to_amount/INSURANCE_OFFSET magnitude pins).
+
+## Tick — gv winner-take-all TRIGGER strict-majority boundary (off-by-one => non-majority captures 100% mint) MUTATION-VERIFIED (surface B)
+
+The gv trigger is the single highest-consequence operation in the whole stack: it permissionlessly mints 100%
+of the COIN supply to the first proposal clearing BOTH a principal quorum and a weighted majority. Both gates
+are STRICT-majority inequalities (lib.rs:766/771): quorum rejects when total_voted_principal*2 <= live_
+outstanding; majority rejects when support_weight*2 <= total_cast_weight. The `<=` (not `<`) is load-bearing:
+at EXACTLY 50% a tie must REJECT, else a non-majority (or a 50/50 split) seals the winner-take-all mint =
+governance capture, the worst LOF in the system (100% of supply misrouted).
+
+MUTATION-VERIFIED (off-by-one class) the quorum boundary: flipped `<=` to `<` -> an exactly-half quorum
+(voted 5 of live-outstanding 10; 5*2 == 10, not > 10) no longer rejects and the trigger SEALS, so
+trigger_requires_a_strict_majority_and_quorum_not_a_tie FAILS at "exactly-half principal is NOT a quorum"
+(seal.rs:519). The same test also pins the majority side (support 4 of cast 8; 4*2 == 8 -> reject) and the
+one-unit-past-both case (6/10 and 5/8 -> seals), so a `<=`->`<` on EITHER inequality is caught. Reverted ->
+17/17 gv seal green, src clean. SHARP. No code change. The most catastrophic boundary in the stack (50%+epsilon
+governance capture) is mutation-pinned on both the quorum and majority gates.
