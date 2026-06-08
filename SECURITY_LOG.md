@@ -8064,3 +8064,21 @@ init-config, recreate 460). VERDICT: no clean gap — the distribution vault bin
 No change. (rd's vault decoy IS isolable because its claim pays a SHARE of a vault holding the SAME single mint with
 multiple cohort claimants — a same-mint decoy is fundable there via set_token; distribution's per-entry full-amount
 transfer is not.)
+
+### [AUDIT — DoS/liveness surface re-examined: compute-budget + freeze/claim/execute liveness all bounded] tick (A/D)
+Re-examined the prompt's DoS emphasis (griefing / permanent brick / fund freeze) holistically. All bounded:
+- COMPUTE-BUDGET: the auction's O(N^2) settle is bounded by MAX_BIDS=32 and the CONSTANT-TIME cmp_bid (finding-AC,
+  chosen over the continued-fraction cmp_rate which a full book of close rates could blow); pinned end-to-end by
+  e2e_full_book_of_worst_case_rates_cannot_dos_execute (32 worst-case bids settle within budget). Distribution
+  append is entry-count capped (append_entry_count_capacity_cap..., atomic overflow revert). rd/gv/distribution
+  claim/crystallize/vote are O(1) per account (no unbounded loops).
+- LIVENESS (no one can BLOCK a needed action): rd freeze + claim are PERMISSIONLESS (anyone cranks the freeze after
+  the window; any cranker pays the bound recipient) -> can't be griefed; premature freeze rejected (boundary pinned).
+  twap execute is permissionless + round-gated; a SETTLED book is frozen only UNTIL claims drain it (permissionless
+  claims reopen it) so no permanent brick (e2e_execute_on_a_settled_book_is_frozen_until_claims_drain_it).
+- INIT/STATE BRICKS: lamport-prefund front-run (robust create_pda, all programs), non-SPL token-shaped accounts
+  (SPL-owner guards before unpack), re-init re-arm, pre-funded-escrow strand — all fixed + pinned this session.
+- FUND FREEZE: vote-locked principal always exits via retract (no trap); insurance withdraw always available
+  (owner-signed, no cooldown); depositor principal recoverable under impairment (pro-rata haircut).
+VERDICT: the DoS/liveness surface is comprehensively bounded — no unbounded loop, no blockable needed action, no
+permanent brick, no fund freeze. No change.
