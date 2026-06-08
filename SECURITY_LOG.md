@@ -10819,3 +10819,19 @@ a second vote passing a fresh NON-canonical ballot account is REJECTED, and the 
 (no inflation). Real gv + subledger .so. KEEP (pins a real anti-double-vote/weight-inflation boundary,
 previously only implicit). subledger 57->58 green. No code change (property correct; 607 is a redundant early
 -reject backed by the canonical-PDA create + ballot.owner backstops).
+
+## Tick — rd freeze-time vault solvency (FCFS-strand prevention) MUTATION-VERIFIED (surface D)
+
+freeze (the one-shot accrual->claim transition) BINDS config.vault after verifying it is rd_config-owned,
+the right coin_mint, AND holds the FULL fixed supply: `v.amount < config.total_supply -> reject` (lib.rs:907,
+finding EZ), with the coin_mint carrying no mint/freeze authority (GX) so the supply can't be inflated/frozen
+under the claimers. The solvency clause is the rd parallel to distribution::init_config:354 — together with the
+cohort-bps over-allocation guard (sum <= 100%, verified earlier) it makes Sum(cohort_supply) <= total_supply <=
+vault, so every claim is always payable. Without it, freeze could bind an UNDER-funded vault -> the cohorts that
+claim first drain it and the last claimants get InsufficientFunds (an order-dependent FCFS-strand LOF).
+
+MUTATION-VERIFIED: removed the `|| v.amount < config.total_supply` clause (kept owner + mint), rebuilt the real
+.so -> freeze_enforces_fixed_supply_and_vault_integrity FAILED (an under-funded vault was bound at freeze).
+Reverted -> 48/48 rd green, src clean. SHARP. No code change. VERDICT: the rd's claim vault is solvency-bound
+at freeze (no FCFS strand), mutation-proven — completing the COIN-distribution conservation proof on BOTH
+programs (distribution init solvency + rd freeze solvency + both over-allocation/supply-cap guards).
