@@ -6965,6 +6965,49 @@ fn e2e_roll_with_committed_bid_settles_correctly_next_round() {
     let _ = alice;
 }
 
+// REORDER SAFETY (handoff-before-floor window): the DAO arms principal protection with TWO timelock'd Squads
+// executes — accept_operator (rotate the insurance operator to the twap) and set_reserved_floor (set the floor
+// = reserved depositor principal). If they execute in the "wrong" order (handoff FIRST, floor not yet set),
+// there is a window where the permissionless twap is the operator but reserved_floor is still the u128::MAX
+// "unset" sentinel. A permissionless execute in that window must drain NOTHING: surplus =
+// insurance.saturating_sub(u128::MAX) = 0 (execute lib.rs:1506). Without the saturating sentinel, the un-armed
+// window would expose the ENTIRE insurance (principal + surplus) to a cranker. This pins the reorder/un-armed
+// safety end to end on the real binaries; the floor-set execute can come later and the principal is never at
+// risk in between.
+#[test]
+fn execute_with_an_unarmed_max_sentinel_floor_drains_nothing() {
+    let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {
+        compute_unit_limit: 1_400_000, heap_size: 256 * 1024,
+        ..solana_program_runtime::compute_budget::ComputeBudget::default()
+    });
+    svm.add_program_from_file(perc_id(), perc_so()).unwrap();
+    svm.add_program_from_file(twap_id(), so_deploy("twap_program")).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 1_000_000_000_000).unwrap();
+    let env = setup_handoff(&mut svm, &payer); // insurance 1.5M, floor armed to 1M
+    let bk = setup_auction(&mut svm, &payer, &env, 10, 0, None, 0);
+
+    // Simulate the PRE-floor-set window: reset reserved_floor back to the u128::MAX unset sentinel (config
+    // offset 173..189) — exactly the state if accept_operator executed before set_reserved_floor.
+    let mut cfg = svm.get_account(&env.twap_cfg).unwrap();
+    cfg.data[173..189].copy_from_slice(&u128::MAX.to_le_bytes());
+    svm.set_account(env.twap_cfg, cfg).unwrap();
+    assert_eq!(read_reserved_floor(&svm, &env.twap_cfg), u128::MAX, "floor is the unset sentinel");
+
+    let insurance_before = u128::from_le_bytes(svm.get_account(&env.slab).unwrap().data[749..765].try_into().unwrap());
+    assert_eq!(insurance_before, 1_500_000, "full insurance (1M principal + 500k surplus) present");
+
+    // ATTACK: a permissionless crank runs execute in the un-armed window.
+    let cranker = Keypair::new(); svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    warp_to(&mut svm, 111);
+    send(&mut svm, &[&cranker], execute_ix(&cranker.pubkey(), &env, &bk.book, &bk.holding, &bk.settlement_usd, &bk.book_escrow, &bk.coin_escrow, None)).expect("execute runs (a no-op roll)");
+
+    // surplus = insurance.saturating_sub(MAX) = 0 -> NOTHING pulled; the whole insurance is untouched.
+    assert_eq!(token_amount(&svm, &bk.holding), 0, "un-armed floor -> execute drained nothing into the holding");
+    let insurance_after = u128::from_le_bytes(svm.get_account(&env.slab).unwrap().data[749..765].try_into().unwrap());
+    assert_eq!(insurance_after, insurance_before, "the full insurance (incl. principal) is untouched while the floor is un-armed");
+}
+
 // FINDING AE (roll restore, the HARD case): a roll where `marginal` was set but every fill rounded to
 // coin_i == 0 (a positive budget too small to buy a whole COIN atom at the bid's rate). The settle loop
 // ALREADY wrote SL_SETTLED=1 + SL_COIN_REFUND=full on the slot BEFORE total_coin==0 forces the roll, so

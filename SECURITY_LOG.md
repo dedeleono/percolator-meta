@@ -10870,3 +10870,22 @@ TWO tests caught it: e2e_bid_cannot_be_cancelled_only_evicted_by_a_better_bid (t
 e2e_full_book_duplicate_cannot_self_evict_to_partial_exit (the exact duplicate-self-eviction partial exit).
 Reverted -> 111/111 chain green, src clean. SHARP. No code change. VERDICT: one-active-bid-per-bidder closes
 both the spoof-commitment bypass and the duplicate-self-eviction partial exit, mutation-proven.
+
+## Tick — reorder safety: execute with an un-armed (MAX-sentinel) floor drains nothing (surface A; previously untested)
+
+The DAO arms principal protection with TWO timelock'd Squads executes: accept_operator (rotate the insurance
+operator to the permissionless twap) and set_reserved_floor (floor = reserved depositor principal). If they
+run in the "wrong" order (handoff FIRST, floor not yet set), there is a window where the twap is the operator
+but reserved_floor is still the u128::MAX "unset" sentinel. The full-E2E test COMMENTS that "until the floor is
+set, pull_surplus pulls nothing" but never ASSERTS it — so the reorder/un-armed safety (the user's "reordering a
+Squads execute") was an untested boundary.
+
+Built execute_with_an_unarmed_max_sentinel_floor_drains_nothing: setup_handoff (insurance 1.5M), reset the
+config reserved_floor back to u128::MAX (offset 173..189, simulating the pre-floor-set state), warp past
+round_end, and a permissionless cranker runs execute. RESULT: BLOCKED (correct) — surplus =
+insurance.saturating_sub(u128::MAX) = 0, so the holding stays 0 (nothing pulled) and the FULL 1.5M insurance
+(1M principal + 500k surplus) is untouched. The test is mutation-meaningful: the finding-O no-floor mutation
+(surplus = insurance) would pull 1.2M into the holding (holding != 0 fails), and a non-saturating sub would
+underflow-panic so execute reverts (the .expect fails) — either way caught. KEEP (pins the un-armed reorder
+safety end to end). chain 111->112 green. No code change. VERDICT: the MAX sentinel makes the
+handoff-before-floor window safe; a permissionless execute can never drain principal before the floor is armed.
