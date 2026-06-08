@@ -11539,3 +11539,25 @@ trigger_requires_a_strict_majority_and_quorum_not_a_tie FAILS at "exactly-half p
 one-unit-past-both case (6/10 and 5/8 -> seals), so a `<=`->`<` on EITHER inequality is caught. Reverted ->
 17/17 gv seal green, src clean. SHARP. No code change. The most catastrophic boundary in the stack (50%+epsilon
 governance capture) is mutation-pinned on both the quorum and majority gates.
+
+## Tick — distribution claim-vs-burn RACE is structurally impossible (disjoint window predicates); claim `>=` boundary MUTATION-VERIFIED (surface C)
+
+VECTOR (concrete, traced end-to-end): a claim-vs-burn race. distribution::claim pays a recipient from the COIN
+vault; burn_unclaimed burns the whole vault remainder. If their time windows OVERLAPPED by even one slot, a
+permissionless burn could empty the vault out from under a still-eligible claimant (LOF), or a claim could pull
+COIN the cranker intended to burn -- breaking the seal-then-claim-then-burn conservation.
+
+RESULT: BLOCKED structurally. Both predicates share the SAME window_end = seal_slot.saturating_add(claim_window)
+and are EXACTLY disjoint: claim rejects when slot >= window_end (lib.rs:566); burn rejects when slot < window_end
+(lib.rs:637). At slot == window_end claim is CLOSED and burn OPENS -- there is NO slot where both are permitted,
+so the race window is empty. The dangerous refactor would be claim using `>` (claimable AT window_end) while burn
+keeps `>=` (burnable AT window_end) -> a one-slot overlap at window_end where BOTH run.
+
+MUTATION-VERIFIED that exact overlap-creating mutation is caught: flipped claim's `>= window_end` to `> window_end`
+-> a claim at exactly window_end now wrongly succeeds, so claim_succeeds_through_the_last_window_slot_and_fails_
+exactly_at_window_end FAILS at "claim rejected exactly at window_end (>=, not >)". Reverted -> 32/32 distribution
+green, src clean. SHARP. The disjointness is also covered by burn_unclaimed_is_rejected_during_the_claim_window +
+unclaimed_is_burned_after_window + burn_unclaimed_also_burns_unallocated_headroom_full_conservation. No new test
+(the boundary + complement are already pinned; a race-specific test would be redundant per the delete-marginal
+rule). No code change -- the claim/burn windows are provably non-overlapping and the no-overlap boundary is
+regression-protected.
