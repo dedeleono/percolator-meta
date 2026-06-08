@@ -10179,3 +10179,40 @@ is a SEPARATE, un-exercised vector — and it too is allow-list-scoped + fee-tax
 lost margin as its real cost. CORRECTED the misleading sim conclusion comment and PINNED the finding with
 three real-binary assertions: market_recv == 0, lp_coin == 0, trader_coin == miner_coin. No production code
 change (a test/doc correction). sim 3/3 green. The "farmable the same way" overclaim is retracted with evidence.
+
+## Tick — LP `received` free-farm is structurally impossible on the allow-listed market (surface D; percolator-source-grounded, closes last tick's open vector)
+
+Followed last tick's open thread: CAN the no-spent-netting LP cohort be free-farmed by manufacturing
+`received` via an engineered/self-dealt loss, given the rd live-cap is a no-op for LP (received monotonic)?
+Traced the real percolator (read-only sibling) to the source of `received`:
+- rd reads OFF_PORTFOLIO_RECEIVED = the portfolio's residual_received_atoms_total.
+- v16_program.rs:794 `residual_received_atoms() = cumulative_loss_atoms` — "a monotonic sum of REALIZED
+  backing loss observed by SyncBackingDomainLedger."
+- 7446-7466: cumulative_loss_atoms accrues the Δ of `backing_unavailable_principal_atoms = consumed_liened
+  + impaired_liened` — i.e. the LP's liened backing that was CONSUMED (realized loss) or IMPAIRED (marked
+  down by a loss).
+- The struct cleanly separates `source_lien_effective_reserved` (backing merely LIENED/reserved to an open
+  position — recoverable) from `source_lien_impaired_effective_reserved` (liened backing IMPAIRED by a
+  loss). `received` reads only the impaired/consumed (realized-loss) portion, NEVER the recoverable reserve.
+
+Three structural consequences => no free-farm:
+1. Liening alone does NOT raise `received` — only IMPAIRMENT (a real mark-to-market loss on the backed
+   position) does. So open/close CHURN of an LP/backing position cannot pump `received` (the analogue of the
+   trader cohort's churn, which spent-netting catches — here the percolator counter simply never counts an
+   un-impaired lien). The LP cohort needs no spent-netting precisely because reserves aren't counted.
+2. Impairment requires an ADVERSE ORACLE MOVE against the backed position. On the rd's allow-listed
+   trusted-Pyth market the registrant cannot move the oracle (finding IL), so it cannot manufacture the loss
+   that drives `received`. A self-dealt delta-neutral pair stays solvent (no impairment) — exactly why last
+   tick measured received=0.
+3. The monotonicity (recovery kept in a SEPARATE cumulative_recovery_atoms, never decrementing `received`)
+   is NOT a farm: to earn received=R the LP must FIRST absorb a real, oracle-driven impairment R it could
+   not control; a later market recovery being un-netted just credits capital that genuinely was at risk
+   (parity with the genesis-vote hold-time credit), not a costless mint.
+
+VERDICT: the LP `received` cohort is the LEAST farmable, not the most — `received` = realized backing loss,
+unmanufacturable on a trusted-Pyth market and uninflatable by churn (reserves uncounted). The "no spent-
+netting" is a non-issue: there is no recoverable quantity to net. Last tick's overclaim retraction stands
+and is now explained at the mechanism level. No code change. The full backstop-impairment sim (a real
+backing-provider portfolio + adverse-oracle impairment + recovery, driven by the neutral oracle to show
+received only ever reflects real absorbed loss) is the remaining EMPIRICAL step — scoped as a future tick;
+the source mechanics already resolve the security question.
