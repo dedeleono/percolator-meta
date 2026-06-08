@@ -10558,3 +10558,20 @@ rebuilt the real distribution .so -> a_second_proposal_cannot_reseal_after_a_win
 17/17 + distribution 32/32 green, src clean. SHARP. No code change. VERDICT: winner-take-all irreversibility is
 enforced by the distribution seal is_sealed() gate (the cross-program single-winner guarantee), mutation-proven
 end to end through the gv->distribution seal CPI.
+
+## Tick — auction claim slot-zeroing (double-claim drain of other winners) MUTATION-VERIFIED (surface A)
+
+Audited process_claim (twap lib.rs:1763), the bidder payout after settle. Binds confirmed: settled-only
+(SL_OCCUPIED==1 && SL_SETTLED==1, 1810), payout routed to the bid's RECORDED usd_dest + coin_ata (1820, no
+redirect-theft), book/escrow/settlement/coin-escrow PDA + key binds (1793-1805). The anti-drain guard is the
+SLOT-ZEROING (1832): after paying usd_owed (settlement_usd -> usd_dest) and coin_refund (coin_escrow ->
+coin_ata), the whole slot is zeroed, so a re-claim sees SL_OCCUPIED==0 and is rejected at 1810. Both
+settlement_usd and coin_escrow are SHARED pools across all winners, so without the zeroing a winner re-claims
+its slot repeatedly and drains OTHER winners' parked USD + escrowed COIN (cross-user LOF).
+
+MUTATION-VERIFIED: replaced the slot-zeroing loop body with a no-op (`let _ = b`), rebuilt the real .so ->
+e2e_claim_cannot_be_replayed_to_drain_other_winners FAILED (the winner re-claimed and drained the shared
+pools). Reverted -> 111/111 chain green, src clean. SHARP. No code change. VERDICT: the auction claim is
+one-shot per slot (no double-claim drain), the payout is bound to the recorded destinations, and the
+slot-zeroing anti-drain guard is mutation-proven. (Complements the cancel-side double-cancel drain guard, also
+slot-zeroing, pinned earlier.)
