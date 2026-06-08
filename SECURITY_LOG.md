@@ -5,7 +5,24 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 300 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 50,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (D, rd claim recipient-bind mutation-verify, NO code change): mutation-checked the rd claim
+LATEST TICK (B, weird-state hunt: insurance_withdraw stb-rounds-to-0 — UNREACHABLE + non-lossy, NO code change):
+new strategy (per user) — drive complex branchy code into a weird state, then check for LOF/DoS/farm. TARGET: the
+POLICY_WITH_SURPLUS insurance_withdraw share-math (lib.rs:1211-1294, the most branchy fund path). HYPOTHESIS: a
+LATE depositor (shares<principal under surplus) doing a TINY `amount` makes shares_to_burn=floor(shares*amount/
+principal) round to 0 -> owed=0 -> CPI skipped (1238) but principal still decrements; if principal could reach 0
+with shares>0, the sweep (1291-1294) would forfeit real value = LOF. RESULT: the weird state is STRUCTURALLY
+UNREACHABLE. VIRTUAL_SHARES (1e6) scales every share count UP by ~1e6x (a 1M deposit mints ~5e11 shares), so
+shares >> principal ALWAYS, hence stb = floor(shares*amount/principal) ~= 1e6*amount is NEVER 0 for amount>=1
+(only amount=0 gives stb=0, a trivial no-op). Triggering stb=0 would need a ~1,000,000x surplus (absurd). And even
+if reached it is non-lossy: the micro-withdraw burns 0 shares (value preserved in shares, not principal), and the
+final exit (amount==principal) gives stb==shares exactly so the sweep is a clean no-op. NEW DEFENSIVE INSIGHT:
+VIRTUAL_SHARES has a SECOND benefit beyond first-depositor-inflation — it robustifies the withdraw share-burn
+rounding against a zero-payout-but-principal-decrements footgun. Built the test, its precondition (shares<principal)
+proved false (shares=500000249999 >> 1M), confirming unreachability; DELETED it (contrived/unreachable premise, per
+the delete-marginal rule). NO code change; subledger 54 green. (Mutation campaign unchanged at guard-removal[34] + 9
+classes + 2 defense-in-depth.)
+
+PRIOR TICK (D, rd claim recipient-bind mutation-verify, NO code change): mutation-checked the rd claim
 recipient-owner binding (lib.rs:975, `ra.owner != stake.recipient`, finding GY) — the LOF guard stopping a
 PERMISSIONLESS cranker (claim is permissionless for LP/trader) from redirecting a victim's COIN payout into an
 account the cranker controls. Dropping the clause (keeping only the mint check) makes claim_cannot_be_redirected_
