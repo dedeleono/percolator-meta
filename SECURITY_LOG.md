@@ -10376,3 +10376,24 @@ MUTATION-SHARP: neutering the live-cap makes the trader leg ALSO pay its stale 4
 test FAILS; reverted -> rd 47->48 green, src clean. No code change (live-cap correct). VERDICT: the LP `received`
 free-farm is fully resolved at the mechanism level (received = real absorbed loss, zero-sum with trader net) and
 the cross-cohort double-dip is closed by the live-cap and now regression-pinned.
+
+## Tick — accept_operator finding-S kind-1 authority rotation (post-handoff-deposit principal drain) MUTATION-VERIFIED (surface A)
+
+Audited accept_operator (twap lib.rs:653) for the surface-A "foreign Squads vault/market/pool" + handoff LOF
+vectors. Binds confirmed: squads_vault == squads_default_vault(config.squads_multisig) (671), market_slab ==
+config.market_slab + percolator_program == config.percolator_program (674), twap_authority == derived PDA (685).
+And finding S: accept_operator does a SECOND UpdateAssetAuthority that rotates the asset-0 INSURANCE authority
+(kind 1, which gates TopUpInsurance/deposits) to the Squads vault — so after the handoff NO ONE can deposit into
+market-0 insurance. Without it, a post-handoff deposit raises insurance above the STATIC surplus floor and a
+permissionless cranker drains the new principal as "surplus" (LOF).
+
+All comprehensively pinned: foreign-market rotation guard (chain:1198/1521), squads_vault bind (782),
+exit-blocked-after-handoff + DAO re-grant recovery lifecycle (e2e_subledger_exit_blocked_after_operator_handoff
+1912), and finding S itself (e2e_post_handoff_deposit_blocked_by_authority_revoke 2036).
+
+MUTATION-VERIFIED the finding-S guard is non-vacuous: removed the kind-1 (ASSET_AUTH_INSURANCE) rotation invoke
+from accept_operator, rebuilt -> e2e_post_handoff_deposit_blocked_by_authority_revoke FAILED (the post-handoff
+deposit now SUCCEEDS, re-opening the principal-drain LOF: insurance rises above the static floor for a cranker
+to pull). Reverted -> 111/111 chain green, src clean. SHARP. No code change. VERDICT: the handoff's
+foreign-account binds + the finding-S deposit-revoke (the static-floor soundness precondition) are correct and
+mutation-proven; the post-handoff principal-drain LOF is closed.
