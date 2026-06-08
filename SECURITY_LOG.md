@@ -2,7 +2,37 @@
 
 Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdict.
 
-## Checkpoint — session refresh (latest)
+## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
+STATE: 293 standalone tests GREEN (subledger 73, genesis-vote 22, distribution 36, residual-distributor 48,
+twap-program 111, sim 3); all 5 deployables build-sbf clean; deployment-ready.
+THIS SESSION'S 1 REAL BUG (found + fixed under our authorship, clean-room TDD):
+- distribution claim_window OVERFLOW = permanent vault FREEZE (commit d763927). claim + burn_unclaimed gated on
+  seal_slot.checked_add(claim_window_slots).ok_or(ArithmeticOverflow); init bounded != 0 but had NO upper bound, so
+  a near-u64::MAX window overflows once seal_slot>0 -> EVERY claim AND burn reverts -> the whole COIN vault frozen
+  forever. Fixed with saturating_add (normal windows unchanged; absurd window -> claims open indefinitely, no brick).
+  Pinned by an_absurd_claim_window_saturates_and_never_bricks_claims (FAILS pre-fix with ArithmeticOverflow). Class
+  generalized + swept: it was the SOLE post-commitment deadline-overflow brick (rd freeze/cooldown already saturate;
+  twap round_end is pre-funding fail-fast); config-validation class also swept (every enum/range validated+tested).
+THIS SESSION COMPLETED two exhaustive audits (no other bug found):
+- INSTRUCTION-by-INSTRUCTION (100% literal): every ix in all 5 programs directly read + sound + pinned — subledger
+  {init_pool, init_insurance_pool, deposit, withdraw, insurance_deposit/withdraw, set_vote_lock dual-sig,
+  accept_operator}; gv {init_config anchor, vote/retract, trigger}; distribution {init_config, create_proposal,
+  append, seal_winner, claim, burn_unclaimed}; rd {init, register, crystallize, freeze, claim}; twap {all 14}.
+- CLASS-by-CLASS: PDA bump canonicalization (no non-canonical spoof); deadline/window overflow; config-validation;
+  cross-program type-confusion (structural field-binding, not coincidental); auction comparators (Euclidean cmp_rate
+  for large u128 reserve, u64-bounded cmp_bid); share-math overflow (checked+graceful, genesis-safe via partial
+  withdraw; own-vault full-exit is a non-genesis limit); BOTH authority anchors rooted on-chain at init (twap:
+  DAO->Squads config_authority + 1-week timelock; gv: pool vote_authority + distribution seal authority); wash-farm
+  hardening re-confirmed vs the REAL percolator (sim: delta-neutral leaves spent=0 -> fee bounds it; churn raises
+  spent -> netting; lone farmer <=1/N; time-weight = registration-age common factor, ACCEPTED limitation); cross-
+  genesis foreign-pool scope BLOCKED by atomic-init + non-default scope + register binding (do NOT add on-chain
+  binding per atomic-init memory).
+OUTSTANDING (unchanged, deferred OUT of standalone scope): #11 — the DEPRECATED meta program's
+process_kickstart_genesis_market CPIs the percolator's REMOVED UpdateInsurancePolicy (tag 33); root-caused, NOT to be
+actioned without user confirmation (deprecated program + read-only percolator); the 4 integration.rs fails are
+pre-existing from this, not a regression.
+
+## Checkpoint — session refresh (prior session)
 FULL STANDALONE REGRESSION GREEN: 290 tests across the five real binaries + sim (subledger 73 = insurance_percolator
 52 + subledger 11 + lib 10; genesis-vote 22 = seal 17 + offsets 2 + lib 3; distribution 35 = distribution 31 +
 lib 4; residual-distributor 46 = e2e 39 + offsets 4 + lib 3; twap-program 111 = chain 107 + lib 4; sim/farm 3).
