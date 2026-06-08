@@ -8042,3 +8042,20 @@ The remaining paired validations are already symmetric/covered:
 - rd register/crystallize/claim: backing_ledger/position/vault/recipient all bound + pinned (991/936/1489/348).
 - distribution append/claim recipient: default-pubkey-recipient reject + claim recipient-index bind (348/380).
 VERDICT: the in/out fund-movement validation is symmetric and complete stack-wide. The lens closed 2 real gaps. No change.
+
+### [AUDIT — distribution claim/burn vault binding is defense-in-depth (SPL-redundant); not a cleanly-isolable gap] tick (C)
+Re-examined (deferred from the symmetry-lens tick) whether the distribution claim's vault-source bind needs an
+explicit decoy test like the rd's (claim_cannot_be_redirected_or_paid_from_a_decoy_vault 1489). It does NOT, and
+can't be cleanly isolated: the claim transfers vault -> recipient_ata and burn does burn(vault, coin_mint), so the
+`vault == config.vault` binds (lib.rs:557 claim / 629 burn) are REDUNDANT with the SPL layer — a foreign-MINT vault
+mint-mismatches against recipient_ata.mint / coin_mint and fails regardless; a SAME-mint decoy can't be funded (the
+COIN is fixed-supply, entirely in config.vault, and each genesis has its own mint), so an empty one fails on
+transfer-insufficiency. Any isolated decoy test is masked by the SPL mint/balance checks. The vault is therefore
+covered by: the 557/629 binds (defense-in-depth) + the SPL transfer/burn mint+balance enforcement + the init tests
+(init_config_rejects_an_underfunded_vault / _a_vault_of_the_wrong_mint / _a_non_spl_owned_token_shaped_vault) + the
+recipient/proposal binds (a_losing_proposal_cannot_claim, claim_index_is_bound_to_its_named_recipient). Surface-C
+prompt vectors all covered (non-creator append 894, double-claim 319, supply-cap 777, conservation 693, seal 497/559,
+init-config, recreate 460). VERDICT: no clean gap — the distribution vault binding is sound + redundantly enforced.
+No change. (rd's vault decoy IS isolable because its claim pays a SHARE of a vault holding the SAME single mint with
+multiple cohort claimants — a same-mint decoy is fundable there via set_token; distribution's per-entry full-amount
+transfer is not.)
