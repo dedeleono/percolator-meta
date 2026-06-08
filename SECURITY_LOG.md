@@ -9057,3 +9057,20 @@ MUTATION-VERIFICATION COMPLETE across all 4 prompt surfaces (5 invariants, each 
   (C) distribution entry-zeroing -> co-recipient double-claim drain; (D) net-by-spent -> 320k churn free-farm +
   anti-wash fee -> 80k untaxed-wash free-farm. The stack's load-bearing LOF/DoS/free-farm guards are confirmed
   NON-VACUOUS — each test genuinely fails when its guard is removed. No code change (all mutations reverted).
+
+### [MUTATION-VERIFIED — log2(tenure) time-weight; ALL THREE (D) wash-farm hardening components now mutation-proven] tick (D)
+Mutation-tested the prompt-emphasized time-weight — rd crystallize's new_pts = floor_log2(tenure).saturating_mul(
+net_delta) (lib.rs:841), which requires capital to stay time-locked to earn (a JIT register+crystallize earns 0).
+Temporarily dropped the tenure factor (new_pts = net_delta), rebuilt, ran:
+- time_weight_floor_tenure_below_2_crystallizes_zero_points_first_positive_at_2: FAILED — left 200_000 vs right 0
+  (mutant: a tenure-1 JIT stake now earns FULL net_delta points instead of floor_log2(1)=0 -> dilutes the cohort /
+  JIT free-capture). Caught.
+- time_weight_rewards_registration_tenure_not_residual_age_early_over_captures: FAILED — left 200_000 vs right
+  236_363 (mutant equalizes early/late registrants instead of the log2-weighted over-capture). Caught.
+REVERTED + rebuilt + 2 time_weight tests PASS; git clean.
+ALL THREE (D) WASH-FARM HARDENING COMPONENTS ARE NOW MUTATION-PROVEN NON-VACUOUS:
+  net-by-spent (churn -> 320k farm caught), anti-wash claim fee (delta-neutral wash -> 80k caught), log2(tenure)
+  time-weight (JIT/time-lock -> caught). Plus the self-referential spend == churn == net-by-spent. The entire
+  anti-wash defense suite's tests genuinely catch their free-farm regressions.
+MUTATION TALLY (6 invariants, all 4 surfaces): finding-O floor (A), vote-lock (B), distribution entry-zeroing (C),
+net-by-spent + anti-wash fee + time-weight (D). No code change (all mutations reverted).
