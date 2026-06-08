@@ -7647,3 +7647,17 @@ layout-stable. But a maintainer trusting the doc would believe the rd CPIs the d
 FIX (doc-only, no layout change): rewrote the module doc to the self-service-claim design + marked
 distribution_program/distribution_config VESTIGIAL at their declaration ("do not reintroduce a seal CPI"). VERDICT:
 not a runtime bug — a doc/code drift corrected. rd offsets (4) + e2e (38) green.
+
+### [DOC/CODE DRIFT #3 — twap comments named the removed pull_surplus instead of the live `execute` mover] tick (A)
+SURFACE (twap insurance-mover, doc vs code). The standalone permissionless `pull_surplus` instruction was REMOVED
+when `execute` became the SOLE insurance-mover (process_execute:1400 "The SOLE path that moves insurance"; dispatch
+374-387 has no pull_surplus — the surplus pull + 80/20 split + ratchet now live inside `execute`). But four comment
+blocks still named `pull_surplus` as the current/only insurance path: the reserved_floor field doc (297-298), the
+reconfigure bps comment (512), the set_reserved_floor finding-O comment (594), and the handoff comment (639:
+"pull_surplus (permissionless) is the operator's only insurance path"). NO security hole — the floor-protection
+logic these comments describe is correctly implemented in `execute` (finding-O map last week confirms it) — but a
+maintainer reading them would hunt for a pull_surplus instruction that no longer exists. FIX (doc-only, no behavior
+change): replaced all four `pull_surplus` references with `execute`, preserving the finding-O floor reasoning.
+VERDICT: not a runtime bug — a doc/code drift corrected. twap chain 102 green. This is the THIRD such drift this
+session (fee-cap, IX_SEAL, pull_surplus); the other programs' module docs were checked and match their dispatch
+(the subledger/twap "REPLACED the removed asset-0 tag-23" comments are explanatory, not stale).

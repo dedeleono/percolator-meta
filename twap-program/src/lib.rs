@@ -294,8 +294,8 @@ struct Config {
     market_0_domain: u8,
     config_bump: u8,
     authority_bump: u8,
-    /// The asset-0 insurance amount pull_surplus must NEVER pull below — the reserved
-    /// depositor principal (+ any retained buffer). pull_surplus may move at most
+    /// The asset-0 insurance amount that `execute` must NEVER pull below — the reserved
+    /// depositor principal (+ any retained buffer). `execute`'s surplus pull may move at most
     /// `insurance - reserved_floor`. Initialized to u128::MAX (no pulls) and lowered only
     /// by the DAO through a timelock'd Squads `set_reserved_floor`, so a permissionless
     /// crank can never reach principal (closes finding O).
@@ -509,7 +509,7 @@ fn process_reconfigure(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8
     }
     let new_bps = u16::from_le_bytes(data.try_into().unwrap());
     // 0..=100% — the DAO's burn-percentage authority. 0% burns nothing (all surplus retained for
-    // insurance growth); 100% burns the entire surplus. pull_surplus enforces this share.
+    // insurance growth); 100% burns the entire surplus. `execute` enforces this share at pull time.
     if new_bps > BPS_DENOMINATOR {
         return Err(ProgramError::InvalidInstructionData);
     }
@@ -591,7 +591,7 @@ fn process_set_economics(program_id: &Pubkey, accounts: &[AccountInfo], data: &[
 // data: new_reserved_floor (u128)
 //
 // Squads -> TWAP control (finding O): set the surplus floor — the asset-0 insurance amount
-// pull_surplus must never pull below (the reserved depositor principal). Only the config's
+// `execute` must never pull below (the reserved depositor principal). Only the config's
 // Squads vault may call it, and only as the executor of a timelock'd vault-transaction, so
 // lowering the floor (the dangerous direction — it exposes more insurance to the
 // permissionless crank) is delayed a full week in the clear.
@@ -636,7 +636,7 @@ fn process_set_reserved_floor(program_id: &Pubkey, accounts: &[AccountInfo], dat
 // co-signs as twap_authority (percolator requires the incoming authority to consent),
 // rotating the asset-0 INSURANCE_OPERATOR from the subledger to the twap_authority.
 //
-// After this, pull_surplus (permissionless) is the operator's only insurance path, and it
+// After this, `execute` (permissionless) is the operator's only insurance path, and it
 // is surplus-floor-bounded (finding O fixed): it pulls at most `insurance - reserved_floor`.
 // The DAO proposal that performs the handoff should also set the reserved_floor (to the
 // reserved depositor principal) via set_reserved_floor and rotate the policy to surplus-mode
