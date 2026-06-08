@@ -11499,3 +11499,26 @@ rd e2e green, src clean. SHARP. The cross-cohort conservation is ALSO covered en
 cross_cohort_claims_never_exceed_cohort_or_total_supply test (sum of all 4 cohorts' claims <= vault). No code
 change -- the cross-cohort partition invariant (the structural foundation of "total payout <= vault") is
 mutation-pinned at its one load-bearing init gate.
+
+## Tick — subledger VIRTUAL_SHARES magnitude (ERC4626 first-depositor inflation defense) MUTATION-VERIFIED as load-bearing (surface B)
+
+An own-vault POLICY_WITH_SURPLUS pool's vault is a plain SPL token account ANYONE can donate into, so it is
+exposed to the classic ERC4626 first-depositor inflation/donation attack: a 1-atom first depositor donates to
+inflate the share price, then a later depositor's deposit rounds down (skim) or to 0 shares (capture). The
+defense is the VIRTUAL_SHARES=1_000_000 offset (lib.rs:319): mint_shares = amount*(total_shares+VIRTUAL_SHARES)
+/(balance+1), redeem = shares*(balance+1)/(total_shares+VIRTUAL_SHARES). The prior ticks pinned the HB
+zero-share REJECT guard (the teeth against the 0-share capture); this tick pins the CONSTANT MAGNITUDE itself.
+
+MUTATION-VERIFIED (constant-magnitude class): set VIRTUAL_SHARES = 1 (offset effectively gone). TWO tests FAIL:
+- first_depositor_inflation_attack_cannot_skim_a_later_depositor: with a near-zero offset the attacker's single
+  real share captures the victim's rounding residue -> victim_out < victim_deposit-10 (the skim the offset
+  bounds to ~amount/VIRTUAL_SHARES is now unbounded) -> assertion FAILS.
+- a_deposit_that_rounds_to_zero_shares_is_rejected_..._no_silent_loss: the RECOVERABLE 1e7-atom above-threshold
+  deposit now rounds to 0 shares too (100*2/(1e9+1)=0 with offset=1 vs ~20000 shares with 1e6), so it's
+  REJECTED -> the test's `.expect("above-threshold deposit mints shares")` FAILS at subledger.rs:450.
+
+So VIRTUAL_SHARES is NOT mere defense-in-depth — its magnitude is load-bearing on BOTH sides: large enough to
+(a) bound the inflation skim to dust (≤~1 unit/op, accruing to never-redeemable virtual shares) and (b) keep
+legitimate above-dust deposits mintable rather than rejected. Reverted -> 11/11 subledger own-vault green, src
+clean. SHARP (constant-magnitude). No code change. Mutation class coverage extends to a second constant
+(joins the points_to_amount/INSURANCE_OFFSET magnitude pins).
