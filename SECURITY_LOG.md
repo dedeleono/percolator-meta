@@ -5,7 +5,24 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (D, share-value crystallize owner-gate (finding KM) is SHARP — forced-timing anti-grief class):
+LATEST TICK (A, auction stale-round_end competition-skip — INVESTIGATED, reserve-bounded, NOT a safety bug, fix
+PROPOSED not applied): NEW FINDING. round_end is set at SETTLE (execute lib.rs:1716 = settle_slot + round_length),
+but the next round does not actually OPEN until claims drain (process_claim reopen, 1842-1843, sets state=OPEN but
+does NOT reset round_end). So if a settled book's claims take LONGER than round_length, the reopened round inherits
+a round_end already in the PAST -> it is instantly executable. The existing e2e_execute_on_a_settled_book...
+(chain.rs:4642) incidentally confirms this ("Now OPEN again, execute is accepted" at slot 500 with round_end 121).
+IMPACT: a bidder who DELAYS their own claim can reopen with a stale round_end, then place a bid + instantly crank
+execute before any competitor reacts, clearing ALONE — defeating the round_length competition window and forcing
+the protocol toward the worst (near-reserve) price on any fresh surplus. SEVERITY: reserve-bounded MEV /
+optimal-execution edge, NOT a LOF/DoS/free-farm: the reserve filter (verified-sharp) always applies, so the
+protocol NEVER pays above the DAO-set reserve; the competition window is a best-effort improvement on that hard
+floor, and the attacker still PAYS near-reserve (gives COIN for USD). DECISION: not a clear safety bug, so NOT
+unilaterally changing core auction timing (the fix cascades through the multi-round E2E warp schedules). PROPOSED
+FIX (deferred to user judgment): reset round_end = now + round_length at the reopen in process_claim (1842), so
+every round — including a reopened one — runs its full competition window from its actual start; then update the
+4642 assertion. Surfaced to the user. NO code change this tick.
+
+PRIOR TICK (D, share-value crystallize owner-gate (finding KM) is SHARP — forced-timing anti-grief class):
 mutation-checked the rd share-value crystallize owner-gate (lib.rs:813, `cranker.key != stake.owner -> reject`),
 a DIFFERENT guard class than the redirect/bind ones — it stops a THIRD PARTY force-crystallizing a victim's
 insurance/backing stake at a transient low-share moment (mid partial-withdraw), which freeze would then lock as
