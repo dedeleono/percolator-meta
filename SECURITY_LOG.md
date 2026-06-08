@@ -7884,3 +7884,19 @@ stack: configs (gv, distribution, rd, twap — all pinned, the rd/twap floor-sen
 (subledger insurance_pool_cannot_be_reinitialized 1343), per-entity accounts (rd stake double-register 1618,
 distribution proposal recreate 460), and the auction book (data_len 1078 + escrow-amount anti-strand 1028/1032, now
 pinned). No init-once account accepts a re-init or a pre-funded bind anywhere. twap chain 106 green.
+
+### [AUDIT — anti-strand/empty-at-init class: init_book requires empty (pinned), init_pool intentionally pre-funded] tick (A/B)
+Completing the empty-at-init sweep (the lens that pinned init_book's escrow anti-strand). The two init-time vault
+requirements are OPPOSITE BY DESIGN — both verified correct:
+- twap INIT_BOOK: coin_escrow + settlement_usd MUST be empty (amount == 0, lib.rs:1028/1032). The book records bids;
+  binding a non-empty escrow would strand the balance (no bidder slot owns it). Pinned this session
+  (e2e_init_book_rejects_a_prefunded_escrow_no_stranded_balance).
+- subledger INIT_POOL / INIT_INSURANCE_POL: the vault may be NON-empty — the genesis insurance vault is
+  intentionally pre-funded (the kickstart deploys capital to insurance). total_shares starts at 0; the first
+  deposit computes shares against the LIVE vault balance via mint_shares(amount, 0, balance) =
+  amount*(VIRTUAL_SHARES)/(balance+1) — the OpenZeppelin virtual-shares anti-inflation defense. A pre-fund/donation
+  is a GIFT to depositors (the funder holds no shares), the dilution is virtual-shares-bounded, and a too-small
+  deposit that rounds to 0 shares is rejected (a_deposit_that_rounds_to_zero_shares_is_rejected); the donation
+  inflation attack is pinned (the subledger donation test: victim recovers ~all principal). WITHDRAW is additionally
+  principal-capped by deposits_only (finding O). So requiring amount==0 here would be WRONG (it would break the
+  genesis insurance). VERDICT: both correct; the design distinction is intentional. No change. Anti-strand class closed.
