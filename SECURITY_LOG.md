@@ -3,12 +3,17 @@
 Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdict.
 
 ## Checkpoint — session refresh (latest)
-FULL STANDALONE REGRESSION GREEN: 283 tests across the five real binaries + sim (subledger 72 = insurance_percolator
+FULL STANDALONE REGRESSION GREEN: 288 tests across the five real binaries + sim (subledger 72 = insurance_percolator
 51 + subledger 11 + lib 10; genesis-vote 22 = seal 17 + offsets 2 + lib 3; distribution 35 = distribution 31 +
-lib 4; residual-distributor 45 = e2e 38 + offsets 4 + lib 3; twap-program 106 = chain 102 + lib 4; sim/farm 3).
+lib 4; residual-distributor 46 = e2e 39 + offsets 4 + lib 3; twap-program 110 = chain 106 + lib 4; sim/farm 3).
 This session's GENUINE additions (each closed a real gap, not a repeat):
-- REAL DoS FIXES (earlier this session, against stale-sibling drift): rd create_pda lamport-prefund brick; rd freeze
-  SPL-owner unpack; subledger init_pool SPL-owner unpack — all 3 fixed under our authorship + .so rebuilt + pinned.
+- REAL DoS/LOF FIXES (4): rd create_pda lamport-prefund brick; rd freeze SPL-owner unpack; subledger init_pool
+  SPL-owner unpack; AND finding-O monotonicity BYPASS — set_reserved_floor's u128::MAX sentinel could be RE-ARMED
+  (raise principal->MAX, allowed since MAX<principal is false, then MAX->0) to lower the floor and drain the locked
+  depositor principal; fixed (reject raising a real floor back to MAX) + both re-arm paths pinned (raise-to-MAX +
+  config re-init). All fixed under our authorship + .so rebuilt + pinned. STRUCTURAL/THREAT-MODEL AUDITS COMPLETE:
+  arithmetic-safety, offset-canary chain, dead-field, sentinel-overloading, account-substitution, over-claimed-
+  invariant, re-init/init-once, anti-strand, anti-wash re-verification, captured-DAO (no path to depositor principal).
 - GENESIS PRINCIPAL-PROTECTION pins (two pillars): genesis market is constructed deposits_only=1 + max_bps/cooldown
   AND 100% maintenance/initial margins (no leverage) — the readback now pins every load-bearing policy.
 - VOTE INTEGRITY pins: gv binds the subledger position to the SIGNER (no borrowed-whale weight theft); double-retract
