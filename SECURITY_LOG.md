@@ -10518,3 +10518,22 @@ portfolio). (register_rejects_foreign_owner_and_foreign_pool covers the parallel
 owner-bind.) Reverted -> 48/48 rd green, src clean. SHARP. No code change. VERDICT: re-register / cross-owner
 double-bind and victim-portfolio farming are blocked by the immutable-owner + register owner-bind + one-stake
 -per-owner layers, and the residual owner-bind is mutation-proven.
+
+## Tick — gv trigger quorum sub_pool key-bind (anti-minority-capture supply-theft) MUTATION-VERIFIED (surface B); snap manipulation ruled out (D)
+
+Two checks. (1) snap manipulation (surface D): residual_snap is captured ONCE at register and net_delta =
+counter - snap is always measured from there; the optimal snap is 0 (empty portfolio, already covered by the
+time-weight test), and a NON-zero snap only REDUCES net_delta (a later loss is offset by the snap), so there is
+no manipulation upside — registering with a high snap is strictly worse for the attacker. No vector.
+
+(2) MUTATION-VERIFIED the gv trigger quorum denominator guard (surface B): the trigger reads the LIVE pool
+outstanding from the passed sub_pool (so late deposits/exits recompute quorum — "those who stay decide"),
+bound by `*sub_pool.key == config.subledger_pool` (lib.rs:761). The key-bind is the anti-minority-capture
+guard: the owner check alone is insufficient (an attacker can stand up their OWN subledger-program pool with a
+tiny `outstanding`), so without the key-bind a trigger could read a SUBSTITUTED low-outstanding pool and pass
+quorum (total_voted_principal*2 > tiny) with minimal real support -> mint 100% of the COIN supply to a
+minority proposal (supply theft). Neutered the key clause (kept only the owner check), rebuilt the real .so ->
+trigger_with_a_substituted_low_outstanding_pool_cannot_fake_quorum_to_steal_the_supply FAILED (the substituted
+pool faked quorum). Reverted -> 56/56 subledger green, src clean. SHARP. No code change. VERDICT: the quorum
+denominator is bound to the genesis's own pool AND read live; a substituted-pool minority-capture supply-theft
+is closed and mutation-proven.
