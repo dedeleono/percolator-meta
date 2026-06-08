@@ -10760,3 +10760,25 @@ mutation-verified — allow-list, cohort gating + cross-cohort/cross-genesis/sub
 crystallize replay (this tick), freeze/claim ordering, net-by-spent, claim fee, time-weight, live-cap (single +
 cross-cohort), offset canary, over-allocation, retained-fee-not-drainable, and the LP `received` conservation.
 The residual-distributor anti-wash design is exhaustively proven non-vacuous against the real binaries.
+
+## Tick — distribution init_config vault-owner anti-hijack binding MUTATION-VERIFIED (surface C)
+
+init_config binds the COIN vault to the config PDA: vault_state.owner == expected_config (the canonical
+PDA(["dist_config", coin_mint, authority])) AND vault_state.mint == coin_mint (lib.rs:346), after requiring SPL
+ownership (342). The owner clause is the anti-hijack guard: every claim transfers COIN from the vault SIGNED by
+the config PDA, so the config PDA MUST be the vault's authority. Without the owner check an attacker could bind
+a vault they OWN -> (a) they move the whole COIN supply out directly (they are the SPL authority), and (b) the
+config PDA can't sign claims from it = the entire distribution is bricked. The mint/supply/solvency checks
+(mint authority revoked, mint.supply == total_supply, vault.amount >= total_supply) ensure the bound vault holds
+ALL the COIN, which is exactly why it must be config-PDA-controlled.
+
+MUTATION-VERIFIED: removed the `|| vault_state.owner != expected_config` clause (kept the mint check), rebuilt
+the real .so -> init_config_authority_bound_blocks_funded_vault_hijack FAILED (an attacker-owned funded vault
+was bound). Reverted -> 32/32 distribution green, src clean. SHARP. No code change. VERDICT: the COIN vault is
+bound to the config PDA (no attacker-owned-vault hijack / no claim brick), mutation-proven.
+
+CAMPAIGN: with this, the distribution program's full guard set is mutation-proven — init (vault owner/mint,
+mint-authority-revoked, supply, solvency, zero-window, lamport-prefund), append (supply-cap cumulative/capacity/
+atomic, zero/default entry, foreign creator), seal (authority key-match, is_sealed winner-take-all, empty/foreign
+reject, anti-bait-and-switch via gv), claim (recipient-binding, double-claim entry-zeroing, window cutoff),
+burn_unclaimed (conservation). Across A/B/C/D every keystone LOF/DoS/free-farm/theft guard is now non-vacuous.
