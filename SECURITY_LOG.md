@@ -11216,3 +11216,24 @@ Reverted -> 112/112 chain green, src clean. SHARP. No code change. VERDICT: the 
 read is pinned to the real percolator layout (no drift -> no surplus-basis over-pull/brick), mutation-proven --
 both percolator-slab consumers (twap + rd, plus the subledger constant) now have their offset canaries proven
 non-vacuous, closing the GT/HF/T cross-dependency drift class across the whole stack.
+
+## Tick — subledger PERC_INSURANCE_OFFSET canary MUTATION-VERIFIED (3rd/final percolator-slab consumer); drift class fully closed (surface B)
+
+The subledger reads asset-0 insurance from the percolator slab at PERC_INSURANCE_OFFSET = 448 + 301
+(lib.rs:365), the LIVE basis for the pro-rata haircut (finding L: owed = insurance*amount/outstanding) and the
+POLICY_WITH_SURPLUS share pricing (mint_shares against insurance_before). A drift would read the wrong field --
+notably the vault (larger) -> the haircut over-pays an impaired exit (drains co-depositors) or the share price
+is mis-set (late-depositor surplus capture / inflation). The canary is asserted in the impair_market test helper
+(subledger_program::PERC_INSURANCE_OFFSET == MARKET_GROUP_OFF + offset_of!(MarketGroupV16HeaderAccount,
+insurance), plus insurance != vault), so EVERY impaired/surplus test exercises it.
+
+MUTATION-VERIFIED: drifted PERC_INSURANCE_OFFSET 301 -> 285 -> NINE tests FAILED (impaired_insurance_exit_is_pro_rata,
+policy_with_surplus_impaired/late/distributes, splitting...drain_a_codepositor, foreign_market_slab..., finding
+HB, fully-impaired-exit, surplus-excluded). Reverted -> 58/58 subledger green, src clean. SHARP.
+
+DRIFT CLASS CLOSED: all THREE percolator-slab consumers now have their hardcoded-offset reads canaried against
+offset_of! the real struct AND mutation-proven non-vacuous: twap INSURANCE_OFFSET (surplus pull basis,
+chain:1773), rd OFF_PORTFOLIO_{crystallized,spent,received,owner,market_group} + SUB_POS_* (residual/share
+reads, offsets.rs), subledger PERC_INSURANCE_OFFSET (haircut/share basis, this tick). The GT/HF/T cross-binary
+layout-drift risk -- the one class where a silent reorder of the read-only percolator dependency could re-open
+an LOF/free-farm under a rebuilt .so -- is comprehensively guarded and verified across the whole stack. No code change.
