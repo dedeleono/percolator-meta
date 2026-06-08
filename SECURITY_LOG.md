@@ -11019,3 +11019,18 @@ No code change (property holds via the backstops). 58/58 subledger green, src cl
 defense-in-depth characterizations: gv ballot PDA bind, the co-depositor per-position clause masked by
 overflow-checks, the gv borrow-position triple-layer.) VERDICT: foreign-slab haircut-inflation is closed by the
 vault-bind + percolator CPI; 1162 is belt-and-suspenders, correctly documented as such.
+
+## Tick — rd points_to_amount overflow-safety (saturating_mul -> brick/drain) MUTATION-VERIFIED (surface D)
+
+Every cohort claim pays floor(cohort_supply * points_i / frozen_total_points) via points_to_amount
+(lib.rs:117). total_supply (u64) * points_i (u128) can EXCEED u128 when points_i is large (the time-weighted Δ
+* tenure can be big), so the multiply MUST saturate, not overflow: `(total_supply as u128).saturating_mul(
+points_i) / total_points`. With `[profile.release] overflow-checks = true`, a plain `*` would PANIC on
+overflow -> every claim in the cohort reverts = the whole cohort's COIN is permanently FROZEN (a brick DoS);
+and since points_i <= total_points for any real stake, the saturated result is always <= total_supply (never
+an over-allocation/drain). It is the one spot where an ordinary-magnitude test would miss the regression.
+
+MUTATION-VERIFIED: replaced saturating_mul with `*`, recompiled -> the host-side unit test
+points_to_amount_is_overflow_safe_never_panics_and_never_over_allocates FAILED (PANIC on the u64::MAX/u128::MAX
+extreme inputs). Reverted -> offsets 4/4 + e2e 48/48 green, src clean. SHARP. No code change. VERDICT: the
+pro-rata payout is overflow-safe (no brick on a large-points cohort, no wrap-drain), mutation-proven.
