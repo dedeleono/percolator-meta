@@ -10475,3 +10475,22 @@ outsider's ATA = direct theft / LOF). Neutered it (`if false && ...`), rebuilt t
 claim_index_is_bound_to_its_named_recipient_no_cross_or_outsider_claim FAILED (the outsider claimed another
 recipient's entry). Reverted -> 32/32 distribution green, src clean. SHARP. No code change. VERDICT: the
 pull-model recipient binding (no cross/outsider claim) is the load-bearing anti-theft guard and is mutation-proven.
+
+## Tick — distribution seal_winner authority key-match (governance-integrity) MUTATION-VERIFIED (surface C / gv seam)
+
+Two surface checks. (1) Re-confirmed the share-value (insurance/backing) stale-denominator dilution — an
+exited depositor's frozen points stay in the cohort denominator (owner-gated crystallize -> no permissionless
+re-crystallize to remove them, unlike the trader cohort) — is the INTENDED soft-veto behavior, already pinned:
+share_value_claim_rejects_a_substituted_position_no_soft_veto_bypass (988) asserts the co-staker gets
+100k*100/400 = 25k while the exiter's 75k share is stranded (forfeited, not redistributed). Conservation-safe
+(stranded, never over-minted); accepted, not a LOF.
+
+(2) MUTATION-VERIFIED the gv->distribution governance seam: seal_winner gates on `authority.key ==
+config.authority` (lib.rs:503) — only the config's bound authority (the gv config PDA, which CPIs the seal)
+may seal the winning distribution. Without it, ANY signer could seal an arbitrary distribution = seal the
+WRONG winner (governance subversion: distribute COIN to a proposal voters never chose). The is_signer check
+(497) alone is insufficient — an imposter signs as THEMSELVES; 503 is what rejects a wrong-but-signing
+authority. Neutered it (`if false && ...`), rebuilt the real .so -> seal_then_recipients_claim_their_entries
+FAILED at its inline "non-authority cannot seal" sub-assertion (distribution.rs:284 — a non-authority signer
+sealed). Reverted -> 32/32 distribution green, src clean. SHARP. No code change. VERDICT: the seal authority
+binding (only the governance-bound authority decides the winner) is load-bearing and mutation-proven.
