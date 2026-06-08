@@ -7565,3 +7565,26 @@ all covered. The defense is LAYERED and each layer is pinned:
 - execute is the SOLE insurance-mover (the bare pull_surplus was removed) and binds market_slab/holding/
   settlement_usd/coin_escrow to config/book; percolator deposits_only=1 (pinned at genesis init) is the last-line
   cap. VERDICT: all BLOCKED/pinned. No change.
+
+### [AUDIT — rd FREE-FARM hunt: every prompt-named vector mapped to its defense; no free-farm exists] tick (D)
+Swept each free-farm suggestion in the standing prompt against the live rd + sim; ALL blocked/bounded. Map:
+- "re-register tricks" (reset start_slot/residual_snap to re-bank): register's create_pda fails on an initialized
+  stake PDA -> double-register rejected (register_rejects_out_of_range_cohort_cross_program_and_double_register,
+  1618); crystallize is idempotent-overwrite, not accumulate (crystallize_is_idempotent_under_replay..., 1307).
+  Crystallize never deletes the stake PDA, so re-register-after-crystallize is the SAME guard.
+- "snap manipulation": residual_snap is set ONCE at register (= live counter then), never user-settable afterward;
+  net_delta = counter - snap measures only post-registration residual, and re-register is blocked (above).
+- "claiming more than 1/N": points_to_amount saturating-mul + result <= total_supply, pinned overflow-safe
+  (points_to_amount_is_overflow_safe_never_panics_and_never_over_allocates) + per-stake `claimed` flag (double-claim).
+- "draining the retained-fee vault": the anti-wash fee stays in the vault un-paid (deflationary); claims are bounded
+  by points/total*cohort_supply and there is NO sweep instruction -> the retained share is LOCKED, not drainable.
+- "freeze/denominator inflation": freeze snapshots the denominators one-shot + closes register/crystallize; claim is
+  rejected while freeze_slot==0 (claim_before_freeze_is_rejected); freeze can't fire before emission_end+window.
+- "a churn that does NOT raise spent": the delta-neutral HOLD (spent stays 0) is the KNOWN un-netted case — bounded
+  not by spent but by the claim-fee + cohort dilution + the time-lock (capital must stay OUTSTANDING to earn);
+  churning to recycle capital DOES raise spent -> net collapses (sim churn_raises_own_spent..., rd churn_zeroes_...).
+- cross-cohort: cohort_supply is read from stake.cohort (not user input); cross-genesis: stake.config + vault binds
+  (claim_rejects_a_stake_from_a_different_rd_config_no_cross_genesis_claim, 1541); substituted-ledger: backing_ledger
+  owner==expected-program check (the type-confusion arm of 1618). Leverage/liquidation: crystallized_loss is settled
+  from the trader's OWN principal so it is bounded by locked capital — leverage does not amplify points per capital.
+VERDICT: no free-farm. Every path to LP/trader points needs real, fee-taxed, time-locked, capital-at-risk loss. No change.
