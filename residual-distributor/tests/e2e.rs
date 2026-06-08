@@ -10,6 +10,7 @@ use solana_sdk::{
     account::Account,
     clock::Clock,
     instruction::{AccountMeta, Instruction},
+    program_option::COption,
     program_pack::Pack,
     pubkey::Pubkey,
     signature::{Keypair, Signer},
@@ -1668,6 +1669,57 @@ fn freeze_ix(svm: &mut LiteSVM, payer: &Keypair, rd_config: Pubkey, coin_mint: P
         AccountMeta::new(payer.pubkey(), true), AccountMeta::new(rd_config, false),
         AccountMeta::new_readonly(coin_mint, false), AccountMeta::new(vault, false),
     ], data: vec![4u8] }], &[])
+}
+
+// DoS PROBE (non-SPL token-shaped vault at the permissionless freeze, sweep tick D): freeze BINDS config.vault
+// from a caller-supplied account, validating its token FIELDS via Account::unpack — but unpack does NOT verify
+// the owning program (distribution::init_config guards exactly this at lib.rs:342 with a warning). freeze is
+// permissionless + one-shot. A griefer can craft a NON-SPL account with token-shaped bytes (owner field =
+// rd_config, mint = coin_mint, amount = supply) and front-run the freeze with it: it passes every field check,
+// binds config.vault to a non-SPL account, and stamps freeze_slot (so the real vault can never be bound). Then
+// EVERY claim's spl_token transfer from config.vault fails (source not SPL-owned) -> the entire residual
+// distribution is permanently bricked. freeze must reject a vault not owned by the SPL Token program.
+#[test]
+fn freeze_rejects_a_non_spl_owned_token_shaped_vault_no_front_run_brick() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let supply = 1_000_000u64;
+    let env = setup(&mut svm, &payer, supply);
+    set_slot(&mut svm, 100);
+
+    // A real backer crystallizes, so there is genuinely a claim the brick would deny.
+    let lp = Keypair::new(); let pf = Pubkey::new_unique();
+    set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &lp.pubkey(), 0, 0);
+    register(&mut svm, &payer, &env, &lp, &lp.pubkey(), &pf, COHORT_LP).expect("reg");
+    set_portfolio(&mut svm, &pf, &env.stub_perc, &env.market, &lp.pubkey(), 9_000, 0);
+    set_slot(&mut svm, 1_000);
+    crystallize(&mut svm, &payer, &env, &lp, &pf).expect("cry");
+
+    // Craft a SYSTEM-owned account whose data round-trips as an initialized token account: owner field =
+    // rd_config, mint = coin_mint, amount = supply — passes every FIELD check, fails only on the owning program.
+    let fake = spl_token::state::Account {
+        mint: env.coin_mint, owner: env.rd_config, amount: supply, delegate: COption::None,
+        state: spl_token::state::AccountState::Initialized, is_native: COption::None,
+        delegated_amount: 0, close_authority: COption::None,
+    };
+    let mut fake_data = vec![0u8; spl_token::state::Account::LEN];
+    spl_token::state::Account::pack(fake, &mut fake_data).unwrap();
+    let fake_vault = Pubkey::new_unique();
+    svm.set_account(fake_vault, Account { lamports: 10_000_000, data: fake_data, owner: solana_sdk::system_program::ID, executable: false, rent_epoch: 0 }).unwrap();
+
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    // ATTACK: front-run the one-shot freeze with the fake vault.
+    assert!(
+        freeze_ix(&mut svm, &payer, env.rd_config, env.coin_mint, fake_vault).is_err(),
+        "freeze must reject a token-shaped vault not owned by the SPL Token program (else a front-run binds a fake vault and bricks all claims)"
+    );
+    // The real vault still freezes + pays out (the rejected attempt did not consume the one-shot freeze).
+    freeze_ix(&mut svm, &payer, env.rd_config, env.coin_mint, env.vault).expect("the real SPL vault freezes");
+    let ata = create_token_account(&mut svm, &payer, &env.coin_mint, &lp.pubkey());
+    claim(&mut svm, &payer, &env, &lp, &ata, None).expect("claim pays from the real vault");
+    assert_eq!(token_amount(&svm, &ata), 400_000, "the LP backer claims its full cohort from the real vault");
 }
 
 // finding GX/EZ: freeze BINDS the fixed-supply COIN vault, so it must reject any mint that could still be

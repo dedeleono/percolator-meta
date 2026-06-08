@@ -857,6 +857,15 @@ fn freeze(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     if *coin_mint.key != config.coin_mint {
         return Err(ProgramError::InvalidAccountData);
     }
+    // Require SPL Token ownership BEFORE unpacking (parity with distribution::init_config:342): Pack::unpack
+    // verifies bytes + length but NOT the owning program, so a NON-SPL account with token/mint-shaped bytes
+    // would otherwise pass every field check below. freeze is permissionless + one-shot and BINDS config.vault,
+    // so without this a griefer could front-run with a fake (non-SPL) token-shaped vault — owner field rd_config,
+    // mint coin_mint, amount supply — permanently binding it; every claim's spl transfer from that source then
+    // fails and the whole residual distribution is bricked (finding: rd freeze missing the SPL-owner guard).
+    if coin_mint.owner != &spl_token::ID || vault.owner != &spl_token::ID {
+        return Err(ProgramError::IllegalOwner);
+    }
     let mint = spl_token::state::Mint::unpack(&coin_mint.try_borrow_data()?)?;
     if mint.mint_authority.is_some() || mint.freeze_authority.is_some() || mint.supply != config.total_supply {
         return Err(ProgramError::InvalidAccountData);

@@ -7171,3 +7171,18 @@ TEST: register_is_not_bricked_by_a_lamport_prefund_of_the_victims_stake_pda (rea
 variant on the REGISTER call site (vs the rd_config whole-system brick): a griefer dusts a backer's stake PDA;
 the backer still registers (robust create adopts it; PDA program-owned). Parity with subledger's position-dust.
 VERDICT: class CLOSED; KEEP the guard. rd e2e 34 green; full stack green.
+
+### [FIXED — DoS: rd freeze was missing the SPL-owner guard on the vault; front-run with a fake vault bricks all claims] tick (D)
+SURFACE (residual-distributor freeze, the permissionless one-shot vault bind). REAL BUG (divergence from
+distribution::init_config:342): freeze validated the vault's token FIELDS via Account::unpack but NEVER checked
+vault.owner == spl_token::ID. Pack::unpack verifies bytes/length, NOT the owning program. freeze is permissionless
++ one-shot and BINDS config.vault. So a griefer crafts a NON-SPL account with token-shaped bytes (owner field =
+rd_config, mint = coin_mint, amount = supply), front-runs the freeze with it -> passes every field check, binds
+config.vault to the fake, stamps freeze_slot (real vault can never be bound). Then EVERY claim's spl_token
+transfer from config.vault fails (source not SPL-owned) -> the entire residual distribution is PERMANENTLY bricked
+(no cohort can ever claim its COIN). distribution guards exactly this (with a warning comment); the rd had missed it.
+REPRO + TEST: freeze_rejects_a_non_spl_owned_token_shaped_vault_no_front_run_brick (real rd .so) crafts the fake
+vault and freezes with it — FAILED against the old .so (freeze accepted the fake), PASSES after the fix (freeze
+rejects it; the real vault then freezes and the LP backer claims its full 400k).
+FIX (our authorship): require coin_mint.owner == spl_token::ID AND vault.owner == spl_token::ID BEFORE unpacking,
+parity with distribution:342. Rebuilt residual_distributor.so. VERDICT: REAL DoS, FIXED. KEEP. rd e2e 35, sim 3 green.
