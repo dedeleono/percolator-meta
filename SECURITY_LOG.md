@@ -5,7 +5,21 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (A, shutdown owner-check is DEFENSE-IN-DEPTH — masked by the SPL signer; comment corrected): probed
+LATEST TICK (A, auction claim canonical-bind is SHARP — and the sharp-vs-masked criterion): mutation-checked the
+auction claim canonical-ATA bind (process_claim lib.rs:1820, `usd_dest == SL_USD_DEST && coin_ata == SL_COIN_ATA`),
+the anti-redirect LOF guard that pins a winner's USD/COIN payout to their OWN bound ATAs so a permissionless cranker
+can't redirect it. Dropping it makes 3 tests FAIL (e2e_claim_payout_cannot_be_redirected_to_a_cranker_account,
+e2e_claim_cannot_redirect_a_winners_payout, ..._a_losers_coin_refund) -> genuinely SHARP, no backstop. KEY INSIGHT
+(the criterion separating last tick's MASKED shutdown owner-check from this SHARP claim bind): both guard a
+program-signed spl_transfer, but the SIGNER differs. shutdown signs as twap_authority moving the HOLDING — it
+canNOT sign for the book_escrow-owned escrow/settlement, so SPL's owner-must-sign masks a dropped owner-check.
+claim signs as the book_escrow PDA moving the book_escrow-OWNED settlement/escrow — it CAN sign for any dest, so
+SPL provides NO backstop and the canonical-ATA bind is the SOLE redirect guard. RULE: an account-binding check is
+mutation-SHARP iff the tx's signer legitimately owns the SOURCE (no SPL backstop); it is DEFENSE-IN-DEPTH (masked)
+iff the signer does NOT own the substituted source (SPL rejects it anyway). Reverted, git clean, chain 110 green.
+Cumulative mutation campaign: guard-removal[38] + 9 classes + 2 defense-in-depth; NO uncaught mutation.
+
+PRIOR TICK (A, shutdown owner-check is DEFENSE-IN-DEPTH — masked by the SPL signer; comment corrected): probed
 the auction SHUTDOWN bounds (malicious-DAO confiscation). process_shutdown (lib.rs:1943) sweeps ONLY the holding
 to dest, gated `holding.owner == twap_authority` (1975) + Squads-vault. Mutation-checked the 1975 owner-check:
 dropping it leaves e2e_shutdown_cannot_drain_escrow_or_settlement GREEN -> MASKED. Backstop: the shutdown's
