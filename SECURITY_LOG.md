@@ -7680,3 +7680,19 @@ attacker-influenced magnitudes) for overflow that could brick (panic) or drain (
   (continued-fraction, overflow-safe) handles the bid-vs-RESERVE check where the DAO reserve may be a large u128.
 VERDICT: both BLOCKED/safe + pinned. Also this session: doc-drift sweep across all 5 programs complete (3 real
 drifts fixed: rd fee-cap, rd IX_SEAL, twap pull_surplus; others' module docs match their dispatch). No change.
+
+### [AUDIT — arithmetic-safety completed: subledger share math (depositor principal) is fully checked] tick (B)
+Completing the money-math overflow audit with the THIRD + most critical spot — the subledger share conversions that
+govern depositor principal directly. Both are FULLY CHECKED (strongest of the three approaches):
+- mint_shares(amount:u64, total_shares:u128, balance:u64) = checked_mul(amount, total_shares+VIRTUAL_SHARES) /
+  checked_div(balance+1): every op is checked_* -> a clean ArithmeticOverflow revert, never a panic/wrap.
+- redeem_shares(shares:u128, balance:u64, total_shares:u128) = checked_mul(shares, balance+1) /
+  checked_div(total_shares+VIRTUAL_SHARES), then u64::try_from(owed) -> caps the payout; checked throughout.
+- mul_div_floor(a:u64,b:u64,denom) = a*b/denom in u128: a,b are u64 so a*b < 2^128 (can't overflow) + denom==0 guard.
+Overflow is also UNREACHABLE by construction: the virtual-shares anti-inflation defense bounds total_shares to ~the
+balance (<= u64::MAX), so amount*total_shares < u128::MAX for any real pool — the checked_* is belt-and-suspenders.
+Rounding is pool-favorable both ways (mint floors down -> fewer shares; redeem floors down -> fewer tokens; dust
+accrues to the pool), and the round-trip can't beat pro-rata (cannot_over_withdraw_to_drain_a_codepositor,
+splitting_an_impaired_exit_cannot_beat_the_pro_rata, a_deposit_that_rounds_to_zero_shares_is_rejected). VERDICT:
+safe. The three core arithmetic spots are now all audited: rd points_to_amount (saturating, bounded), twap cmp_bid
+(u64-bounded legs), subledger shares (checked + virtual-shares-bounded). No change.
