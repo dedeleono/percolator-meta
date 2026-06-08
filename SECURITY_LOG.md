@@ -11736,3 +11736,28 @@ reduce the effective fee below the intended rate. fee <= amount still holds (bps
 round-number fee tests — 400000*2000/10000=80000 exact — are unchanged). Post-fix the 10 dust claims pay 1 each
 -> total payout 30 <= 32 (the dodge is closed). MUTATION-SHARP by construction: the test FAILS on the pre-fix
 floor code, PASSES on the ceil fix. rd e2e 49/49, rd offsets 4/4, sim 6/6 green; rebuilt rd .so. KEPT the test.
+
+## Tick — dust-rounding CLASS COMPLETENESS sweep after the fee fix: no sibling vectors (surfaces A/D)
+
+Follow-up to the fee dust-dodge fix (747bf8a): swept EVERY bps/value-path division across the deployed programs
+to confirm the ceil fix had no siblings. The exploitable pattern is narrow: flooring helps an attacker ONLY when
+it reduces a SKIM/FEE that is meant to BOUND them (so dust claims round the skim to 0 and fragmentation dodges
+it). Everywhere else, flooring reduces a PAYOUT / PULL / ALLOCATION, which only ever costs the rounder <=1 atom of
+dust (conservation-safe, no attacker benefit). Audited all sites:
+
+- rd claim FEE (lib.rs:1056) -- the ONE skim; FLOOR was dust-dodgeable -> FIXED to ceil last tick.
+- rd points_to_amount (126): floor(supply*points/denom) -- the claim PAYOUT. Floor under-pays; fragmenting a farm
+  floors each piece DOWN so the attacker LOSES dust (never over-allocates; conservation pinned). SAFE.
+- rd residual live-cap (1042): points*live_net/frozen_net (floor) -- caps the payout DOWN on a net drop. SAFE.
+- rd cohort_supply (405): supply*bps/DEN (floor) -- under-allocates a cohort; the 4 cohorts sum to <= supply
+  (deflationary remainder), never over. SAFE.
+- twap burnable + savings (1510/1517): surplus*bps/DEN (floor) -- the retained (insurance-growth) remainder
+  ABSORBS the floor dust, so the pull is <= the exact share. Flooring UNDER-pulls -> protects depositor principal
+  (the user's "over-pulled" concern is the opposite direction). SAFE.
+- subledger mint_shares / redeem_shares (floor) -- under-mint/under-redeem, bounded to <=1 unit/op by the
+  VIRTUAL_SHARES offset (finding HU, already pinned). Fragmenting deposits/withdrawals LOSES dust. SAFE.
+- gv vote_weight floor_log2(hold)*principal, distribution claim (exact entry amount, no division/skim) -- no
+  bounding-skim division. SAFE.
+
+CONCLUSION: the anti-wash claim fee was the SOLE floor-helps-attacker site in the stack; ceiling it (747bf8a)
+closes the class. No new bug, no code change. Recorded so future ticks don't re-probe the rounding class.
