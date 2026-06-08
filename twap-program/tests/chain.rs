@@ -5779,7 +5779,11 @@ fn e2e_execute_buyback_retains_fraction_to_sink_and_burns_the_rest() {
 // MALICIOUS-DAO SCOPE (shutdown can't drain user funds): shutdown is a privileged Squads-gated op
 // that sweeps the twap's USD budget (the holding). It must NOT be repurposable — by substituting
 // the book-escrow-owned coin_escrow or settlement_usd as the "holding" — to drain bidders' escrowed
-// COIN or winners' settled USD. The holding.owner == twap_authority check scopes it.
+// COIN or winners' settled USD. DEFENSE-IN-DEPTH: the explicit `holding.owner == twap_authority` check
+// (lib.rs:1975) is the clean early-reject, but NOT the sole guard — the shutdown's spl_transfer signs as
+// twap_authority and SPL Token requires the SOURCE account's OWNER to sign, so an escrow/settlement account
+// (owned by the book_escrow PDA, not twap_authority) can never be moved regardless. (Mutation note: dropping
+// the 1975 check alone leaves this test green — the SPL signer is the load-bearing backstop.)
 #[test]
 fn e2e_shutdown_cannot_drain_escrow_or_settlement() {
     let mut svm = LiteSVM::new().with_compute_budget(solana_program_runtime::compute_budget::ComputeBudget {

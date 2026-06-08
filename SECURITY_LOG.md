@@ -5,7 +5,20 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (D, mutation-verify the anti-wash claim FEE — SHARP; ALL anti-wash defenses now verified): mutation-
+LATEST TICK (A, shutdown owner-check is DEFENSE-IN-DEPTH — masked by the SPL signer; comment corrected): probed
+the auction SHUTDOWN bounds (malicious-DAO confiscation). process_shutdown (lib.rs:1943) sweeps ONLY the holding
+to dest, gated `holding.owner == twap_authority` (1975) + Squads-vault. Mutation-checked the 1975 owner-check:
+dropping it leaves e2e_shutdown_cannot_drain_escrow_or_settlement GREEN -> MASKED. Backstop: the shutdown's
+spl_transfer signs as twap_authority, and SPL Token requires the SOURCE account's OWNER to sign — the coin_escrow
++ settlement_usd are owned by the book_escrow PDA (not twap_authority), so they can NEVER be moved by shutdown
+regardless of the 1975 check. So the security property (user funds unreachable by shutdown) holds via the SPL
+signer; 1975 is the clean early-reject. Test comment over-attributed ("the owner check scopes it") -> corrected to
+an honest defense-in-depth note. No code change; shutdown tests green. PATTERN (3rd instance after the co-depositor
+bound + the overflow-checks backstop): several explicit value/owner guards are masked by a DEEPER structural
+backstop (overflow-checks panic-revert; SPL owner-must-sign) — the security holds, but test comments tend to
+credit the explicit guard alone. The mutation-blindness lens reliably surfaces these for honest characterization.
+
+PRIOR TICK (D, mutation-verify the anti-wash claim FEE — SHARP; ALL anti-wash defenses now verified): mutation-
 checked the rd anti-wash fee (claim lib.rs:1035, `fee = amount*fee_support_bps/10000` retained in the vault, the
 NZ tax on LP/trader PnL-flow that bounds a delta-neutral wash the spent-netting can't catch). Forcing fee=0 makes
 3 tests FAIL (lp_trader_claim_pays_the_anti_wash_fee, trader_cohort_claim_also_pays, the 100pct-fee graceful case)
