@@ -8442,3 +8442,22 @@ SOUND + comprehensively pinned (seal.rs, 17 tests green):
   all bound to config + pv (737-741); trigger_cannot_redirect_to_a_sibling_distribution_proposal pins the bind.
 VERDICT: no free COIN — no mint, exactly one irreversible winner, quorum/majority measured against live capital,
 and the sealed list is byte-identical to what voters approved. No code change; suites green.
+
+### [VERIFIED — auction cancel: owner-bound, anti-spoof cooldown (no roll shortcut), bound refund, no replay] tick (A)
+First-time direct trace of process_cancel_bid (lib.rs:1858) — reclaims an UNSETTLED bid's escrowed COIN; a
+non-owner cancel (grief), a redirect, a replay, or a cooldown bypass would be DoS/LOF/anti-spoof-break. SOUND +
+exhaustively pinned:
+- OWNER-BOUND: bidder.is_signer (1875) AND SL_BIDDER == bidder.key (1902) — a non-bidder cannot yank a victim's
+  bid out of the auction. Pinned: e2e_bid_cancellable_after_cooldown_keeps_fee (chain:5311, mallory rejected).
+- ANTI-SPOOF COOLDOWN: aged = now >= place_slot + 2*round_length (1916); deliberately does NOT shortcut on a
+  round_end delta, because process_execute advances round_end even on a permissionless NO-OP roll (surplus 0) —
+  treating that as "cleared" would let a spoofer shape the book, crank a roll, and yank the bid inside the cooldown
+  (issue #28). Gated on aging alone. Pinned: e2e_roll_does_not_unlock_cancel_before_aging (chain:7030) +
+  e2e_bid_cancellable_after_cooldown_keeps_fee (5283, the fee is NOT refunded on cancel -> no free churn).
+- SETTLED BIDS REJECTED: SL_OCCUPIED==1 && SL_SETTLED==0 (1899) — a settled bid resolves via claim, not cancel
+  (no double-spend across the two paths). Pinned: e2e_cancel_cannot_double_spend_a_settled_bid (chain:6505).
+- BOUND REFUND + NO REPLAY: refund goes to the recorded SL_COIN_ATA (1922), full escrow only (fee burned at
+  placement), then the slot is zeroed (1931) so a re-cancel hits OCCUPIED!=1. Pinned: e2e_cancel_cannot_be_
+  replayed_to_drain_the_shared_escrow (chain:5328).
+VERDICT: no LOF (bound refund, full-escrow-only), no DoS-grief (only the bidder cancels), no anti-spoof break
+(aging-only cooldown survives a no-op roll), no replay. No code change; suites green.
