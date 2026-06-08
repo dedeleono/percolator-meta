@@ -9224,3 +9224,20 @@ MUTATION CAMPAIGN — 15 load-bearing guards proven non-vacuous, all 4 surfaces:
   net-by-spent + anti-wash fee + time-weight + claim recipient-binding + freeze fixed-supply. Covers principal
   protection (x2), Sybil, winner-take-all (quorum+majority), conservation, double-claim, BOTH redirect-theft guards,
   the full anti-wash suite, COIN-mint-inflation, AND the keystone DAO authority gate. No code change (all reverted).
+
+### [MUTATION-VERIFIED — rd claim double-claim guard (claimed flag); 16 guards proven, all 4 surfaces] tick (D)
+Mutation-tested the rd-side double-claim guard (`if stake.claimed { reject }`, lib.rs:959) — each stake's COIN slice
+is one-shot; without it a stake re-claims and drains the rd vault (parallel to distribution's entry-zeroing).
+Temporarily dropped it (`if false`), rebuilt, ran:
+- lp_residual_delta_and_double_claim_rejected (1313): FAILED at 1338 — a stake now claims its share REPEATEDLY,
+  draining the vault. Caught.
+REVERTED + rebuilt + test PASSES; git clean. (Both double-claim guards now proven: distribution entry-zeroing +
+rd claimed-flag.)
+MUTATION CAMPAIGN — 16 load-bearing guards proven non-vacuous, all 4 surfaces:
+  (A) finding-O execute floor + re-arm monotonicity + auction eviction-refund + require_squads_vault DAO gate;
+  (B) vote-lock + trigger majority + trigger quorum;
+  (C) distribution entry-zeroing + append supply-cap;
+  (D) market allow-list + net-by-spent + anti-wash fee + time-weight + claim recipient-binding + freeze fixed-supply +
+      rd claimed-flag.
+The stack's load-bearing LOF/DoS/free-farm/mint/theft/capture guards are comprehensively mutation-proven across every
+program and threat class. No code change (all mutations reverted).
