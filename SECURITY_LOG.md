@@ -5,7 +5,22 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 300 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 50,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (C/D, claim-index bounds analyzed + rd freeze finalize-window mutation-verify, NO code change):
+LATEST TICK (D/A, sim wash-coverage review + #28 cancel-cooldown mutation-verify, NO code change): (D) reviewed
+the sim/ wash-farm suite (3 tests vs the REAL percolator) — comprehensive: rational_miner_farms... (delta-neutral
+long+short wash leaves spent=0, fee-taxed + allow-list-blocked), churn_raises_own_spent_and_collapses_the_net_
+reward (a churn DOES raise spent -> net collapses), genesis_market_3bps_fee_accrues_to_asset0_insurance (the 3bps
+redirect works). The wash trichotomy is covered; a 4th sim test would be marginal (NOT added). Note: sim guards
+live in the read-only percolator, so they can't be mutation-verified from here. (A) NEW VERIFICATION: mutation-
+checked the #28 cancel-cooldown fix (process_cancel_bid lib.rs:1914-1919) — a REAL historically-exploited bug
+(a permissionless no-op execute advances round_end; the OLD cancel shortcutted on a round_end delta, so a spoofer
+could post a book-shaping bid, crank a no-op roll, and yank it inside the cooldown — last-second-cancel
+manipulation). The fix gates on AGING ALONE (now >= place_slot + 2*round_length). Re-introducing the round_end
+shortcut (`|| book.round_end != place_round_end`) makes e2e_roll_does_not_unlock_cancel_before_aging FAIL;
+reverted, git clean, chain 110 green. Cumulative mutation campaign: guard-removal[32], off-by-one[3], equivalent[1],
+constant-magnitude[1], offset-constant[1], live-cap[1], snap-baseline[1], last-write-clock[1], share-pricing-
+source[1] + 2 defense-in-depth; NO uncaught mutation across all 4 surfaces.
+
+PRIOR TICK (C/D, claim-index bounds analyzed + rd freeze finalize-window mutation-verify, NO code change):
 (C) distribution claim has an index>=entry_count bounds guard (lib.rs:572); analyzed as DEFENSE-IN-DEPTH not
 load-bearing — an index in [entry_count,capacity) reads a zeroed entry already rejected by the pk/amount checks,
 and index>=capacity panic-reverts safely regardless, so a dedicated test would be marginal (NOT added, per the
