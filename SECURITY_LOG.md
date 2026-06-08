@@ -11237,3 +11237,27 @@ chain:1773), rd OFF_PORTFOLIO_{crystallized,spent,received,owner,market_group} +
 reads, offsets.rs), subledger PERC_INSURANCE_OFFSET (haircut/share basis, this tick). The GT/HF/T cross-binary
 layout-drift risk -- the one class where a silent reorder of the read-only percolator dependency could re-open
 an LOF/free-farm under a rebuilt .so -- is comprehensively guarded and verified across the whole stack. No code change.
+
+## Tick — subledger exported POS_* offset canary (rd share-value read foundation) MUTATION-VERIFIED (surface D/B cross-binary)
+
+Closed the LAST link of the cross-binary offset chain: the rd reads the subledger Position for the
+insurance/backing (share-value) cohorts at SUB_POS_* offsets, which the rd offsets.rs cross-pins to the
+subledger's EXPORTED POS_* consts (SUB_POS_SHARES == subledger_program::POS_SHARES_OFF, etc.). Those exported
+consts (POS_POOL_OFF=8, POS_OWNER_OFF=40, POS_WITHDRAWN_OFF=88, POS_SHARES_OFF=104) are the rd's read
+foundation: a drift would make the rd read the WRONG field as the share-value POINTS source -> wrong COIN
+distribution (mis-weight a cohort = free-farm / dilution). Crucially, Position::serialize uses HARDCODED offsets
+(data[104..120] = shares), so the POS_* consts are SEPARATE values; the subledger's own code reads via the
+hardcoded path, so POS_SHARES_OFF is used ONLY by external readers (the rd) -- the canary
+exported_position_and_pool_offset_consts_match_the_real_serialized_layout (subledger.rs:266) is its SOLE pin (it
+reads each POS_* field from a REAL serialized Position and asserts the expected value).
+
+MUTATION-VERIFIED: drifted POS_SHARES_OFF 104 -> 88 -> the canary FAILED (read the wrong field), while the
+subledger's own insurance suite stayed 58/58 green (confirming the const is purely the exported read offset, so
+the canary is the only guard). Reverted -> subledger.rs 11/11 green, src clean. SHARP. No code change.
+
+CROSS-BINARY OFFSET CHAIN FULLY CLOSED: every hardcoded cross-program read is canaried + mutation-proven --
+percolator slab: twap INSURANCE_OFFSET, rd OFF_PORTFOLIO_*, subledger PERC_INSURANCE_OFFSET; subledger Position:
+rd SUB_POS_* cross-pinned to subledger POS_* (this tick) canaried against the real serialized layout. No silent
+reorder of the percolator OR subledger layout can drift a consumer's read into an LOF/free-farm without a
+canary failing. Verification of the whole stack is comprehensive across guards, paths, crates, conservation,
+anti-wash (incl. real-trade), and cross-binary layout integrity.
