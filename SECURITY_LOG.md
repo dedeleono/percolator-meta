@@ -5,7 +5,17 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (C/B, mutation-sharpness audit — append cap SHARP, co-depositor bound is DEFENSE-IN-DEPTH): continued
+LATEST TICK (A, mutation-verify the auction reserve filter — SHARP): mutation-checked the execute reserve-rate
+filter (lib.rs:1624, `cmp_rate(c, u, reserve_num, reserve_den) == Less -> skip`) — the LOF guard that drops bids
+BELOW the DAO-set reserve (max USD-per-COIN), so a whale's huge expensive (low-rate) bid cannot drag the marginal
+clearing price down and make the protocol overpay/drain the surplus. Disabling the filter makes e2e_reserve_blocks_
+expensive_bid_from_draining_surplus FAIL (the expensive below-reserve bid clears and drains) -> genuinely SHARP, no
+backstop. Reverted, git clean, chain 110 green. Cumulative mutation campaign: guard-removal[36], off-by-one[3],
+equivalent[1], constant-magnitude[1], offset-constant[1], live-cap[1], snap-baseline[1], last-write-clock[1],
+share-pricing-source[1], one-sided-cap[1] + 2 defense-in-depth (co-depositor bound now precisely characterized as
+overflow-checks-masked); NO uncaught mutation.
+
+PRIOR TICK (C/B, mutation-sharpness audit — append cap SHARP, co-depositor bound is DEFENSE-IN-DEPTH): continued
 the mutation-blindness lens. (C) mutation-verified the distribution APPEND supply-cap (lib.rs:478,
 `header.total_amount > config.total_supply -> reject`, the LOF guard against a sealed proposal over-allocating
 beyond the funded vault): dropping it makes BOTH append_cannot_exceed_total_supply AND append_supply_cap_is_
