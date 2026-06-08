@@ -1501,6 +1501,64 @@ fn live_cap_never_pays_above_the_frozen_points_when_live_net_grew_without_recrys
     assert_eq!(token_amount(&svm, &h_ata), 200_000, "the honest co-staker keeps its full 50% — T's grown live net did not steal from H");
 }
 
+// ATTACK PROBE (CROSS-COHORT double-dip: trader-loss + LP-recovery of the SAME loss). The real percolator
+// `transfer_account_residual_reward_credit` (percolator v16.rs:8312) moves a recovered trader loss by raising
+// BOTH the trader's `spent` AND the recovering LP's `received` by the SAME `credit = min(trader_net,
+// lp_principal)`. So an attacker owning both legs can: (1) crystallize a TRADER loss X at peak (trader points
+// = X); (2) self-deal the LP recovery so trader spent -> X (net 0) and LP received -> X; (3) crystallize the LP
+// leg (LP points = X) — and if the trader leg keeps its STALE points, the SAME loss X is counted in BOTH
+// cohorts = 2X captured from one X loss. The claim LIVE-CAP closes it: the trader claim re-reads live_net =
+// crystallized - spent = 0 < frozen X -> caps the trader payout to 0, so the points correctly MOVE to the LP
+// cohort (conserved), never doubled. Real rd .so; the post-recovery counter state mirrors what the percolator
+// credit transfer produces (spent_trader and received_lp raised together).
+#[test]
+fn cross_cohort_trader_loss_then_lp_recovery_cannot_double_dip_the_same_loss() {
+    let mut svm = LiteSVM::new();
+    svm.add_program_from_file(rd_id(), rd_so()).unwrap();
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    let env = setup(&mut svm, &payer, 1_000_000); // trader 40% = 400_000, lp 40% = 400_000, fee 0
+    set_slot(&mut svm, 100);
+
+    // Attacker owns BOTH legs: a_tr (trader) and a_lp (LP).
+    let a_tr = Keypair::new(); let tr_pf = Pubkey::new_unique();
+    let a_lp = Keypair::new(); let lp_pf = Pubkey::new_unique();
+    set_portfolio_full(&mut svm, &tr_pf, &env.stub_perc, &env.market, &a_tr.pubkey(), 0, 0, 0);
+    set_portfolio_full(&mut svm, &lp_pf, &env.stub_perc, &env.market, &a_lp.pubkey(), 0, 0, 0);
+    register(&mut svm, &payer, &env, &a_tr, &a_tr.pubkey(), &tr_pf, COHORT_TRADER).expect("reg trader leg");
+    register(&mut svm, &payer, &env, &a_lp, &a_lp.pubkey(), &lp_pf, COHORT_LP).expect("reg LP leg");
+
+    // (1) trader crystallizes a 6_000 loss at PEAK (tenure 1024 -> floor_log2 = 10 -> 60_000 trader points).
+    set_slot(&mut svm, 100 + 1024);
+    set_portfolio_full(&mut svm, &tr_pf, &env.stub_perc, &env.market, &a_tr.pubkey(), 0, 6_000, 0);
+    crystallize(&mut svm, &payer, &env, &a_tr, &tr_pf).expect("cry trader (net 6_000)");
+
+    // (2) self-dealt LP RECOVERY of that exact loss: percolator raises trader.spent AND lp.received together.
+    // (3) crystallize the LP leg so it banks the recovered 6_000 as LP points (60_000). Trader leg NOT
+    //     re-crystallized -> its frozen 60_000 trader points are now STALE (live net is 0).
+    set_slot(&mut svm, 100 + 2048);
+    set_portfolio_full(&mut svm, &tr_pf, &env.stub_perc, &env.market, &a_tr.pubkey(), 0, 6_000, 6_000); // trader net -> 0
+    set_portfolio_full(&mut svm, &lp_pf, &env.stub_perc, &env.market, &a_lp.pubkey(), 6_000, 0, 0);      // lp received -> 6_000
+    crystallize(&mut svm, &payer, &env, &a_lp, &lp_pf).expect("cry LP (received 6_000)");
+
+    set_slot(&mut svm, env.emission_end + env.finalize_window + 1);
+    freeze(&mut svm, &payer, &env).expect("freeze");
+
+    let tr_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &a_tr.pubkey());
+    let lp_ata = create_token_account(&mut svm, &payer, &env.coin_mint, &a_lp.pubkey());
+    let _ = claim(&mut svm, &payer, &env, &a_tr, &tr_ata, Some(&tr_pf)); // may pay 0
+    claim(&mut svm, &payer, &env, &a_lp, &lp_ata, Some(&lp_pf)).expect("LP claim");
+    let tr_got = token_amount(&svm, &tr_ata);
+    let lp_got = token_amount(&svm, &lp_ata);
+
+    // The live-cap caps the trader leg to 0 (live net 0 < frozen 6_000): the SAME loss is NOT counted twice.
+    assert_eq!(tr_got, 0, "DOUBLE-DIP CLOSED: the trader leg's stale points are capped to 0 once the LP recovered the loss");
+    // The points correctly LANDED in the LP cohort (the recovery's beneficiary): a_lp is the sole LP staker.
+    assert_eq!(lp_got, 400_000, "the recovered loss is counted ONCE, in the LP cohort where the credit transfer attributed it");
+    // Total capture from the single 6_000 loss = ONE cohort (400_000), never two (800_000).
+    assert_eq!(tr_got + lp_got, 400_000, "one loss -> one cohort's worth of COIN, not double across trader+LP");
+}
+
 // ATTACK PROBE (residual claim live-cap bypass via a SUBSTITUTED portfolio). The claim live-cap (src:1011)
 // re-reads the BOUND portfolio to scale a trader's frozen points down by min(1, live_net/frozen_net) — that is
 // what closes the stale-points wash (a loss crystallized at peak then recovered to net 0). The cap is only as

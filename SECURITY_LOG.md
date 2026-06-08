@@ -10350,3 +10350,29 @@ drift would cause and noting the stale marker was wrong. Confirmed the canary is
 OFF_PORTFOLIO_SPENT 196->200 makes portfolio_residual_counter_offsets_match FAIL (caught the drift); reverted
 -> 4/4 offsets green, src clean. Doc-only change; no behavior change. VERDICT: the offset-drift free-farm/DoS
 guard is real (mutation-sharp) and its "keep me" status is now unambiguous so it can't be deleted by mistake.
+
+## Tick — CROSS-COHORT trader-loss + LP-recovery double-dip CLOSED by the live-cap (surface D; mechanism found in percolator, MUTATION-SHARP)
+
+Found the EXACT percolator `received` accrual mechanism (resolving the long-open LP-cohort question): v16.rs:8312
+`transfer_account_residual_reward_credit(trader, lp, principal)` computes `credit = min(crystallized - spent,
+principal)` and raises BOTH `trader.residual_spent_principal_atoms_total += credit` AND
+`lp.residual_received_atoms_total += credit`. So `received` is the SYMMETRIC counterpart of the trader's
+net-by-spent: when an LP's backing recovers a trader's loss, the trader's spent rises (net drops) and the LP's
+received rises by the SAME amount — the loss-points MOVE from the trader cohort to the LP cohort, conserved.
+
+This exposes a CROSS-COHORT double-dip an attacker owning both legs could attempt: (1) crystallize a trader loss
+X at peak -> trader points X; (2) self-deal the LP recovery so trader spent -> X (net 0) and LP received -> X;
+(3) crystallize the LP leg -> LP points X; if the trader leg keeps its STALE points, the SAME X loss is counted
+in BOTH cohorts = 2X from one loss. The claim LIVE-CAP (this session's fix) closes it — the trader claim re-reads
+live_net = crystallized - spent = 0 < frozen X -> caps the trader payout to 0, so the points land ONCE, in the
+LP cohort. Crucially this means the live-cap defends MORE than the single-trader self-recovery it was documented
+for: it also closes the cross-cohort trader->LP double-count.
+
+This was UNPINNED — the existing live-cap tests have no LP leg. Added
+cross_cohort_trader_loss_then_lp_recovery_cannot_double_dip_the_same_loss: trader crystallizes 6_000 at peak,
+the LP recovery state is applied (trader spent->6_000, LP received->6_000), LP crystallizes; at claim the trader
+leg pays 0 (capped) and the LP leg takes 400_000 (its cohort) -> total 400_000 from one loss, never 800_000.
+MUTATION-SHARP: neutering the live-cap makes the trader leg ALSO pay its stale 400_000 (the 2X double-dip) ->
+test FAILS; reverted -> rd 47->48 green, src clean. No code change (live-cap correct). VERDICT: the LP `received`
+free-farm is fully resolved at the mechanism level (received = real absorbed loss, zero-sum with trader net) and
+the cross-cohort double-dip is closed by the live-cap and now regression-pinned.
