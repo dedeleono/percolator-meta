@@ -7249,3 +7249,19 @@ INSURANCE_OFFSET` so it pins the ACTUAL src const against the real struct (parit
 imports its OFF_PORTFOLIO_* consts). The value (749) is unchanged, so the .so behavior is identical (rebuilt for
 hygiene). VERDICT: HARDENED (closes the src-const-drift gap on the most LOF-critical raw offset). KEEP. twap
 chain 102 green.
+
+### [HARDENED — gv anti-bait-and-switch snapshot offsets now canaried against the real distribution layout] tick (B)
+SURFACE (genesis-vote trigger offset discipline). Continuing the offset-canary audit (rd SPENT, twap insurance):
+the trigger's anti-bait-and-switch guard reads the distribution proposal's entry_count + total_amount at
+HARDCODED offsets (src pd[84..88], pd[88..96]) and compares them to the registration-time snapshot — the guard
+behind trigger_refuses_a_distribution_inflated_after_registration. gv offsets.rs canaried the subledger Position/
+Pool offsets + the distribution program id, but NOT these distribution-ProposalHeader offsets. A distribution
+reorder would silently drift them: the snapshot would read a non-changing field and ALWAYS match, so an inflated
+distribution would slip past voters' approval (LOF/governance hijack) — and the behavioral test could pass
+unpredictably (it only checks the inflated case is refused, not WHICH field is read).
+TEST: gv_distribution_snapshot_offsets_match_the_real_distribution_proposal_layout (real distribution .so) — build
+a proposal with 3 entries totaling 60 and assert the bytes at 84/88 decode to entry_count==3 + total_amount==60.
+This pins the gv's hardcoded offsets E2E against the real distribution binary (a ProposalHeader reorder fails it).
+VERDICT: HARDENED (closes the gv<->distribution snapshot offset canary gap). KEEP. gv 21 green.
+The offset-canary discipline is now complete: rd (4 residual offsets + subledger pos), twap (insurance src const),
+gv (subledger pos/pool + distribution snapshot) — every load-bearing raw cross-program offset is pinned.
