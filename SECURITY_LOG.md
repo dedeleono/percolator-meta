@@ -6993,3 +6993,16 @@ TEST: extended vote_locked_principal_cannot_exit_until_retracted (real subledger
 (amount/2) withdraw attempt while locked -> rejected; position principal unchanged, no withdrawal recorded, full
 capital still at risk behind the ballot. VERDICT: BLOCKED. KEEP (pins the partial variant, distinct from full).
 No behavior change. subledger 47 + 10 + 10 green.
+
+### [VERIFIED — corruption/DoS: append entry-count CAPACITY cap + atomic partial-batch revert] sweep tick (C)
+SURFACE (distribution append_entries). A proposal account is sized for EXACTLY `capacity` entries (create:414);
+a (capacity+1)th entry would write past the account. append guards it per-entry (lib.rs:467 entry_count >=
+capacity -> reject) BEFORE the write, and since header.serialize runs only AFTER the loop, a batch that overflows
+capacity mid-loop must commit NEITHER entry (atomic revert). The supply-cap test uses capacity 8 (never binds),
+so the capacity cap itself + the partial-batch atomicity were untested (distinct from the economic supply cap;
+Rust's slice bounds-check is a panic backstop, but the explicit cap gives a clean error + the atomicity proof).
+TEST: append_entry_count_capacity_cap_and_an_overflowing_batch_reverts_atomically (distribution .so): capacity 2,
+append alice (1/2); a [bob,carol] batch overflows -> rejected; a single dave append THEN succeeds into slot 1
+(proving bob's mid-loop write was rolled back — not partially committed); a further eve append is rejected as
+full; seal+claim distributes exactly alice(0)=10 + dave(1)=40. VERDICT: BLOCKED. KEEP (pins the capacity cap +
+partial-batch atomicity, distinct from supply cap). No behavior change. distribution 29 green.

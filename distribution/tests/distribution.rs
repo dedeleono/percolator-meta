@@ -796,6 +796,43 @@ fn append_supply_cap_is_cumulative_across_calls_and_a_rejected_overflow_preserve
     assert_eq!(env.token_amount(&env.vault.clone()), 0, "exactly the supply distributed — no over-draw, no stranded headroom");
 }
 
+// CORRUPTION/DoS PROBE (entry-count capacity cap + atomic partial-batch, sweep tick C): the proposal account is
+// sized for exactly `capacity` entries (create:414); appending a (capacity+1)th entry would write past the
+// account. append guards it per-entry (lib.rs:467 entry_count >= capacity -> reject) BEFORE the write, and since
+// header.serialize runs only AFTER the loop, a batch that overflows capacity mid-loop must commit NEITHER entry
+// (atomic revert). The supply-cap test above uses capacity 8 (never binds); this pins the capacity cap itself
+// and the partial-batch atomicity — distinct from the economic supply cap.
+#[test]
+fn append_entry_count_capacity_cap_and_an_overflowing_batch_reverts_atomically() {
+    let mut env = Env::new(1_000, 1_000_000); // supply 1000 — generous, so only CAPACITY binds
+    let proposal = env.create_proposal(1, 2); // capacity = 2 entries
+    let (alice, alice_ata) = env.new_recipient();
+    let (bob, _bob_ata) = env.new_recipient();
+    let (carol, _carol_ata) = env.new_recipient();
+    let (dave, dave_ata) = env.new_recipient();
+    let (eve, _eve_ata) = env.new_recipient();
+
+    // One entry committed (entry_count 1 of capacity 2).
+    env.append(&proposal, &[(alice.pubkey(), 10)]).expect("append alice: 1 of 2");
+    // A BATCH of two would take entry_count 1 -> 3 > capacity 2. bob fits mid-loop (1->2), carol hits the cap
+    // (:467) -> Err -> the whole tx reverts, so bob's mid-loop write is rolled back too.
+    assert!(env.append(&proposal, &[(bob.pubkey(), 20), (carol.pubkey(), 30)]).is_err(),
+        "a batch that overflows capacity is rejected");
+    // PROOF of atomicity: the slot bob would have taken is still FREE — a single dave append succeeds into it.
+    // If bob had been partially committed (entry_count==2), this would be rejected as full.
+    env.append(&proposal, &[(dave.pubkey(), 40)]).expect("the overflow batch committed NOTHING — slot 1 is still free for dave");
+    // Now full (entry_count 2 == capacity 2): any further entry is rejected by the capacity cap.
+    assert!(env.append(&proposal, &[(eve.pubkey(), 50)]).is_err(), "appending past capacity is rejected");
+
+    // Seal + claim: exactly alice(0)=10 and dave(1)=40 exist; bob/carol/eve were never committed.
+    let auth = clone_kp(&env.authority);
+    env.seal(&proposal, &auth).expect("seal");
+    env.claim(&proposal, &alice, &alice_ata, 0).expect("alice claims index 0");
+    env.claim(&proposal, &dave, &dave_ata, 1).expect("dave claims index 1 — the slot the overflow batch did NOT take");
+    assert_eq!(env.token_amount(&alice_ata), 10, "alice committed");
+    assert_eq!(env.token_amount(&dave_ata), 40, "dave got the second slot cleanly");
+}
+
 // MALFORMED ENTRIES (zero amount / zero-address recipient): append rejects amount == 0 || pk ==
 // Pubkey::default() (lib.rs:append_entries). A zero-amount entry is permanently unclaimable and just
 // soaks a slot; a default-pubkey (zero address) entry allocates a chunk of the fixed supply to a key NOBODY
