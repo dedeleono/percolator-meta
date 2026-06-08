@@ -8483,3 +8483,24 @@ PINNED: share_value_is_pro_rata_and_exit_forfeits (e2e:856 — a claims its 75k 
 forfeits 25k which locks) + share_value_claim_partial_post_freeze_withdraw_pays_the_reduced_live_shares (898).
 VERDICT: no dilution grief, no LOF — share-value claims are fixed pro-rata; exits forfeit only the exiter's own
 share (deflationary lock). No code change; suites green.
+
+### [CERT — periodic full-stack certification: 292 standalone tests green, all 5 deployables build-sbf clean] tick (A-D)
+After a run of adversarial single-surface verification ticks (each a fresh direct trace of a fund-movement/authority
+path, all found sound + pinned, SECURITY_LOG-only), re-certified the whole standalone stack builds + passes against
+the REAL binaries:
+- build-sbf clean (release, optimized): subledger, genesis-vote, distribution, residual-distributor, twap-program.
+- Tests green (litesvm vs real percolator/governance/distribution/Squads-v4 binaries):
+  subledger 73 (lib 10 + insurance_percolator 52 + subledger 11); genesis-vote 22 (lib 3 + 2 + seal 17);
+  distribution 35 (lib 4 + distribution 31); residual-distributor 48 (lib 3 + e2e 41 + offsets 4);
+  twap-program 111 (lib 4 + chain 107); sim 3 (real-percolator wash-farm). TOTAL = 292, 0 failed.
+- Surfaces directly traced this session (all sound, no new bug; the stack is at adversarial saturation): finding-O
+  reorder/safe-by-default floor; accept_operator both mirrors; set_economics + both execute sinks; auction
+  place_bid/eviction/execute-clearing/claim/cancel; gv tally/vote-lock(dual-sig)/trigger; subledger share-inflation
+  + share-value soft-veto denominator; distribution append/seal/claim/burn conservation; rd cross-cohort/cross-genesis
+  + wash-farm net-by-spent/time-weight/fee.
+OUTSTANDING (unchanged, deferred per standing instruction): task #11 — the DEPRECATED meta program's
+process_kickstart_genesis_market CPIs the percolator's REMOVED UpdateInsurancePolicy (tag 33); root-caused, NOT to
+be actioned without user confirmation (deprecated program + read-only percolator); the 4 integration.rs failures are
+pre-existing from this, not a regression in the standalone scope.
+VERDICT: standalone scope is green, build-clean, deployment-ready; LOF/DoS/free-farm all closed and traced against
+real binaries. No code change this tick.
