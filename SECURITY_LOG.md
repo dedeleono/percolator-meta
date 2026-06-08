@@ -7423,3 +7423,25 @@ it. TEST: extended genesis_market_initialized_with_3bps_fee_and_20pct_yield_to_i
 read_market) to assert group.config.maintenance_margin_bps == 10_000 and initial_margin_bps == 10_000. VERDICT:
 BLOCKED/correct. KEEP. twap chain 102 green. The genesis-market-init readback now pins ALL the load-bearing
 policy: fees (3bps + 20% redirect) + principal-protection (deposits_only + max_bps + cooldown + 100% margins).
+
+### [AUDIT — saturation map: auction + subledger-conservation sub-vectors confirmed comprehensively pinned] tick (A/D)
+Spent this tick probing for unpinned boundaries across three surfaces; ALL were already covered. Recording the
+sub-vector -> pinning-test map so future ticks skip them (no new test/fix — the boundaries are pinned):
+
+TWAP AUCTION (twap-program/tests/chain.rs):
+- cancel anti-spoof (no self-withdrawal, only eviction): e2e_bid_cannot_be_cancelled_only_evicted_by_a_better_bid
+- cancel cooldown (2*round_length, owner-only, fee kept): e2e_bid_cancellable_after_cooldown_keeps_fee
+- ISSUE #28 (a no-op roll advancing round_end must NOT unlock cancel early): e2e_roll_does_not_unlock_cancel_before_aging
+- cancel double-drain of the shared escrow (cross-user LOF): e2e_cancel_cannot_be_replayed_to_drain_the_shared_escrow
+- claim replay drain + execute-frozen-until-claims-drain: e2e_claim_cannot_be_replayed_to_drain_other_winners, e2e_execute_on_a_settled_book_is_frozen_until_claims_drain_it
+- reserve guard (surplus-drain) + the EXACT r==reserve inclusive boundary (the "fair" 400k/400k = 1/1 bid clears):
+  e2e_reserve_blocks_expensive_bid_from_draining_surplus; zero-den brick: e2e_set_reserve_rejects_a_zero_denominator...
+- init_book degenerate params (round_length==0 collapses the cooldown): the round_length==0 reject test (~5722)
+- cross-config isolation (book.config pin; finding AO): e2e_config_a_cannot_mutate_config_bs_book
+- roll edge cases (committed bid next round, marginal zero-coin fill no phantom claim): e2e_roll_with_committed_bid_settles_correctly_next_round, e2e_roll_with_a_marginal_zero_coin_fill_leaves_no_phantom_claim
+GENESIS MARKET CONFIG (readback, this session): fees (3bps + 20% redirect) + principal-protection (deposits_only +
+max_bps + cooldown + 100% maintenance/initial margins) — all in genesis_market_initialized_with_3bps_fee...
+SUBLEDGER SHARE CONSERVATION (subledger/tests/): over-withdraw cross-depositor LOF + split-exit can't beat pro-rata:
+cannot_over_withdraw_to_drain_a_codepositor, splitting_an_impaired_exit_cannot_beat_the_pro_rata_or_drain_a_codepositor;
+pro-rata/order-independence: impaired_insurance_exit_is_pro_rata, impaired_pool_is_pro_rata_and_order_independent;
+share-inflation defense = virtual-shares+1 in redeem_shares (lib.rs:329). VERDICT: all BLOCKED/pinned. No change.
