@@ -8544,3 +8544,25 @@ persisted bind) is uniform + tested across every site that persists a token acco
 VERDICT: no front-run hijack/brick — the one DAO-only init (init_book) is Squads-gated, and every permissionless
 init that persists a token account validates SPL ownership before unpacking + uses prefund-resistant PDA creation +
 a re-init guard. Class is closed and uniformly tested. No code change; suites green.
+
+### [VERIFIED — gv vote/retract function: exact back-out, checked tallies, dual-sig CPI, no desync] tick (B)
+First-time direct read of the gv vote/retract core (lib.rs:542). Traced the full tally lifecycle; SOUND, no desync:
+- POSITION BOUND: sub_position is the canonical PDA [sub_position, pool, voter] (588-592) + owned by the configured
+  subledger program (582) -> only the voter's OWN position counts (pinned gv_vote_cannot_borrow_another_voters_
+  position 372). pool/program bound to config (585).
+- WEIGHT: vote_weight(principal, now - start_slot) recomputed at EACH back (659); a re-back refreshes to the current
+  (higher-age) weight but never beyond the true log2(age)*principal; weight==0 (unfunded / age<2) is REJECTED so no
+  capital-less ballot locks a position for nothing (661-664).
+- EXACT BACK-OUT: re-back/retract subtracts the STORED voted_weight/voted_principal (642-645) then re-adds the fresh
+  values (665-668), so config.total_cast_weight/total_voted_principal + pv.support_* always equal the sum of LIVE
+  ballots. A top-up without a re-back never desyncs (its extra was never added; retract backs out exactly the stored
+  P). All checked_add/checked_sub, u128-widened (GG) -> no overflow; double-retract/retract-without-back guarded
+  (646-648) -> no underflow (pinned 2787; reback-cannot-inflate 3522).
+- ONE-VOTE-PER-PROPOSAL (635-638); post-seal NO new backing but retract ALWAYS allowed so winning voters can exit
+  (576-578, pinned e2e_winning_voter_can_retract_and_exit_after_seal 2939).
+- ATOMIC DUAL-SIG CPI: state writes (674-676) precede SetVoteLock (685), which passes BOTH required signers — the
+  config PDA (vote_authority) via invoke_signed seeds + the propagated voter signature (689/694) — exactly what the
+  subledger's dual-sig gate requires. A failed CPI reverts the whole tx, so tally/ballot/lock can never desync.
+- QUORUM uses the trigger's LIVE pool re-read, not the cached config.outstanding_principal (597-602).
+VERDICT: no quorum/majority forge, no capital-less ballot, no tally desync/underflow, no exit trap. The gv side of
+the dual-sig matches the subledger side verified earlier. No code change; suites green.
