@@ -8275,3 +8275,23 @@ both independently re-derived to ALREADY-PINNED conclusions — strong saturatio
   (e2e:1313/1351), lone-farmer diluted to <=1/N (sim farm.rs:290), fee taxes the wash (sim:297-299).
 VERDICT: no free-farm beyond the documented fee + Sybil-flat manufacturing cost; the trader/LP points are bounded
 by REAL net loss, taxed, and time-anchored. No code change; suites green.
+
+### [VERIFIED — twap set_economics bounds + BOTH execute sinks (savings + buyback) bound & decoy-pinned] tick (A)
+Traced the twap 4-way economics surface (over-pull the floor / brick execute / redirect a surplus pull); all
+sound + comprehensively pinned, the in/out symmetry complete:
+- BPS BOUNDS: set_economics rejects surplus_buy_burn_bps + base_unit_savings_bps > 10000 (lib.rs:572) and
+  buyback_bps > 10000 (577); reconfigure rejects new_bps + base_unit_savings_bps > 10000 (530) — each reads the
+  OTHER's live config value, so neither instruction can raise its share past the joint 100% cap. execute then
+  computes burnable + savings <= surplus (1507-1522, checked_sub on `retained`), so the two surplus pulls can
+  never reach the reserved_floor principal NOR underflow-brick. Pinned: set_economics_rejects_an_over_allocation
+  (chain:861, both overflows + the 8000+2000 / buyback-10000 boundary), reconfigure_must_hold_the_auction_plus
+  _savings_invariant (chain:932, the cross-instruction race).
+- SAVINGS SINK (2b, tag-57 USD pull): savings_dest pinned to config.base_unit_savings_account (1563) + mint
+  bound (1567). Decoy rejected, whole tx reverts: e2e_execute_savings_share_cannot_be_redirected_to_a_decoy_sink
+  (chain:4782) + the split-without-breaching-principal happy path (4726).
+- BUYBACK COIN SINK (step 5): coin_sink pinned to book.coin_sink (1740, validated even when to_sink==0 so the
+  account-ordering is fraction-independent). Decoy rejected: e2e_execute_buyback_retains_fraction_to_sink_and_
+  burns_the_rest (chain:5544-5550, rogue_sink rejected -> honest 30% retained / 70% burned).
+VERDICT: no over-pull (the principal floor is unreachable by either pull), no execute brick (bps capped so no
+underflow), no redirect (both optional sink destinations are config/book-bound with decoy-rejection tests). The
+symmetry lens is satisfied — every fund-OUT destination in execute is key-bound AND has a decoy test. No code change.
