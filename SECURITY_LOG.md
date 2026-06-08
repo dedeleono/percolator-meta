@@ -10423,3 +10423,38 @@ free counter. Documented this in lib.rs (the cross-account conservation note on 
 future auditor need not re-derive it from percolator internals. Doc-only; rd 48/48 green, build-sbf clean.
 VERDICT: the LP `received` free-farm is closed and now fully documented at the mechanism + conservation level;
 the user's strongest emphasis (a free-farm bypassing the anti-wash defenses) has no remaining unexamined path.
+
+## Tick — full cross-crate regression checkpoint + saturation status (all surfaces)
+
+Periodic green-checkpoint after the recent run of gap-pins, mechanism traces, and doc/regression fixes (the
+"builds and tests stay green each iteration" requirement) and a status snapshot.
+
+BUILD: all 5 deployables build-sbf clean (subledger, genesis-vote, distribution, residual-distributor,
+twap-program).
+TESTS (all green, 297 total):
+  subledger insurance_percolator 56 + lib 10
+  genesis-vote seal 17 + offsets 2 + lib 3
+  distribution distribution 32 + lib 4
+  residual-distributor e2e 48 + offsets 4 + lib 3
+  twap-program chain 111 + lib 4
+  sim farm 3 (real percolator)
+
+SATURATION STATUS — every concrete vector the sweep enumerates across A-D is now either pinned mutation-sharp
+or carries a recorded accepted-limitation/conservation verdict:
+  (A) finding-O floor (execute + re-arm) + auction eviction/marginal/roll + cancel anti-spoof (no-op-roll, issue
+      #28) + require_squads_vault DAO gate + 1-week timelock (min-bind + premature-execute) + accept_operator
+      foreign-account binds + finding-S post-handoff deposit-revoke + set_economics/reconfigure surplus-split
+      brick-cap + shutdown holding-only — all mutation-verified.
+  (B) vote-lock (capital-less ballot) + self-unlock + trigger quorum (live-outstanding) + majority + one-vote
+      /double-retract + POLICY_WITH_SURPLUS impaired-exit order-independence + share-inflation finding HB
+      (+ the discovered percolator insurance cap).
+  (C) entry-zeroing double-claim + append supply-cap (cumulative/capacity/atomic) + full-supply solvency +
+      claim-window cutoff + seal/recreate/foreign-config binds.
+  (D) allow-list (IL) + net-by-spent + claim-fee + time-weight (registration-tenure, accepted) + live-cap
+      (single + cross-cohort double-dip) + over-allocation + offset canary (mutation-sharp) + cross-genesis +
+      crystallize idempotency + the LP `received` credit-transfer mechanism (conservation-bounded, NOT free).
+REAL bugs found+fixed earlier this campaign: distribution claim_window permanent-freeze (LOF), rd stale-points
+wash (live-cap), gv one-vote-one-proposal mutation-blind test, auction stale-round_end competition-skip.
+The one out-of-meta-scope item: a full backstop-impairment SIM (received accrual lives in the percolator
+LIBRARY crate behind backing-ledger/bucket/bankruptcy machinery) — resolved by source + the credit-transfer
+trace, not a meta-stack gap. No code change this tick.
