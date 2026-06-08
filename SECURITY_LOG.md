@@ -8954,3 +8954,18 @@ atom at the marginal bid's rate, coin_i = floor(usd_i*cm/um) == 0; and when tota
   below-reserve roll (5686), and the empty-book roll (4479/4705).
 VERDICT: the auction's marginal-fill rounding + roll-undo conserve exactly — no phantom claim, no stale-field
 wrong-refund, no USD-for-zero-COIN. The auction conservation corners are fully pinned. No code change.
+
+### [VERIFIED — rd retained-fee vault is undrainable (locked deflationary); the prompt's "drain the retained-fee vault" BLOCKED] tick (D)
+Probed the prompt's explicit "draining the retained-fee vault" free-farm: the anti-wash fee (fee_support_bps of each
+LP/trader claim) is RETAINED in the rd vault (claim transfers only payout = amount - fee, lib.rs:1013/1027), so over
+time the vault accumulates Σfee + floor-dust + any empty-cohort supply. BLOCKED — no path drains it:
+- The ONLY vault-out op is claim's invoke_signed transfer of `payout` (amount - fee) to a stake's BOUND recipient,
+  capped by the FROZEN points (cohort_supply * points / frozen_denom). The fee portion is never transferred.
+- Pinned: the vault is drained ONLY by what was paid out (e2e:399, vault_start - vault == paid_out) and the fee
+  STAYS locked (e2e:400 "80_000 fee + unclaimed cohorts stay locked", 475 trader fee retained, 509 at 100% fee the
+  FULL payout is retained / nothing leaves); a rejected re-claim leaves the vault intact (512); cross-cohort claims
+  drain the vault by EXACTLY the claimed total, never over (1878). Empty cohorts' supply likewise locks (no claimant).
+- The retained fee can't be re-claimed (stake.claimed one-shot), can't inflate a later claim (frozen denominators),
+  and there is no admin/sweep instruction on the rd vault.
+VERDICT: the retained-fee vault is permanently locked (deflationary), undrainable — no free-farm via the fee pool.
+This was the last prompt-named (D) free-farm sub-vector to pin with a dedicated assertion. No code change.
