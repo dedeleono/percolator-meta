@@ -10782,3 +10782,22 @@ mint-authority-revoked, supply, solvency, zero-window, lamport-prefund), append 
 atomic, zero/default entry, foreign creator), seal (authority key-match, is_sealed winner-take-all, empty/foreign
 reject, anti-bait-and-switch via gv), claim (recipient-binding, double-claim entry-zeroing, window cutoff),
 burn_unclaimed (conservation). Across A/B/C/D every keystone LOF/DoS/free-farm/theft guard is now non-vacuous.
+
+## Tick — set_vote_lock dual-sign: owner-sign anti-hostile-freeze (capital-freeze DoS) MUTATION-VERIFIED (surface B)
+
+process_set_vote_lock (subledger tag 6) requires BOTH signers: vote_authority.is_signer (1331, anti-self-unlock
+-- the owner can't clear their own lock to exit without retracting) AND owner.is_signer (1341, anti-hostile
+-freeze). The owner-sign is the DoS guard: a position's vote-lock blocks its insurance withdrawal, so without
+owner consent a hostile or compromised vote_authority (e.g. one front-run into a pool at init, or a captured gv
+config) could lock ANY depositor's position and FREEZE their principal forever. Requiring the owner's signature
+means a position is only ever (un)locked in the context of the owner acting on their OWN vote -- the only
+legitimate case. (The pool.vote_authority == signer bind at 1352 and position.owner == owner at 1357 scope it
+further.)
+
+MUTATION-VERIFIED: neutered the owner.is_signer check (`if false && !owner.is_signer`), rebuilt the real .so ->
+hostile_vote_authority_cannot_freeze_a_depositor FAILED (the hostile authority locked a victim's position
+without the victim signing). Reverted -> 57/57 subledger green, src clean. SHARP. No code change. (The
+complementary self-unlock side -- vote_authority.is_signer -- is pinned by
+owner_cannot_self_unlock_a_live_vote_to_exit_capital, and the cross-program unlock<=>retract atomicity by the
+one-tx veto-exit test.) VERDICT: the vote-lock toggle is dual-signed -- neither a hostile authority can freeze a
+depositor nor an owner can self-unlock -- both directions mutation-proven.
