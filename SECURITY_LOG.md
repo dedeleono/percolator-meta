@@ -11358,3 +11358,25 @@ tick]); distribution 0-5; gv vote/trigger/init; rd init/register/crystallize/fre
 init_config/reconfigure/set_reserved_floor/accept_operator/init_book/set_reserve/place_bid/execute/claim/
 set_coin_sink/shutdown/set_bid_fee/cancel_bid/set_economics; setup COIN init. Every program, instruction, init,
 setter, permissionless path, conservation invariant, cross-binary offset, and crate is verified.
+
+## Tick — grand-unified E2E confirms the COMPLETE genesis->DAO->buy/burn lifecycle + principal protection at the INTEGRATION level (all surfaces)
+
+Beyond the unit-level mutation-verification (every guard proven non-vacuous), confirmed the INTEGRATION-level
+guarantee: e2e_full_genesis_to_buy_burn (chain:5153) loads ALL FIVE deployed binaries (percolator, subledger,
+genesis-vote, distribution, twap-program) + the real Squads v4, and drives the entire arc in one tx-sequence:
+subledger insurance pool init (vote_authority = gv config, finding R) -> POLICY_WITH_SURPLUS genesis deposit ->
+gv vote + permissionless trigger (winner-take-all seal of the distribution) -> recipient claims the COIN ->
+DAO Squads-execute handoff (policy -> surplus mode, then accept_operator rotates the asset-0 operator to the
+twap) -> DAO sets the surplus floor = reserved principal (finding O) -> twap auction (place_bid -> execute pulls
+80% of surplus + clears at the uniform price + BURNS the bought COIN -> winner claims the surplus USD).
+
+It is NON-TAUTOLOGICAL -- it asserts the true END STATE: recipient_ata == full COIN supply (winner-take-all
+mint landed), mint_supply == total_supply - 50 (the buy/burn ACTUALLY burned the bought COIN, real deflation),
+settlement_usd == 400_000 (80% surplus pulled + parked), and CRUCIALLY perc_vault == principal + surplus -
+400_000 i.e. ONLY the 80% burn-share left insurance -- the depositor PRINCIPAL stayed protected through the
+whole flow (finding O at the integration level, not just the unit floor guard). Green.
+
+Both verification layers are now established: (1) UNIT -- every instruction/guard mutation-proven non-vacuous
+(the full inventory, prior ticks); (2) INTEGRATION -- the complete 5-binary genesis->DAO->buy/burn composition
+produces the correct, principal-protected, conservation-respecting end state (this tick). The security model is
+verified at both the guard granularity and the end-to-end composition. No code change.
