@@ -5,7 +5,19 @@ Running note so the 5-min loop doesn't repeat vectors. Format: vector → verdic
 ## Checkpoint — CURRENT session (latest; supersedes the prior checkpoint below)
 STATE: 302 standalone tests GREEN (subledger 75, genesis-vote 22, distribution 36, residual-distributor 52,
 twap-program 114, sim 3); all 5 deployables build-sbf clean; deployment-ready.
-LATEST TICK (A, mutation-verify last tick's round_end fix — its regression pin is SHARP + double-pins the round
+LATEST TICK (C, mutation-verify the distribution seal authority — both halves SHARP, supply-capture guard):
+mutation-checked the seal_winner authority binding (lib.rs:503), the single most consequential guard in the stack
+— it gates who can seal the winning proposal that mints 100% of the COIN supply. Two clauses: is_signer (502) and
+key-match `authority.key == config.authority` (503). Dropped the KEY-MATCH (kept is_signer): an attacker signing
+as THEMSELVES (with their own non-config key) would seal -> capture the whole supply. The mutation makes seal_then_
+recipients_claim_their_entries FAIL (its imposter-seal sub-assertion, distribution.rs:284, `non-authority cannot
+seal`), NOT seal_rejects_naming_the_authority_without_its_signature (which covers only the is_signer half). So BOTH
+halves are mutation-sharp via DIFFERENT tests — no gap. (Per the sharp-vs-masked criterion: seal is a pure state
+mark, no fund transfer, so there is no SPL/overflow backstop — the authority check is necessarily the sole guard,
+correctly SHARP.) Reverted, git clean, distribution 32 green. Cumulative mutation campaign: guard-removal[41] + 9
+classes + 2 defense-in-depth; NO uncaught mutation.
+
+PRIOR TICK (A, mutation-verify last tick's round_end fix — its regression pin is SHARP + double-pins the round
 gate, NO code change): closed the loop on the stale-round_end fix. (1) Reverting the fix (disabling the reopen
 round_end reset) makes e2e_execute_on_a_settled_book...:4642 FAIL (the immediate post-reopen execute is accepted
 again off the stale round_end) -> the regression pin I added IS non-vacuous. (2) Independently, dropping the
