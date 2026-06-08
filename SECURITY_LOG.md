@@ -7504,3 +7504,17 @@ but the stale doc could mislead a maintainer into weakening net-by-spent believi
 (doc-only, no layout change): rewrote the module doc to describe net-by-spent + claim-fee + tenure weight, and
 marked earnings_snap / eligible_accum VESTIGIAL (held at 0 for offset-canary stability; do not reintroduce a
 fee-cap there). VERDICT: not a runtime bug — a doc/code drift corrected. rd offsets (3) + e2e (38) green.
+
+### [AUDIT — stack-wide dead-field / serialize-only-field sweep: class is contained + documented] tick (A-D)
+Motivated by last tick's rd finding (earnings_snap/eligible_accum vestigial from a superseded fee-cap design), swept
+ALL five programs' serialized structs for fields written into the layout but never read into any computation (the
+signature: a single `self.field` serialize ref + no other use). Method validated by re-flagging the known rd dead
+fields. RESULT — the ONLY such fields stack-wide are:
+- residual-distributor Stake.earnings_snap + Stake.eligible_accum: vestigial (superseded fee-cap); documented +
+  marked VESTIGIAL last tick (held at 0, retained for offset-canary stability).
+- genesis-vote Config._reserved: INTENTIONAL reserved padding (lib.rs:143 "kept for layout stability"), `_`-prefixed,
+  stored-but-never-read -> affects no logic, harmless.
+Every field in subledger (Pool/Position), distribution (Config/Proposal/...), and twap-program (Config/Book) feeds a
+real computation — NO dead fields. The accidental-dead-code/stale-doc class is contained to the two cases above,
+both documented. No hidden cruft that could mislead a maintainer into trusting an unimplemented invariant. No code
+change. Confirms the integrity of the serialized layouts the offset canaries pin.
