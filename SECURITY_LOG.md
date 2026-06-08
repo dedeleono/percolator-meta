@@ -11054,3 +11054,21 @@ transferred crystallized loss — conservation-bounded, zero-sum with net-by-spe
 capital-at-risk just like the trader cohort (no free-farm). This is the empirical closure matching the
 source-level trace (v16.rs:8312) and the rd-side cross-cohort double-dip pin. KEEP (real-trade evidence on the
 user's #1 free-farm question). sim 3/3 green, no src change. No new bug.
+
+## Tick — distribution append zero-amount / default-pubkey entry reject (un-claimable entry DOS) MUTATION-VERIFIED (surface C)
+
+append_entries rejects any entry with amount == 0 OR recipient == Pubkey::default() (lib.rs:464, finding IK).
+A default-pubkey entry is the DOS: claim binds pk == recipient.key AND requires recipient.is_signer, and the
+default pubkey can never sign, so such an entry is permanently UN-claimable; its COIN is locked until
+burn_unclaimed and (where the gv/rd completeness checks require every crystallized stake to be represented in
+the sealed distribution) a single default-pubkey entry can make the seal unsatisfiable = a one-entry DOS on the
+whole genesis. A zero-amount entry is the rounding/no-op guard (a zero allocation wastes a slot and collides
+with the claim's `amount == 0 -> already claimed` sentinel). Rejecting both at append keeps every sealed entry
+claimable and the total honest.
+
+MUTATION-VERIFIED: neutered the reject (`if false && (amount == 0 || pk == default)`), rebuilt the real .so ->
+append_rejects_a_zero_amount_or_default_pubkey_entry FAILED (a zero/default entry was appended). Reverted ->
+32/32 distribution green, src clean. SHARP. No code change. VERDICT: every appended distribution entry is a real,
+claimable allocation (no un-claimable/un-sealable entry DOS), mutation-proven -- rounding out the distribution
+append verification (supply-cap cumulative/capacity/atomic + zero/default reject + foreign-creator + append-to
+-sealed).
