@@ -10304,3 +10304,26 @@ documented as the load-bearing frozen-net store for the live-cap, "MUST be prese
 crystallize/freeze", and the module-header anti-wash list now includes the live-cap as defense (3). Doc-only
 change; no behavior change. rd 47/47 green, build-sbf clean. VERDICT: aligns the docs with the live anti-wash
 design so the free-farm defense can't be regressed by a maintainer trusting a stale comment.
+
+## Tick — "earn the time-multiplier without time-locked capital": already pinned + verdict-accepted, now MUTATION-VERIFIED (surface D)
+
+Directly chased the user's explicit free-farm item — "earn LP/trader points ... without the time-locked
+capital ... bypassing the time-weight." The tenure multiplier is floor_log2(now - start_slot) with start_slot
+set at REGISTER (lib.rs:725), so an attacker can pre-register a residual-EMPTY stake cheaply (just a
+percolator portfolio, zero capital), accrue tenure for free, then manufacture the loss LATE and still bank the
+full-tenure multiplier — capturing the multiplier without locking capital for the duration.
+
+This is ALREADY comprehensively pinned: time_weight_rewards_registration_tenure_not_residual_age_early_over_captures
+(e2e:564) builds exactly this (early registrant manufactures R only at slot 10_000; late registrant gets a
+smaller log2 on the SAME R) and records the VERDICT — ACCEPTED LIMITATION, not a LOF/DoS/free-COIN: the
+multiplier only shifts RELATIVE share toward early committers (parity with the genesis-vote early-deposit
+weight); the EARNING (the net residual R) still costs real capital-at-risk + the 3bps per-trade fee + the
+anti-wash claim fee, all Sybil-flat (scale with farm size). Any single tenure anchor (register OR
+first-crystallize) is bypassable with a cheap early dust loss, so there is no clean on-chain fix; the
+manufacturing cost is the real bound.
+
+Confirmed the pin is NON-VACUOUS: mutated the crystallize time-weight to be tenure-INDEPENDENT
+(floor_log2(tenure) -> floor_log2(1024)) -> early and late earn EQUAL points -> the over-capture assertion
+FAILS. Reverted -> 2/2 time-weight tests green, src clean. So the registration-tenure semantics (and their
+accepted-limitation framing) cannot silently regress. No code change. VERDICT: the "without time-locked
+capital" vector is a documented, bounded, accepted property — closed and regression-protected.
