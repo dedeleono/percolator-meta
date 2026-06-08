@@ -8359,3 +8359,19 @@ opposite abuses; SOUND + comprehensively pinned in BOTH directions:
   e2e_owner_cannot_self_unlock_the_vote_lock_to_bypass_retract.
 VERDICT: no DoS (can't freeze a non-consenting depositor; owner always retracts to clear), no Sybil break (can't
 self-unlock to withdraw under a live ballot). The dual-sig is the exact minimal gate. No code change; suites green.
+
+### [VERIFIED — auction claim binds BOTH destinations (usd_dest + coin_ata): no permissionless-cranker redirect] tick (A)
+Traced the permissionless auction claim for a payout-redirect theft (claim is crank-able by anyone, so the
+caller supplies usd_dest + coin_ata; if either weren't bound to the slot's RECORDED destinations a cranker could
+steal a winner's parked USD or a loser's/surplus COIN refund). SOUND + comprehensively pinned:
+- BINDING (lib.rs:1807-1822): the claim reads the slot's recorded SL_USD_DEST + SL_COIN_ATA (set at the bidder's
+  own place_bid) and rejects unless BOTH the passed usd_dest AND coin_ata match (single guard, 1820). The slot
+  must be OCCUPIED && SETTLED (1810). After payout the slot is zeroed (1832 -> no replay); last slot freed reopens
+  the book. So a cranker can finalize anyone's claim but can only ever pay the RECORDED destinations.
+- PINNED end-to-end vs the real binaries: e2e_claim_payout_cannot_be_redirected_to_a_cranker_account (chain:4561)
+  exercises BOTH halves — ATTACK 1 redirect USD -> rejected (usd_dest bind), ATTACK 2 correct usd_dest but decoy
+  coin_ata -> rejected (coin_ata bind, asserted EVEN when refund==0 so only the key bind can fail it); parked USD
+  byte-for-byte intact; the legit recorded-dest claim then pays in full. Complemented by claim-replay rejection
+  (e2e_claim_cannot_be_replayed_to_drain_other_winners 4492) and the place_bid escrow-dest bind (5421).
+VERDICT: no LOF — both fund-OUT destinations of the permissionless claim are recorded-bound with redirect-rejection
+tests (symmetry complete); a cranker can crank but not steal. No code change; suites green.
